@@ -1,0 +1,535 @@
+//
+//  CanvasOverlayView.swift
+//  vectr
+//
+
+import SwiftUI
+
+/// Handles node editing, multi-anchor move, scale, trim, fillet, and command-preview point dragging.
+struct CanvasOverlayView: View {
+    @Bindable var document: VectrDocument
+    @Bindable var commandSession: ShapeCommandSession
+    var onChanged: () -> Void
+
+    @State private var nodeDragOriginPoints: [CGPoint] = []
+    @State private var moveDragOriginPoints: [CGPoint] = []
+    @State private var commandDragOriginPoints: [CGPoint] = []
+    @State private var scaleDragOriginPoints: [CGPoint] = []
+    @State private var scaleDragOriginCenter: CGPoint = .zero
+    @State private var scaleDragOriginCorner: CGPoint = .zero
+    @State private var scaleDragOriginCornerDist: CGFloat = 1
+    @State private var centerDragOriginPoints: [CGPoint] = []
+    @State private var filletDragStrokeID: UUID?
+    @State private var filletDragCornerIndex: Int?
+    @State private var filletDragCornerPoint: CGPoint = .zero
+    @State private var filletDragTargetCornerIndices: Set<Int> = []
+    @State private var filletDragDidMove = false
+
+    private let handleSize: CGFloat = 22
+    private let centerHandleSize: CGFloat = 16
+    private let coordinateSpaceName = "editor"
+    private let filletDragThreshold: CGFloat = 6
+
+    var body: some View {
+        GeometryReader { _ in
+            ZStack {
+                if commandSession.isActive {
+                    commandPreviewHandles
+                } else if document.activeCategory == .move {
+                    strokeMoveOverlay
+                } else if document.activeCategory == .scale {
+                    scaleHandles
+                } else if document.activeCategory == .trim {
+                    trimOverlay
+                } else if document.activeCategory == .fillet {
+                    filletOverlay
+                } else if document.selectedStrokeID != nil,
+                          !document.dimensionsVisible,
+                          document.activeCategory != .delete {
+                    strokeNodeHandles
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .coordinateSpace(name: coordinateSpaceName)
+    }
+
+    // MARK: - Command preview
+
+    @ViewBuilder
+    private var commandPreviewHandles: some View {
+        ForEach(Array(commandSession.controlPoints.enumerated()), id: \.offset) { index, point in
+            handleView(style: .command)
+                .position(document.viewport.documentToView(point))
+                .highPriorityGesture(commandPointDrag(index: index))
+        }
+    }
+
+    private func commandPointDrag(index: Int) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if commandDragOriginPoints.isEmpty {
+                    commandDragOriginPoints = commandSession.controlPoints
+                }
+                let docPoint = document.viewport.viewToDocument(value.location)
+                let final = snapCommandControlPoint(docPoint)
+                commandSession.movePoint(at: index, to: final)
+                onChanged()
+            }
+            .onEnded { _ in
+                commandDragOriginPoints = []
+            }
+    }
+
+    private var drawingSnapEnabled: Bool {
+        document.snapEnabled && document.grid.snapEnabled
+    }
+
+    private func snapCommandControlPoint(_ raw: CGPoint) -> CGPoint {
+        let snapped = snapDrawingPoint(
+            raw,
+            grid: document.grid,
+            settings: document.settings,
+            enabled: drawingSnapEnabled
+        )
+        let projected = ShapeGeometry.projectCommandPoint(
+            snapped,
+            controlPoints: commandSession.controlPoints,
+            category: commandSession.category,
+            circleVariant: commandSession.circleVariant,
+            rectangleVariant: commandSession.rectangleVariant
+        )
+        return snapDrawingControlPoint(
+            raw: snapped,
+            projected: projected,
+            grid: document.grid,
+            settings: document.settings,
+            enabled: drawingSnapEnabled
+        )
+    }
+
+    // MARK: - Selected stroke (edit nodes)
+
+    @ViewBuilder
+    private var strokeNodeHandles: some View {
+        if let strokeID = document.selectedStrokeID,
+           let stroke = document.stroke(with: strokeID) {
+            let handles = ShapeGeometry.handlePoints(for: stroke)
+            ForEach(Array(handles.enumerated()), id: \.offset) { index, point in
+                handleView(style: .edit)
+                    .position(document.viewport.documentToView(point))
+                    .highPriorityGesture(strokeNodeDrag(strokeID: strokeID, index: index))
+            }
+            centerHandle(strokeID: strokeID, stroke: stroke)
+        }
+    }
+
+    private func strokeNodeDrag(strokeID: UUID, index: Int) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if nodeDragOriginPoints.isEmpty {
+                    nodeDragOriginPoints = document.stroke(with: strokeID)?.points ?? []
+                    document.beginInteractiveEdit()
+                }
+                guard var stroke = document.stroke(with: strokeID) else { return }
+                let docPoint = document.viewport.viewToDocument(value.location)
+                if stroke.shapeType == .circle {
+                    stroke.points = ShapeGeometry.updateCircleHandle(at: index, to: docPoint, stroke: stroke)
+                } else if stroke.shapeType == .ellipse {
+                    stroke.points = ShapeGeometry.updateEllipseHandle(at: index, to: docPoint, stroke: stroke)
+                } else {
+                    stroke.points[index] = docPoint
+                }
+                document.updateStroke(stroke, recordUndo: false)
+                onChanged()
+            }
+            .onEnded { _ in
+                let didEdit = !nodeDragOriginPoints.isEmpty
+                nodeDragOriginPoints = []
+                guard didEdit else { return }
+                document.reconcileIntersectionAnchors(around: [strokeID])
+                onChanged()
+            }
+    }
+
+    // MARK: - Move (multi-anchor)
+
+    @ViewBuilder
+    private var strokeMoveOverlay: some View {
+        if let strokeID = document.selectedStrokeID,
+           let stroke = document.stroke(with: strokeID) {
+            let handles = ShapeGeometry.handlePoints(for: stroke)
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 2, coordinateSpace: .named(coordinateSpaceName))
+                        .onChanged { value in
+                            handleMoveDragChanged(
+                                strokeID: strokeID,
+                                stroke: stroke,
+                                value: value,
+                                anchorIndex: nil
+                            )
+                        }
+                        .onEnded { _ in
+                            finishMoveDrag(strokeID: strokeID)
+                        }
+                )
+
+            ForEach(Array(handles.enumerated()), id: \.offset) { index, point in
+                let selected = document.selectedAnchorIndices.contains(index)
+                handleView(style: selected ? .selectedAnchor : .move)
+                    .position(document.viewport.documentToView(point))
+                    .highPriorityGesture(anchorMoveDrag(strokeID: strokeID, stroke: stroke, anchorIndex: index))
+                    .onTapGesture {
+                        document.toggleAnchorSelection(at: index)
+                        onChanged()
+                    }
+            }
+
+            centerHandle(strokeID: strokeID, stroke: stroke)
+        }
+    }
+
+    private func applyMove(strokeID: UUID, stroke: VectorStroke, delta: CGPoint) {
+        guard !moveDragOriginPoints.isEmpty else { return }
+        let indices = document.selectedAnchorIndices
+
+        if indices.isEmpty {
+            let moved = moveDragOriginPoints.map {
+                CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
+            }
+            document.setStrokePoints(id: strokeID, points: moved, recordUndo: false)
+            return
+        }
+
+        var updated = stroke
+        for index in indices.sorted() where moveDragOriginPoints.indices.contains(index) {
+            let origin = moveDragOriginPoints[index]
+            let moved = CGPoint(x: origin.x + delta.x, y: origin.y + delta.y)
+            if updated.shapeType == .circle {
+                updated.points = ShapeGeometry.updateCircleHandle(at: index, to: moved, stroke: updated)
+            } else if updated.shapeType == .ellipse {
+                updated.points = ShapeGeometry.updateEllipseHandle(at: index, to: moved, stroke: updated)
+            } else {
+                updated.points[index] = moved
+            }
+        }
+        document.updateStroke(updated, recordUndo: false)
+    }
+
+    private func anchorMoveDrag(strokeID: UUID, stroke: VectorStroke, anchorIndex: Int) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                handleMoveDragChanged(
+                    strokeID: strokeID,
+                    stroke: stroke,
+                    value: value,
+                    anchorIndex: anchorIndex
+                )
+            }
+            .onEnded { _ in
+                finishMoveDrag(strokeID: strokeID)
+            }
+    }
+
+    private func handleMoveDragChanged(
+        strokeID: UUID,
+        stroke: VectorStroke,
+        value: DragGesture.Value,
+        anchorIndex: Int?
+    ) {
+        if moveDragOriginPoints.isEmpty {
+            moveDragOriginPoints = ShapeGeometry.handlePoints(for: stroke)
+            if let anchorIndex, document.selectedAnchorIndices.isEmpty {
+                document.selectedAnchorIndices = [anchorIndex]
+            }
+            document.beginInteractiveEdit()
+        }
+        let delta = documentDelta(from: value.translation)
+        applyMove(strokeID: strokeID, stroke: stroke, delta: delta)
+        onChanged()
+    }
+
+    private func finishMoveDrag(strokeID: UUID) {
+        let didEdit = !moveDragOriginPoints.isEmpty
+        moveDragOriginPoints = []
+        guard didEdit else { return }
+        document.reconcileIntersectionAnchors(around: [strokeID])
+        onChanged()
+    }
+
+    // MARK: - Trim
+
+    @ViewBuilder
+    private var trimOverlay: some View {
+        if let strokeID = document.selectedStrokeID,
+           let stroke = document.stroke(with: strokeID) {
+            let handles = ShapeGeometry.handlePoints(for: stroke)
+            let edgeCount = stroke.isClosed ? handles.count : max(handles.count - 1, 0)
+
+            ForEach(Array(handles.enumerated()), id: \.offset) { index, point in
+                handleView(style: .trim)
+                    .position(document.viewport.documentToView(point))
+                    .onTapGesture {
+                        document.deleteStrokePoint(at: index)
+                        onChanged()
+                    }
+            }
+
+            ForEach(0..<edgeCount, id: \.self) { edgeIndex in
+                let start = handles[edgeIndex]
+                let end = handles[(edgeIndex + 1) % handles.count]
+                let mid = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+                if stroke.shapeType != .circle, stroke.shapeType != .ellipse {
+                    Capsule()
+                        .fill(Color.red.opacity(0.45))
+                        .frame(width: 28, height: 10)
+                        .overlay(Capsule().stroke(Color.red, lineWidth: 1.5))
+                        .position(document.viewport.documentToView(mid))
+                        .onTapGesture {
+                            document.deleteStrokeEdge(at: edgeIndex)
+                            onChanged()
+                        }
+                }
+            }
+
+            centerHandle(strokeID: strokeID, stroke: stroke)
+        }
+    }
+
+    // MARK: - Fillet
+
+    @ViewBuilder
+    private var filletOverlay: some View {
+        if let strokeID = document.selectedStrokeID,
+           let stroke = document.stroke(with: strokeID) {
+            let handles = ShapeGeometry.handlePoints(for: stroke)
+            let cornerIndices = ShapeGeometry.filletCornerIndices(for: stroke)
+            ForEach(cornerIndices, id: \.self) { index in
+                let point = handles[index]
+                let selected = document.selectedFilletCornerIndices.contains(index)
+                handleView(style: selected ? .selectedAnchor : .fillet)
+                    .position(document.viewport.documentToView(point))
+                    .highPriorityGesture(
+                        filletCornerGesture(
+                            strokeID: strokeID,
+                            cornerIndex: index,
+                            cornerPoint: point
+                        )
+                    )
+            }
+
+            centerHandle(strokeID: strokeID, stroke: stroke)
+        }
+    }
+
+    private func filletCornerGesture(strokeID: UUID, cornerIndex: Int, cornerPoint: CGPoint) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if filletDragCornerIndex == nil {
+                    filletDragStrokeID = strokeID
+                    filletDragCornerIndex = cornerIndex
+                    filletDragCornerPoint = cornerPoint
+                    if document.selectedFilletCornerIndices.contains(cornerIndex),
+                       !document.selectedFilletCornerIndices.isEmpty {
+                        filletDragTargetCornerIndices = document.selectedFilletCornerIndices
+                    } else {
+                        filletDragTargetCornerIndices = [cornerIndex]
+                    }
+                }
+
+                guard filletDragStrokeID == strokeID,
+                      filletDragCornerIndex == cornerIndex else { return }
+
+                let moved = hypot(value.translation.width, value.translation.height)
+                guard moved >= filletDragThreshold else { return }
+
+                if !filletDragDidMove {
+                    filletDragDidMove = true
+                    document.beginInteractiveEdit()
+                    document.selectedFilletCornerIndices = filletDragTargetCornerIndices
+                }
+
+                let docPoint = document.viewport.viewToDocument(value.location)
+                let radius = hypot(
+                    docPoint.x - filletDragCornerPoint.x,
+                    docPoint.y - filletDragCornerPoint.y
+                )
+                document.applyFilletToSelected(
+                    radius: radius,
+                    cornerIndices: filletDragTargetCornerIndices,
+                    recordUndo: false
+                )
+                onChanged()
+            }
+            .onEnded { _ in
+                guard filletDragStrokeID == strokeID,
+                      filletDragCornerIndex == cornerIndex else {
+                    resetFilletDragState()
+                    return
+                }
+
+                if filletDragDidMove {
+                    document.selectedFilletCornerIndices = filletDragTargetCornerIndices
+                } else {
+                    document.toggleFilletCornerSelection(at: cornerIndex)
+                }
+                onChanged()
+                resetFilletDragState()
+            }
+    }
+
+    private func resetFilletDragState() {
+        filletDragStrokeID = nil
+        filletDragCornerIndex = nil
+        filletDragCornerPoint = .zero
+        filletDragTargetCornerIndices = []
+        filletDragDidMove = false
+    }
+
+    // MARK: - Scale
+
+    @ViewBuilder
+    private var scaleHandles: some View {
+        if let strokeID = document.selectedStrokeID,
+           let stroke = document.stroke(with: strokeID),
+           let bbox = stroke.boundingBox() {
+            let corners = [
+                CGPoint(x: bbox.minX, y: bbox.minY),
+                CGPoint(x: bbox.maxX, y: bbox.minY),
+                CGPoint(x: bbox.maxX, y: bbox.maxY),
+                CGPoint(x: bbox.minX, y: bbox.maxY)
+            ]
+            ForEach(Array(corners.enumerated()), id: \.offset) { index, corner in
+                handleView(style: .edit)
+                    .position(document.viewport.documentToView(corner))
+                    .highPriorityGesture(scaleDrag(strokeID: strokeID, cornerIndex: index, bbox: bbox))
+            }
+        }
+    }
+
+    private func scaleDrag(strokeID: UUID, cornerIndex: Int, bbox: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if scaleDragOriginPoints.isEmpty {
+                    scaleDragOriginPoints = document.stroke(with: strokeID)?.points ?? []
+                    scaleDragOriginCenter = CGPoint(x: bbox.midX, y: bbox.midY)
+                    let corners = [
+                        CGPoint(x: bbox.minX, y: bbox.minY),
+                        CGPoint(x: bbox.maxX, y: bbox.minY),
+                        CGPoint(x: bbox.maxX, y: bbox.maxY),
+                        CGPoint(x: bbox.minX, y: bbox.maxY)
+                    ]
+                    let corner = corners[cornerIndex]
+                    scaleDragOriginCorner = corner
+                    scaleDragOriginCornerDist = max(
+                        hypot(corner.x - scaleDragOriginCenter.x, corner.y - scaleDragOriginCenter.y),
+                        0.001
+                    )
+                    document.beginInteractiveEdit()
+                }
+                guard !scaleDragOriginPoints.isEmpty else { return }
+                let center = scaleDragOriginCenter
+                let dragPoint = document.viewport.viewToDocument(value.location)
+                let corner = scaleDragOriginCorner
+                let sx: CGFloat
+                let sy: CGFloat
+                if document.scaleUniform {
+                    let newDist = hypot(dragPoint.x - center.x, dragPoint.y - center.y)
+                    let factor = newDist / scaleDragOriginCornerDist
+                    sx = factor
+                    sy = factor
+                } else {
+                    sx = abs(corner.x - center.x) > 0.001
+                        ? (dragPoint.x - center.x) / (corner.x - center.x)
+                        : 1
+                    sy = abs(corner.y - center.y) > 0.001
+                        ? (dragPoint.y - center.y) / (corner.y - center.y)
+                        : 1
+                }
+                let scaled = scaleDragOriginPoints.map { point in
+                    CGPoint(
+                        x: center.x + (point.x - center.x) * sx,
+                        y: center.y + (point.y - center.y) * sy
+                    )
+                }
+                document.setStrokePoints(id: strokeID, points: scaled, recordUndo: false)
+                onChanged()
+            }
+            .onEnded { _ in
+                let didEdit = !scaleDragOriginPoints.isEmpty
+                scaleDragOriginPoints = []
+                guard didEdit else { return }
+                document.reconcileIntersectionAnchors(around: [strokeID])
+                onChanged()
+            }
+    }
+
+    // MARK: - Center anchor
+
+    @ViewBuilder
+    private func centerHandle(strokeID: UUID, stroke: VectorStroke) -> some View {
+        if let center = ShapeGeometry.shapeCenter(for: stroke) {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(Color.cyan)
+                .frame(width: centerHandleSize, height: centerHandleSize)
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.white, lineWidth: 2))
+                .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+                .position(document.viewport.documentToView(center))
+                .highPriorityGesture(centerHandleDrag(strokeID: strokeID))
+        }
+    }
+
+    private func centerHandleDrag(strokeID: UUID) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if centerDragOriginPoints.isEmpty {
+                    centerDragOriginPoints = document.stroke(with: strokeID)?.points ?? []
+                    document.beginInteractiveEdit()
+                }
+                let delta = documentDelta(from: value.translation)
+                let moved = centerDragOriginPoints.map {
+                    CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
+                }
+                document.setStrokePoints(id: strokeID, points: moved, recordUndo: false)
+                onChanged()
+            }
+            .onEnded { _ in
+                let didEdit = !centerDragOriginPoints.isEmpty
+                centerDragOriginPoints = []
+                guard didEdit else { return }
+                document.reconcileIntersectionAnchors(around: [strokeID])
+                onChanged()
+            }
+    }
+
+    // MARK: - Handle appearance
+
+    private enum HandleStyle {
+        case edit, move, command, selectedAnchor, trim, fillet
+    }
+
+    private func handleView(style: HandleStyle) -> some View {
+        let fill: Color = switch style {
+        case .edit: .accentColor
+        case .move: .orange
+        case .command: .blue
+        case .selectedAnchor: .mint
+        case .trim: .red
+        case .fillet: .purple
+        }
+        return Circle()
+            .fill(fill)
+            .frame(width: handleSize, height: handleSize)
+            .overlay(Circle().stroke(Color.white, lineWidth: 2))
+            .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+    }
+
+    private func documentDelta(from translation: CGSize) -> CGPoint {
+        CGPoint(
+            x: document.viewport.viewToDocument(distance: translation.width),
+            y: document.viewport.viewToDocument(distance: translation.height)
+        )
+    }
+}

@@ -1,0 +1,226 @@
+//
+//  PrintLayoutCanvasUIView.swift
+//  vectr
+//
+
+import UIKit
+
+final class PrintLayoutCanvasUIView: UIView {
+    var document: VectrDocument {
+        didSet { reloadAll() }
+    }
+
+    var onCanvasTap: ((CGPoint) -> Void)?
+
+    private let sheetsLayer = CALayer()
+    private let artworkLayer = CALayer()
+    private let overlayLayer = CALayer()
+
+    private var sheetLayers: [CALayer] = []
+    private var borderLayer: CAShapeLayer?
+
+    private var strokeLayers: [UUID: CAShapeLayer] = [:]
+    private var markLayers: [UUID: CALayer] = [:]
+    private var dimOverlayLayer: CAShapeLayer?
+
+    private var pinchStartScale: CGFloat = 1
+    private var pinchAnchor: CGPoint = .zero
+
+    init(document: VectrDocument) {
+        self.document = document
+        super.init(frame: .zero)
+        backgroundColor = UIColor(white: 0.92, alpha: 1)
+        isMultipleTouchEnabled = true
+
+        layer.addSublayer(sheetsLayer)
+        layer.addSublayer(artworkLayer)
+        layer.addSublayer(overlayLayer)
+        sheetsLayer.frame = bounds
+        artworkLayer.frame = bounds
+        overlayLayer.frame = bounds
+
+        setupGestures()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        sheetsLayer.frame = bounds
+        artworkLayer.frame = bounds
+        overlayLayer.frame = bounds
+        reloadAll()
+    }
+
+    func reloadAll() {
+        reloadSheets()
+        reloadStrokes()
+        reloadDimOverlay()
+        reloadBorders()
+        reloadMarks()
+    }
+
+    func refreshViewport() {
+        reloadSheets()
+        reloadStrokes()
+        reloadDimOverlay()
+        reloadBorders()
+        reloadMarks()
+    }
+
+    // MARK: - Rendering
+
+    private func reloadSheets() {
+        sheetLayers.forEach { $0.removeFromSuperlayer() }
+        sheetLayers.removeAll()
+
+        for frame in PrintPageGridEngine.sheetFrames(for: document.printLayout) {
+            let viewOrigin = document.viewport.documentToView(frame.origin)
+            let viewSize = CGSize(
+                width: document.viewport.documentToView(distance: frame.width),
+                height: document.viewport.documentToView(distance: frame.height)
+            )
+            let layer = CALayer()
+            layer.backgroundColor = UIColor.white.cgColor
+            layer.frame = CGRect(origin: viewOrigin, size: viewSize)
+            layer.shadowColor = UIColor.black.cgColor
+            layer.shadowOpacity = 0.12
+            layer.shadowRadius = 4
+            layer.shadowOffset = CGSize(width: 0, height: 2)
+            layer.borderColor = UIColor.separator.cgColor
+            layer.borderWidth = 0.5
+            sheetsLayer.addSublayer(layer)
+            sheetLayers.append(layer)
+        }
+    }
+
+    private func reloadStrokes() {
+        let visibleIDs = Set(document.visibleStrokes().map(\.id))
+        for (id, layer) in strokeLayers where !visibleIDs.contains(id) {
+            layer.removeFromSuperlayer()
+            strokeLayers.removeValue(forKey: id)
+        }
+
+        for stroke in document.visibleStrokes() {
+            let transform = document.effectivePrintTransform(for: stroke.id)
+            let transformed = document.transformedPrintStroke(stroke)
+            let opacity = PrintBorderRenderer.strokeOpacity(
+                for: transformed,
+                settings: document.printLayout
+            )
+            let isSelected = stroke.id == document.printSelectedStrokeID
+
+            if let layer = strokeLayers[stroke.id] {
+                StrokeRenderer.updateShapeLayer(
+                    layer,
+                    stroke: stroke,
+                    viewport: document.viewport,
+                    pointTransform: transform,
+                    opacity: isSelected ? 1 : opacity
+                )
+            } else {
+                let layer = StrokeRenderer.makeShapeLayer(
+                    for: stroke,
+                    viewport: document.viewport,
+                    pointTransform: transform,
+                    opacity: isSelected ? 1 : opacity
+                )
+                artworkLayer.addSublayer(layer)
+                strokeLayers[stroke.id] = layer
+            }
+        }
+    }
+
+    private func reloadBorders() {
+        borderLayer?.removeFromSuperlayer()
+        borderLayer = nil
+        guard document.printLayout.isPrintBorderVisible else { return }
+
+        let layer = PrintBorderRenderer.makeBorderLayer(
+            settings: document.printLayout,
+            viewport: document.viewport
+        )
+        overlayLayer.addSublayer(layer)
+        borderLayer = layer
+    }
+
+    private func reloadMarks() {
+        markLayers.values.forEach { $0.removeFromSuperlayer() }
+        markLayers.removeAll()
+
+        let showSuggestions = document.printLayout.showRegistrationSuggestions
+            || document.printLayout.activeTool == .registrationMark
+
+        for mark in document.registrationMarks {
+            if !mark.isLocked, !showSuggestions { continue }
+            let isInteractive = document.printLayout.activeTool == .registrationMark
+            let layer = RegistrationMarkRenderer.makeMarkLayer(
+                for: mark,
+                viewport: document.viewport,
+                isInteractive: isInteractive
+            )
+            overlayLayer.addSublayer(layer)
+            markLayers[mark.id] = layer
+        }
+    }
+
+    private func reloadDimOverlay() {
+        dimOverlayLayer?.removeFromSuperlayer()
+        dimOverlayLayer = nil
+        guard document.printLayout.isPrintBorderVisible else { return }
+
+        let layer = PrintBorderRenderer.makeDimOverlayLayer(
+            settings: document.printLayout,
+            viewport: document.viewport
+        )
+        overlayLayer.insertSublayer(layer, at: 0)
+        dimOverlayLayer = layer
+    }
+
+    // MARK: - Gestures
+
+    private func setupGestures() {
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        addGestureRecognizer(tap)
+
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        addGestureRecognizer(pinch)
+
+        let twoFingerPan = UIPanGestureRecognizer(target: self, action: #selector(handleTwoFingerPan(_:)))
+        twoFingerPan.minimumNumberOfTouches = 2
+        twoFingerPan.maximumNumberOfTouches = 2
+        addGestureRecognizer(twoFingerPan)
+    }
+
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        let viewPoint = gesture.location(in: self)
+        onCanvasTap?(viewPoint)
+    }
+
+    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            pinchStartScale = document.viewport.scale
+            pinchAnchor = gesture.location(in: self)
+        case .changed:
+            let newScale = pinchStartScale * gesture.scale
+            document.viewport.zoom(to: newScale, anchorViewPoint: pinchAnchor)
+            refreshViewport()
+        default:
+            break
+        }
+    }
+
+    @objc private func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
+        let translation = gesture.translation(in: self)
+        if gesture.state == .changed {
+            document.viewport.translation.x += translation.x
+            document.viewport.translation.y += translation.y
+            gesture.setTranslation(.zero, in: self)
+            refreshViewport()
+        }
+    }
+}

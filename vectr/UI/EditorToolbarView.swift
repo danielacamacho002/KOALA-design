@@ -1,0 +1,87 @@
+//
+//  EditorToolbarView.swift
+//  vectr
+//
+
+import SwiftUI
+
+struct EditorToolbarView: View {
+    @Bindable var document: VectrDocument
+    var canUndo: Bool
+    var canRedo: Bool
+    var onBack: () -> Void
+    var onUndo: () -> Void
+    var onRedo: () -> Void
+    var onSettings: () -> Void
+    var onShare: () -> Void
+    var onSave: () -> Void
+    var onToolSelected: (ToolCategory) -> Void
+    var onVariantSelected: () -> Void
+    var onSwitchToPrintLayout: (() -> Void)?
+
+    private let toolbarHeight: CGFloat = 48
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: onBack) {
+                Image(systemName: "chevron.left")
+                    .font(.body.weight(.medium))
+                    .frame(width: 32, height: toolbarHeight)
+            }
+            .buttonStyle(.plain)
+
+            ToolPaletteSeparator()
+                .padding(.horizontal, 12)
+
+            SideToolPaletteView(
+                document: document,
+                onToolSelected: onToolSelected,
+                onVariantSelected: onVariantSelected
+            )
+
+            Spacer(minLength: 16)
+
+            HStack(spacing: 4) {
+                toolbarIconButton("arrow.uturn.backward", disabled: !canUndo, action: onUndo)
+                toolbarIconButton("arrow.uturn.forward", disabled: !canRedo, action: onRedo)
+            }
+
+            ToolPaletteSeparator()
+                .padding(.horizontal, 10)
+
+            HStack(spacing: 4) {
+                toolbarIconButton("gearshape", action: onSettings)
+                if let onSwitchToPrintLayout {
+                    toolbarIconButton(
+                        "square.grid.3x3",
+                        action: onSwitchToPrintLayout,
+                        accessibilityLabel: "Print Layout"
+                    )
+                }
+                toolbarIconButton("square.and.arrow.up", action: onShare)
+                toolbarIconButton("square.and.arrow.down", action: onSave)
+            }
+        }
+        .frame(height: toolbarHeight)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial)
+    }
+
+    private func toolbarIconButton(
+        _ systemImage: String,
+        disabled: Bool = false,
+        action: @escaping () -> Void,
+        accessibilityLabel: String? = nil
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.body)
+                .frame(width: 36, height: toolbarHeight)
+                .foregroundStyle(disabled ? Color.primary.opacity(0.28) : Color.primary.opacity(0.82))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .accessibilityLabel(accessibilityLabel ?? systemImage)
+    }
+}

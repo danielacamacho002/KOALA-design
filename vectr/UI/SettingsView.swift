@@ -1,0 +1,149 @@
+//
+//  SettingsView.swift
+//  vectr
+//
+
+import SwiftUI
+
+struct SettingsView: View {
+    @Bindable var document: VectrDocument
+    @Binding var fileName: String
+    var onFileNameChanged: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var editingName = ""
+    @State private var gridSpacingDisplay: Double = 20
+    @State private var cornerRadiusDisplay: Double = 0
+    @State private var thicknessDisplay: Double = 1.5
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Project") {
+                    TextField("Project name", text: $editingName)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                }
+
+                Section("Units") {
+                    Picker("Measurement", selection: $document.settings.units) {
+                        ForEach(MeasurementUnit.allCases) { unit in
+                            Text(unit.label).tag(unit)
+                        }
+                    }
+                    .onChange(of: document.settings.units) { _, _ in
+                        document.settings.syncCanvasExtentToMaximum()
+                        reloadDisplayValues()
+                        document.syncGridFromSettings()
+                    }
+                }
+
+                Section("Input") {
+                    Toggle("Allow finger drawing", isOn: $document.settings.allowsFingerDrawing)
+                    Text("Apple Pencil input always remains enabled.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Canvas & grid") {
+                    LabeledContent("Grid spacing") {
+                        HStack {
+                            Slider(value: $gridSpacingDisplay, in: gridRange, step: gridStep)
+                            Text(formatted(gridSpacingDisplay, unit: document.settings.units.shortLabel))
+                                .monospacedDigit()
+                                .frame(width: 56, alignment: .trailing)
+                        }
+                    }
+                    .onChange(of: gridSpacingDisplay) { _, value in
+                        document.settings.defaultGridSpacingInUnits = CGFloat(value)
+                        document.syncGridFromSettings()
+                    }
+                }
+
+                Section("Lines") {
+                    LabeledContent("Default thickness") {
+                        HStack {
+                            Slider(value: $thicknessDisplay, in: 0.5...48, step: 0.5)
+                            Text(formatted(thicknessDisplay, unit: document.settings.units.shortLabel))
+                                .monospacedDigit()
+                                .frame(width: 56, alignment: .trailing)
+                        }
+                    }
+                    .onChange(of: thicknessDisplay) { _, value in
+                        document.strokeWidth = document.settings.units.toDocumentUnits(CGFloat(value))
+                    }
+
+                    LabeledContent("Corner fillet") {
+                        HStack {
+                            Slider(value: $cornerRadiusDisplay, in: 0...80, step: 1)
+                            Text(formatted(cornerRadiusDisplay, unit: document.settings.units.shortLabel))
+                                .monospacedDigit()
+                                .frame(width: 56, alignment: .trailing)
+                        }
+                    }
+                    .onChange(of: cornerRadiusDisplay) { _, value in
+                        document.settings.defaultCornerRadius = document.settings.units.toDocumentUnits(CGFloat(value))
+                    }
+
+                    Text("New rectangles use this fillet radius from Settings.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        commitProjectName()
+                        dismiss()
+                    }
+                }
+            }
+            .onAppear {
+                editingName = fileName
+                document.settings.syncCanvasExtentToMaximum()
+                reloadDisplayValues()
+            }
+        }
+    }
+
+    private var gridRange: ClosedRange<Double> {
+        switch document.settings.units {
+        case .points: return 5...100
+        case .millimeters: return 1...50
+        case .centimeters: return 0.5...20
+        case .inches: return 0.1...2
+        }
+    }
+
+    private var gridStep: Double {
+        switch document.settings.units {
+        case .points: return 1
+        case .millimeters: return 0.5
+        case .centimeters: return 0.1
+        case .inches: return 0.05
+        }
+    }
+
+    private func commitProjectName() {
+        let trimmed = editingName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = trimmed.isEmpty ? "Untitled Artwork" : trimmed
+        guard resolved != fileName else { return }
+        fileName = resolved
+        onFileNameChanged()
+    }
+
+    private func reloadDisplayValues() {
+        gridSpacingDisplay = Double(document.settings.units.fromDocumentUnits(document.settings.defaultGridSpacing))
+        cornerRadiusDisplay = Double(document.settings.units.fromDocumentUnits(document.settings.defaultCornerRadius))
+        thicknessDisplay = Double(document.settings.units.fromDocumentUnits(document.strokeWidth))
+    }
+
+    private func formatted(_ value: Double, unit: String) -> String {
+        if value.truncatingRemainder(dividingBy: 1) == 0 {
+            return "\(Int(value)) \(unit)"
+        }
+        return String(format: "%.1f %@", value, unit)
+    }
+}
