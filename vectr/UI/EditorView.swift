@@ -226,6 +226,14 @@ struct EditorView: View {
                     .padding(.leading, 10)
                     .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else if store.document.activeCategory == .move,
+                          store.document.selectedStrokeID != nil {
+                    MoveRotatePanelView(document: store.document) {
+                        refreshCanvas()
+                    }
+                    .padding(.leading, 10)
+                    .padding(.top, 8)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
             .overlay(alignment: .topLeading) {
@@ -588,6 +596,12 @@ struct EditorView: View {
             commandSession.cancel()
             if category == .move {
                 store.document.selectedAnchorIndices.removeAll()
+                store.document.moveRotationPivotAnchorIndex = nil
+                if store.document.selectedStrokeID == nil {
+                    statusMessage = "Select a shape to move or rotate"
+                } else {
+                    statusMessage = "Drag to move; drag orange handle to rotate; long-press anchor for pivot"
+                }
             }
         default:
             startDrawingSessionIfNeeded()

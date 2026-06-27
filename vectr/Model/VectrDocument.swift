@@ -25,6 +25,8 @@ final class VectrDocument {
     var scaleUniform: Bool = true
     var selectedAnchorIndices: Set<Int> = []
     var selectedFilletCornerIndices: Set<Int> = []
+    /// When set, move-tool rotation pivots around this anchor index; nil uses shape center.
+    var moveRotationPivotAnchorIndex: Int?
     var constraints: ConstraintSettings = ConstraintSettings()
     var activeCategory: ToolCategory = .line
     var lineVariant: LineVariant = .line
@@ -118,7 +120,7 @@ final class VectrDocument {
 
     func addStroke(_ stroke: VectorStroke) {
         pushUndo()
-        strokes.append(stroke)
+        strokes.append(ShapeGeometry.captureRotationBaseIfNeeded(stroke))
         reconcileIntersectionAnchors(around: [stroke.id])
         ClosedShapeDetector.reconcile(document: self)
         DonutDetector.reconcile(document: self)
@@ -217,6 +219,34 @@ final class VectrDocument {
         geometryRevision += 1
     }
 
+    func rotateStroke(id: UUID, around pivot: CGPoint, byRadians angle: CGFloat, recordUndo: Bool = false) {
+        guard let index = strokes.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        strokes[index] = ShapeGeometry.rotatedStroke(strokes[index], around: pivot, by: angle)
+        if recordUndo {
+            reconcileIntersectionAnchors(around: [id])
+        }
+        geometryRevision += 1
+    }
+
+    func setStrokeRotation(
+        id: UUID,
+        toDegrees degrees: Double,
+        pivotAnchorIndex: Int?,
+        recordUndo: Bool = false
+    ) {
+        guard let index = strokes.firstIndex(where: { $0.id == id }) else { return }
+        let stroke = strokes[index]
+        guard let pivot = ShapeGeometry.rotationPivot(for: stroke, anchorIndex: pivotAnchorIndex) else { return }
+        let target = CGFloat(degrees * .pi / 180)
+        if recordUndo { pushUndo() }
+        strokes[index] = ShapeGeometry.strokeWithAbsoluteRotation(stroke, radians: target, around: pivot)
+        if recordUndo {
+            reconcileIntersectionAnchors(around: [id])
+        }
+        geometryRevision += 1
+    }
+
     func applyFilletToSelected(
         radius: CGFloat? = nil,
         cornerIndices: Set<Int>? = nil,
@@ -303,6 +333,7 @@ final class VectrDocument {
     func clearToolSelections() {
         selectedAnchorIndices.removeAll()
         selectedFilletCornerIndices.removeAll()
+        moveRotationPivotAnchorIndex = nil
     }
 
     func selectTool(

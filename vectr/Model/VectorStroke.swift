@@ -28,6 +28,12 @@ struct VectorStroke: Identifiable, Codable, Equatable {
     /// Infinite dashed reference line (not filled as a plane).
     var isConstruction: Bool = false
     var shapeType: StrokeShapeType = .polyline
+    /// CCW rotation from +X for parametric circle/ellipse storage (nil treated as 0).
+    var shapeRotation: CGFloat? = nil
+    /// Original points at draw time; used to restore 0° orientation for point-based shapes.
+    var rotationBasePoints: [CGPoint]? = nil
+    /// Shape center when `rotationBasePoints` was captured.
+    var rotationBaseCenter: CGPoint? = nil
     /// Nested closed contours subtracted from the fill (even-odd), e.g. inner circle holes.
     var cutoutPoints: [[CGPoint]] = []
 
@@ -42,6 +48,9 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         cornerRadiiByIndex: [Int: CGFloat]? = nil,
         isConstruction: Bool = false,
         shapeType: StrokeShapeType = .polyline,
+        shapeRotation: CGFloat? = nil,
+        rotationBasePoints: [CGPoint]? = nil,
+        rotationBaseCenter: CGPoint? = nil,
         cutoutPoints: [[CGPoint]] = []
     ) {
         self.id = id
@@ -54,7 +63,18 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         self.cornerRadiiByIndex = cornerRadiiByIndex
         self.isConstruction = isConstruction
         self.shapeType = shapeType
+        self.shapeRotation = shapeRotation
+        self.rotationBasePoints = rotationBasePoints
+        self.rotationBaseCenter = rotationBaseCenter
         self.cutoutPoints = cutoutPoints
+    }
+
+    var resolvedShapeRotation: CGFloat {
+        shapeRotation ?? 0
+    }
+
+    var rotationDegrees: Double {
+        ShapeGeometry.normalizedRotationDegrees(resolvedShapeRotation)
     }
 
     func displayPath() -> CGPath {
@@ -254,20 +274,5 @@ struct CodableColor: Codable, Equatable {
         #else
         CGColor(red: red, green: green, blue: blue, alpha: alpha)
         #endif
-    }
-}
-
-extension CGPoint: @retroactive Codable {
-    public init(from decoder: Decoder) throws {
-        var container = try decoder.unkeyedContainer()
-        let x = try container.decode(CGFloat.self)
-        let y = try container.decode(CGFloat.self)
-        self.init(x: x, y: y)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.unkeyedContainer()
-        try container.encode(x)
-        try container.encode(y)
     }
 }

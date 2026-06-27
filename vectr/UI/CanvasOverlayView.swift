@@ -24,11 +24,16 @@ struct CanvasOverlayView: View {
     @State private var filletDragCornerPoint: CGPoint = .zero
     @State private var filletDragTargetCornerIndices: Set<Int> = []
     @State private var filletDragDidMove = false
+    @State private var rotateDragOriginStroke: VectorStroke?
+    @State private var rotateDragOriginAngle: CGFloat = 0
+    @State private var rotateDragOriginRotation: CGFloat = 0
+    @State private var rotateDragPivot: CGPoint = .zero
 
     private let handleSize: CGFloat = 22
     private let centerHandleSize: CGFloat = 16
     private let coordinateSpaceName = "editor"
     private let filletDragThreshold: CGFloat = 6
+    private let rotateHandleOffset: CGFloat = 36
 
     var body: some View {
         GeometryReader { _ in
@@ -159,6 +164,11 @@ struct CanvasOverlayView: View {
         if let strokeID = document.selectedStrokeID,
            let stroke = document.stroke(with: strokeID) {
             let handles = ShapeGeometry.handlePoints(for: stroke)
+            let pivot = ShapeGeometry.rotationPivot(
+                for: stroke,
+                anchorIndex: document.moveRotationPivotAnchorIndex
+            )
+
             Color.clear
                 .contentShape(Rectangle())
                 .gesture(
@@ -176,19 +186,103 @@ struct CanvasOverlayView: View {
                         }
                 )
 
+            if let pivot {
+                pivotMarker(at: pivot)
+                rotationHandle(strokeID: strokeID, pivot: pivot)
+            }
+
             ForEach(Array(handles.enumerated()), id: \.offset) { index, point in
                 let selected = document.selectedAnchorIndices.contains(index)
+                let isPivot = document.moveRotationPivotAnchorIndex == index
                 handleView(style: selected ? .selectedAnchor : .move)
                     .position(document.viewport.documentToView(point))
+                    .overlay {
+                        if isPivot {
+                            Circle()
+                                .stroke(Color.yellow, lineWidth: 2)
+                                .frame(width: handleSize + 6, height: handleSize + 6)
+                                .allowsHitTesting(false)
+                        }
+                    }
                     .highPriorityGesture(anchorMoveDrag(strokeID: strokeID, stroke: stroke, anchorIndex: index))
                     .onTapGesture {
                         document.toggleAnchorSelection(at: index)
+                        onChanged()
+                    }
+                    .onLongPressGesture(minimumDuration: 0.4) {
+                        document.moveRotationPivotAnchorIndex = index
                         onChanged()
                     }
             }
 
             centerHandle(strokeID: strokeID, stroke: stroke)
         }
+    }
+
+    @ViewBuilder
+    private func pivotMarker(at pivot: CGPoint) -> some View {
+        Circle()
+            .stroke(Color.yellow.opacity(0.8), lineWidth: 1.5)
+            .frame(width: 10, height: 10)
+            .position(document.viewport.documentToView(pivot))
+            .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private func rotationHandle(strokeID: UUID, pivot: CGPoint) -> some View {
+        let viewPivot = document.viewport.documentToView(pivot)
+        let handlePosition = CGPoint(
+            x: viewPivot.x,
+            y: viewPivot.y - document.viewport.documentToView(distance: rotateHandleOffset)
+        )
+
+        Path { path in
+            path.move(to: viewPivot)
+            path.addLine(to: handlePosition)
+        }
+        .stroke(Color.orange.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+        .allowsHitTesting(false)
+
+        Image(systemName: "arrow.triangle.2.circlepath")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: handleSize, height: handleSize)
+            .background(Circle().fill(Color.orange))
+            .position(handlePosition)
+            .highPriorityGesture(rotateDrag(strokeID: strokeID, pivot: pivot))
+    }
+
+    private func rotateDrag(strokeID: UUID, pivot: CGPoint) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                let currentDoc = document.viewport.viewToDocument(value.location)
+                if rotateDragOriginStroke == nil {
+                    rotateDragOriginStroke = document.stroke(with: strokeID)
+                    rotateDragOriginRotation = 0
+                    rotateDragOriginAngle = atan2(currentDoc.y - pivot.y, currentDoc.x - pivot.x)
+                    rotateDragPivot = pivot
+                    document.beginInteractiveEdit()
+                }
+                guard let originStroke = rotateDragOriginStroke else { return }
+                let angle = atan2(currentDoc.y - rotateDragPivot.y, currentDoc.x - rotateDragPivot.x)
+                let delta = angle - rotateDragOriginAngle
+                let rotated = ShapeGeometry.rotatedStroke(
+                    originStroke,
+                    around: rotateDragPivot,
+                    by: rotateDragOriginRotation + delta
+                )
+                document.updateStroke(rotated, recordUndo: false)
+                onChanged()
+            }
+            .onEnded { _ in
+                let didEdit = rotateDragOriginStroke != nil
+                rotateDragOriginStroke = nil
+                rotateDragOriginAngle = 0
+                rotateDragOriginRotation = 0
+                guard didEdit else { return }
+                document.reconcileIntersectionAnchors(around: [strokeID])
+                onChanged()
+            }
     }
 
     private func applyMove(strokeID: UUID, stroke: VectorStroke, delta: CGPoint) {
