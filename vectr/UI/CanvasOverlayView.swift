@@ -48,6 +48,8 @@ struct CanvasOverlayView: View {
                     trimOverlay
                 } else if document.activeCategory == .fillet {
                     filletOverlay
+                } else if document.activeCategory == .addAnchor {
+                    addAnchorOverlay
                 } else if document.selectedStrokeID != nil,
                           !document.dimensionsVisible,
                           document.activeCategory != .delete {
@@ -397,6 +399,24 @@ struct CanvasOverlayView: View {
         }
     }
 
+    // MARK: - Add Anchor
+
+    @ViewBuilder
+    private var addAnchorOverlay: some View {
+        if let strokeID = document.selectedStrokeID,
+           let stroke = document.stroke(with: strokeID),
+           AnchorPointEngine.canEditAnchors(on: stroke) {
+            let handles = ShapeGeometry.handlePoints(for: stroke)
+
+            ForEach(Array(handles.enumerated()), id: \.offset) { _, point in
+                handleView(style: .addAnchor)
+                    .position(document.viewport.documentToView(point))
+            }
+
+            centerHandle(strokeID: strokeID, stroke: stroke)
+        }
+    }
+
     // MARK: - Fillet
 
     @ViewBuilder
@@ -606,7 +626,7 @@ struct CanvasOverlayView: View {
     // MARK: - Handle appearance
 
     private enum HandleStyle {
-        case edit, move, command, selectedAnchor, trim, fillet
+        case edit, move, command, selectedAnchor, trim, fillet, addAnchor
     }
 
     private func handleView(style: HandleStyle) -> some View {
@@ -617,6 +637,7 @@ struct CanvasOverlayView: View {
         case .selectedAnchor: .mint
         case .trim: .red
         case .fillet: .purple
+        case .addAnchor: .green
         }
         return Circle()
             .fill(fill)

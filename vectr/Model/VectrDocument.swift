@@ -127,7 +127,7 @@ final class VectrDocument {
         geometryRevision += 1
     }
 
-    /// Adds a line segment, extending the last open polyline when `start` connects to its end.
+    /// Adds a line segment, extending an open polyline when an endpoint connects.
     @discardableResult
     func commitLineSegment(
         start: CGPoint,
@@ -143,23 +143,72 @@ final class VectrDocument {
             hypot(a.x - b.x, a.y - b.y) <= connectTolerance
         }
 
-        if let index = strokes.lastIndex(where: { stroke in
+        func isOpenPolyline(_ stroke: VectorStroke) -> Bool {
             stroke.layerID == layerID
                 && stroke.shapeType == .polyline
                 && !stroke.isClosed
                 && !stroke.isConstruction
                 && stroke.points.count >= 2
-                && pointsConnect(stroke.points.last!, start)
-        }) {
-            pushUndo()
-            var stroke = strokes[index]
-            stroke.points.append(end)
+        }
+
+        func finalizeOpenPolyline(_ stroke: inout VectorStroke) {
             if stroke.points.count >= 3,
-               pointsConnect(stroke.points.first!, end) {
+               pointsConnect(stroke.points.first!, stroke.points.last!) {
                 stroke.isClosed = true
                 // Normalize closure to avoid duplicate first/last corner vertices.
                 stroke.points.removeLast()
             }
+        }
+
+        if let index = strokes.lastIndex(where: { stroke in
+            isOpenPolyline(stroke) && pointsConnect(stroke.points.last!, start)
+        }) {
+            pushUndo()
+            var stroke = strokes[index]
+            stroke.points.append(end)
+            finalizeOpenPolyline(&stroke)
+            strokes[index] = stroke
+            reconcileIntersectionAnchors(around: [stroke.id])
+            geometryRevision += 1
+            ClosedShapeDetector.reconcile(document: self)
+            return stroke.id
+        }
+
+        if let index = strokes.lastIndex(where: { stroke in
+            isOpenPolyline(stroke) && pointsConnect(stroke.points.first!, end)
+        }) {
+            pushUndo()
+            var stroke = strokes[index]
+            stroke.points.insert(start, at: 0)
+            finalizeOpenPolyline(&stroke)
+            strokes[index] = stroke
+            reconcileIntersectionAnchors(around: [stroke.id])
+            geometryRevision += 1
+            ClosedShapeDetector.reconcile(document: self)
+            return stroke.id
+        }
+
+        if let index = strokes.lastIndex(where: { stroke in
+            isOpenPolyline(stroke) && pointsConnect(stroke.points.first!, start)
+        }) {
+            pushUndo()
+            var stroke = strokes[index]
+            stroke.points.insert(end, at: 1)
+            finalizeOpenPolyline(&stroke)
+            strokes[index] = stroke
+            reconcileIntersectionAnchors(around: [stroke.id])
+            geometryRevision += 1
+            ClosedShapeDetector.reconcile(document: self)
+            return stroke.id
+        }
+
+        if let index = strokes.lastIndex(where: { stroke in
+            isOpenPolyline(stroke) && pointsConnect(stroke.points.last!, end)
+        }) {
+            pushUndo()
+            var stroke = strokes[index]
+            stroke.points.insert(start, at: stroke.points.count - 1)
+            finalizeOpenPolyline(&stroke)
             strokes[index] = stroke
             reconcileIntersectionAnchors(around: [stroke.id])
             geometryRevision += 1
@@ -312,6 +361,56 @@ final class VectrDocument {
               let updated = StrokeEditor.deleteEdge(stroke, edgeIndex: edgeIndex) else { return }
         pushUndo()
         updateStroke(updated, recordUndo: false)
+    }
+
+    func currentAnchorCount(for stroke: VectorStroke) -> Int {
+        AnchorPointEngine.anchorCount(for: stroke)
+    }
+
+    @discardableResult
+    func insertAnchor(at documentPoint: CGPoint, threshold: CGFloat) -> Bool {
+        guard let id = selectedStrokeID,
+              let stroke = stroke(with: id),
+              AnchorPointEngine.canEditAnchors(on: stroke),
+              let updated = AnchorPointEngine.insertAtTap(
+                  stroke: stroke,
+                  point: documentPoint,
+                  threshold: threshold
+              ) else { return false }
+        pushUndo()
+        updateStroke(updated, recordUndo: false)
+        return true
+    }
+
+    enum AnchorDistributionResult {
+        case success
+        case noSelection
+        case notEligible
+        case alreadyHasCount(Int)
+        case invalidTarget
+    }
+
+    @discardableResult
+    func distributeAnchors(toTotal targetCount: Int) -> AnchorDistributionResult {
+        guard let stroke = selectedStrokeID.flatMap({ stroke(with: $0) }) else {
+            return .noSelection
+        }
+        guard AnchorPointEngine.canEditAnchors(on: stroke) else {
+            return .notEligible
+        }
+        guard targetCount >= 3 else {
+            return .invalidTarget
+        }
+        let current = currentAnchorCount(for: stroke)
+        if targetCount <= current {
+            return .alreadyHasCount(current)
+        }
+        guard let updated = AnchorPointEngine.distributeToTotal(stroke: stroke, targetCount: targetCount) else {
+            return .invalidTarget
+        }
+        pushUndo()
+        updateStroke(updated, recordUndo: false)
+        return .success
     }
 
     func toggleAnchorSelection(at index: Int) {

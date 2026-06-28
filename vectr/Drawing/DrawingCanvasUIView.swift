@@ -289,7 +289,7 @@ final class DrawingCanvasUIView: UIView {
             if isCommandMode {
                 onCanvasTap?(documentPoint)
             }
-        case .trim, .delete:
+        case .trim, .delete, .addAnchor:
             onCanvasTap?(documentPoint)
         default:
             handleSelection(at: viewPoint)
@@ -621,11 +621,17 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
             return shouldAcceptDrawingTouch(touch)
         }
 
-        if gestureRecognizer is UITapGestureRecognizer,
-           activeCategory.isDrawingTool,
-           isCommandMode {
-            // Tap-to-place drawing points: respect finger drawing toggle, always allow pencil.
-            return shouldAcceptDrawingTouch(touch)
+        if gestureRecognizer is UITapGestureRecognizer {
+            switch activeCategory {
+            case .line, .circle, .rectangle:
+                if isCommandMode {
+                    return shouldAcceptDrawingTouch(touch)
+                }
+            case .trim, .delete, .addAnchor:
+                return shouldAcceptDrawingTouch(touch)
+            default:
+                break
+            }
         }
 
         return true
