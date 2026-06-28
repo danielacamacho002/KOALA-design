@@ -289,7 +289,7 @@ final class DrawingCanvasUIView: UIView {
             if isCommandMode {
                 onCanvasTap?(documentPoint)
             }
-        case .trim, .delete:
+        case .trim, .delete, .addAnchor:
             onCanvasTap?(documentPoint)
         default:
             handleSelection(at: viewPoint)
