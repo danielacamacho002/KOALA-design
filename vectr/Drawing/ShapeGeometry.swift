@@ -257,9 +257,25 @@ enum ShapeGeometry {
     static func handlePoints(for stroke: VectorStroke) -> [CGPoint] {
         switch stroke.shapeType {
         case .circle:
+            if stroke.points.count == 4, let circle = circleFromCardinalPoints(stroke.points) {
+                return orientedCardinalPoints(
+                    center: circle.center,
+                    rx: circle.radius,
+                    ry: circle.radius,
+                    rotation: stroke.resolvedShapeRotation
+                )
+            }
             return stroke.points.count == 4 ? stroke.points : handlePointsForLegacyCircle(stroke.points)
         case .ellipse:
-            return stroke.points.count == 4 ? stroke.points : stroke.points
+            if stroke.points.count == 4, let ellipse = ellipseFromCardinalPoints(stroke.points) {
+                return orientedCardinalPoints(
+                    center: ellipse.center,
+                    rx: ellipse.rx,
+                    ry: ellipse.ry,
+                    rotation: stroke.resolvedShapeRotation
+                )
+            }
+            return stroke.points
         case .rectangle:
             return stroke.points
         default:
@@ -305,6 +321,113 @@ enum ShapeGeometry {
         }
     }
 
+    static func rotationPivot(for stroke: VectorStroke, anchorIndex: Int?) -> CGPoint? {
+        if let anchorIndex {
+            let handles = handlePoints(for: stroke)
+            if handles.indices.contains(anchorIndex) {
+                return handles[anchorIndex]
+            }
+        }
+        return shapeCenter(for: stroke)
+    }
+
+    static func normalizedRotationDegrees(_ radians: CGFloat) -> Double {
+        var degrees = Double(radians * 180 / .pi)
+        degrees = degrees.truncatingRemainder(dividingBy: 360)
+        if degrees < 0 { degrees += 360 }
+        return degrees
+    }
+
+    static func captureRotationBaseIfNeeded(_ stroke: VectorStroke) -> VectorStroke {
+        var updated = stroke
+        guard updated.rotationBasePoints == nil else { return updated }
+        updated.rotationBasePoints = stroke.points
+        updated.rotationBaseCenter = shapeCenter(for: stroke)
+        return updated
+    }
+
+    static func strokeWithAbsoluteRotation(
+        _ stroke: VectorStroke,
+        radians target: CGFloat,
+        around pivot: CGPoint
+    ) -> VectorStroke {
+        let delta = target - stroke.resolvedShapeRotation
+        guard abs(delta) > 0.000001 else { return stroke }
+        return rotatedStroke(stroke, around: pivot, by: delta)
+    }
+
+    static func rotatePoints(_ points: [CGPoint], around pivot: CGPoint, by angle: CGFloat) -> [CGPoint] {
+        let cosA = cos(angle)
+        let sinA = sin(angle)
+        return points.map { point in
+            let dx = point.x - pivot.x
+            let dy = point.y - pivot.y
+            return CGPoint(
+                x: pivot.x + dx * cosA - dy * sinA,
+                y: pivot.y + dx * sinA + dy * cosA
+            )
+        }
+    }
+
+    static func rotatePoint(_ point: CGPoint, around pivot: CGPoint, by angle: CGFloat) -> CGPoint {
+        rotatePoints([point], around: pivot, by: angle)[0]
+    }
+
+    static func orientedCardinalPoints(
+        center: CGPoint,
+        rx: CGFloat,
+        ry: CGFloat,
+        rotation: CGFloat
+    ) -> [CGPoint] {
+        let locals = [
+            CGPoint(x: 0, y: -ry),
+            CGPoint(x: rx, y: 0),
+            CGPoint(x: 0, y: ry),
+            CGPoint(x: -rx, y: 0)
+        ]
+        let cosR = cos(rotation)
+        let sinR = sin(rotation)
+        return locals.map { local in
+            CGPoint(
+                x: center.x + local.x * cosR - local.y * sinR,
+                y: center.y + local.x * sinR + local.y * cosR
+            )
+        }
+    }
+
+    static func rotatedStroke(_ stroke: VectorStroke, around pivot: CGPoint, by angle: CGFloat) -> VectorStroke {
+        var updated = captureRotationBaseIfNeeded(stroke)
+
+        switch stroke.shapeType {
+        case .circle:
+            if let circle = circleFromCardinalPoints(stroke.points) {
+                let newCenter = rotatePoint(circle.center, around: pivot, by: angle)
+                updated.points = circleCardinalPoints(center: newCenter, radius: circle.radius)
+                updated.shapeRotation = stroke.resolvedShapeRotation + angle
+            } else {
+                updated.points = rotatePoints(stroke.points, around: pivot, by: angle)
+                updated.shapeRotation = stroke.resolvedShapeRotation + angle
+            }
+        case .ellipse:
+            if let ellipse = ellipseFromCardinalPoints(stroke.points) {
+                let newCenter = rotatePoint(ellipse.center, around: pivot, by: angle)
+                updated.points = ellipseCardinalPoints(center: newCenter, rx: ellipse.rx, ry: ellipse.ry)
+                updated.shapeRotation = stroke.resolvedShapeRotation + angle
+            } else {
+                updated.points = rotatePoints(stroke.points, around: pivot, by: angle)
+                updated.shapeRotation = stroke.resolvedShapeRotation + angle
+            }
+        default:
+            updated.points = rotatePoints(stroke.points, around: pivot, by: angle)
+            updated.shapeRotation = stroke.resolvedShapeRotation + angle
+        }
+
+        updated.cutoutPoints = stroke.cutoutPoints.map {
+            rotatePoints($0, around: pivot, by: angle)
+        }
+        return updated
+    }
+
     static func renderPoints(for stroke: VectorStroke) -> [CGPoint] {
         switch stroke.shapeType {
         case .circle:
@@ -314,7 +437,21 @@ enum ShapeGeometry {
             return stroke.points
         case .ellipse:
             if let ellipse = ellipseFromCardinalPoints(stroke.points) {
-                return axisAlignedEllipsePoints(center: ellipse.center, rx: ellipse.rx, ry: ellipse.ry, segments: 64)
+                let rotation = stroke.resolvedShapeRotation
+                let axisEnd = CGPoint(
+                    x: ellipse.center.x + cos(rotation) * ellipse.rx,
+                    y: ellipse.center.y + sin(rotation) * ellipse.rx
+                )
+                let secondAxisEnd = CGPoint(
+                    x: ellipse.center.x + cos(rotation + .pi / 2) * ellipse.ry,
+                    y: ellipse.center.y + sin(rotation + .pi / 2) * ellipse.ry
+                )
+                return ellipsePoints(
+                    center: ellipse.center,
+                    axisEnd: axisEnd,
+                    secondAxisEnd: secondAxisEnd,
+                    segments: 64
+                )
             }
             return stroke.points
         case .arc:
