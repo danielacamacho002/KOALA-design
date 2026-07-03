@@ -25,8 +25,8 @@ struct CanvasOverlayView: View {
     @State private var filletDragTargetCornerIndices: Set<Int> = []
     @State private var filletDragDidMove = false
     @State private var rotateDragOriginStroke: VectorStroke?
-    @State private var rotateDragOriginAngle: CGFloat = 0
-    @State private var rotateDragOriginRotation: CGFloat = 0
+    @State private var rotateDragPreviousAngle: CGFloat = 0
+    @State private var rotateDragAccumulated: CGFloat = 0
     @State private var rotateDragPivot: CGPoint = .zero
 
     private let handleSize: CGFloat = 22
@@ -258,18 +258,23 @@ struct CanvasOverlayView: View {
                 let currentDoc = document.viewport.viewToDocument(value.location)
                 if rotateDragOriginStroke == nil {
                     rotateDragOriginStroke = document.stroke(with: strokeID)
-                    rotateDragOriginRotation = 0
-                    rotateDragOriginAngle = atan2(currentDoc.y - pivot.y, currentDoc.x - pivot.x)
                     rotateDragPivot = pivot
+                    rotateDragPreviousAngle = atan2(currentDoc.y - pivot.y, currentDoc.x - pivot.x)
+                    rotateDragAccumulated = 0
                     document.beginInteractiveEdit()
                 }
                 guard let originStroke = rotateDragOriginStroke else { return }
                 let angle = atan2(currentDoc.y - rotateDragPivot.y, currentDoc.x - rotateDragPivot.x)
-                let delta = angle - rotateDragOriginAngle
+                // Accumulate the shortest-arc increment each frame so crossing the
+                // -pi/pi boundary does not snap the rotation by ~360 degrees.
+                let rawStep = angle - rotateDragPreviousAngle
+                let step = atan2(sin(rawStep), cos(rawStep))
+                rotateDragAccumulated += step
+                rotateDragPreviousAngle = angle
                 let rotated = ShapeGeometry.rotatedStroke(
                     originStroke,
                     around: rotateDragPivot,
-                    by: rotateDragOriginRotation + delta
+                    by: rotateDragAccumulated
                 )
                 document.updateStroke(rotated, recordUndo: false)
                 onChanged()
@@ -277,8 +282,8 @@ struct CanvasOverlayView: View {
             .onEnded { _ in
                 let didEdit = rotateDragOriginStroke != nil
                 rotateDragOriginStroke = nil
-                rotateDragOriginAngle = 0
-                rotateDragOriginRotation = 0
+                rotateDragPreviousAngle = 0
+                rotateDragAccumulated = 0
                 guard didEdit else { return }
                 document.reconcileIntersectionAnchors(around: [strokeID])
                 onChanged()
