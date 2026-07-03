@@ -65,6 +65,52 @@ enum StrokeEditor {
         return best?.index
     }
 
+    /// Projects a point onto the nearest edge of the stroke.
+    static func projectPointOnNearestEdge(
+        in stroke: VectorStroke,
+        point: CGPoint,
+        threshold: CGFloat
+    ) -> (edgeIndex: Int, projected: CGPoint, t: CGFloat)? {
+        let handles = ShapeGeometry.handlePoints(for: stroke)
+        guard handles.count >= 2 else { return nil }
+        let edgeCount = stroke.isClosed ? handles.count : handles.count - 1
+        var best: (index: Int, projected: CGPoint, t: CGFloat, distance: CGFloat)?
+        for index in 0..<edgeCount {
+            let start = handles[index]
+            let end = handles[(index + 1) % handles.count]
+            let projection = projectPointOnSegment(point: point, start: start, end: end)
+            if projection.distance < threshold,
+               best == nil || projection.distance < best!.distance {
+                best = (index, projection.point, projection.t, projection.distance)
+            }
+        }
+        guard let best else { return nil }
+        return (best.index, best.projected, best.t)
+    }
+
+    static func projectPointOnSegment(
+        point: CGPoint,
+        start: CGPoint,
+        end: CGPoint
+    ) -> (point: CGPoint, t: CGFloat, distance: CGFloat) {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let lenSq = dx * dx + dy * dy
+        guard lenSq > 0 else {
+            let distance = hypot(point.x - start.x, point.y - start.y)
+            return (start, 0, distance)
+        }
+        var t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lenSq
+        t = max(0, min(1, t))
+        let projected = CGPoint(x: start.x + t * dx, y: start.y + t * dy)
+        let distance = hypot(point.x - projected.x, point.y - projected.y)
+        return (projected, t, distance)
+    }
+
+    private static func distanceToSegment(point: CGPoint, start: CGPoint, end: CGPoint) -> CGFloat {
+        projectPointOnSegment(point: point, start: start, end: end).distance
+    }
+
     private static func updatedStroke(_ stroke: VectorStroke, points: [CGPoint], isClosed: Bool) -> VectorStroke {
         var shapeType = stroke.shapeType
         if !isClosed, shapeType == .circle || shapeType == .ellipse || shapeType == .rectangle {
@@ -83,17 +129,5 @@ enum StrokeEditor {
             shapeType: shapeType,
             cutoutPoints: isClosed ? stroke.cutoutPoints : []
         )
-    }
-
-    private static func distanceToSegment(point: CGPoint, start: CGPoint, end: CGPoint) -> CGFloat {
-        let dx = end.x - start.x
-        let dy = end.y - start.y
-        let lenSq = dx * dx + dy * dy
-        guard lenSq > 0 else { return hypot(point.x - start.x, point.y - start.y) }
-        var t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lenSq
-        t = max(0, min(1, t))
-        let projX = start.x + t * dx
-        let projY = start.y + t * dy
-        return hypot(point.x - projX, point.y - projY)
     }
 }

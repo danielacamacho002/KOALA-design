@@ -234,6 +234,15 @@ struct EditorView: View {
                     .padding(.leading, 10)
                     .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else if store.document.activeCategory == .addAnchor {
+                    AddAnchorPanelView(
+                        document: store.document,
+                        onApply: { refreshCanvas() },
+                        onStatus: { statusMessage = $0 }
+                    )
+                    .padding(.leading, 10)
+                    .padding(.top, 8)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
             .overlay(alignment: .topLeading) {
@@ -428,8 +437,8 @@ struct EditorView: View {
         switch store.document.activeCategory {
         case .move, .scale, .trim, .fillet:
             return true
-        case .delete:
-            // Let canvas taps pass through so delete can target lines and shapes directly.
+        case .delete, .addAnchor:
+            // Let canvas taps pass through so delete/add-anchor can target the shape directly.
             return false
         default:
             if store.document.dimensionsVisible { return false }
@@ -557,9 +566,15 @@ struct EditorView: View {
     }
 
     private func updateChromeInsets() {
-        let filletWidth: CGFloat = store.document.activeCategory == .fillet ? 188 : 0
+        let panelWidth: CGFloat
+        switch store.document.activeCategory {
+        case .fillet, .addAnchor:
+            panelWidth = 188
+        default:
+            panelWidth = 0
+        }
         chromeInsets = ViewportTransform.ChromeInsets(
-            left: filletWidth + 16,
+            left: panelWidth + 16,
             right: 156,
             top: 56,
             bottom: 20
@@ -592,6 +607,14 @@ struct EditorView: View {
             } else {
                 statusMessage = "Tap corners to select, or drag a corner handle to set fillet radius"
             }
+        case .addAnchor:
+            commandSession.cancel()
+            store.document.clearToolSelections()
+            if store.document.selectedStrokeID == nil {
+                statusMessage = "Select a closed shape, then tap an edge or enter total anchor count"
+            } else {
+                statusMessage = "Tap an edge to add an anchor, or enter total anchor count"
+            }
         case .move, .scale, .dimensions:
             commandSession.cancel()
             if category == .move {
@@ -600,7 +623,7 @@ struct EditorView: View {
                 if store.document.selectedStrokeID == nil {
                     statusMessage = "Select a shape to move or rotate"
                 } else {
-                    statusMessage = "Drag to move; drag orange handle to rotate; long-press anchor for pivot"
+                    statusMessage = "Tap an anchor to select it; double-tap to multi-select; drag to move"
                 }
             }
         default:
@@ -704,6 +727,23 @@ struct EditorView: View {
                           let edgeIndex = StrokeEditor.nearestEdgeIndex(in: stroke, point: documentPoint, threshold: threshold) {
                     store.document.deleteStrokeEdge(at: edgeIndex)
                     refreshCanvas()
+                }
+            } else {
+                _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
+                refreshCanvas()
+            }
+        case .addAnchor:
+            let threshold = store.document.viewport.viewToDocument(distance: 28)
+            if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
+                if AnchorPointEngine.canEditAnchors(on: stroke) {
+                    let snapped = snapDrawingInput(documentPoint)
+                    if store.document.insertAnchor(at: snapped, threshold: threshold) {
+                        refreshCanvas()
+                    } else {
+                        statusMessage = "Tap closer to an edge between anchors"
+                    }
+                } else {
+                    statusMessage = "Select a closed shape to add anchors"
                 }
             } else {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
