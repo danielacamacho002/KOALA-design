@@ -20,6 +20,7 @@ final class ShapeCommandSession {
     var lastError: String?
     var persistentClose = false
     var revision = 0
+    var arcSweepRadians: CGFloat?
 
     var isRefiningAttachedStroke: Bool {
         attachedStrokeID != nil
@@ -32,7 +33,8 @@ final class ShapeCommandSession {
             category: category,
             lineVariant: lineVariant,
             circleVariant: circleVariant,
-            rectangleVariant: rectangleVariant
+            rectangleVariant: rectangleVariant,
+            arcSweepRadians: arcSweepRadians
         )
     }
 
@@ -70,9 +72,9 @@ final class ShapeCommandSession {
                 return index == 0 ? "Start point:" : "End point:"
             case .arc:
                 switch index {
-                case 0: return "Start point:"
-                case 1: return "End point:"
-                default: return "Through point:"
+                case 0: return "Center point:"
+                case 1: return "Start of arc:"
+                default: return "Drag to finish arc"
                 }
             }
         case .circle:
@@ -130,6 +132,7 @@ final class ShapeCommandSession {
         isActive = true
         attachedStrokeID = nil
         controlPoints = []
+        arcSweepRadians = nil
         inputText = ""
         lastError = nil
         revision += 1
@@ -150,6 +153,7 @@ final class ShapeCommandSession {
         isActive = true
         attachedStrokeID = id
         self.controlPoints = controlPoints
+        arcSweepRadians = nil
         inputText = ""
         lastError = nil
         revision += 1
@@ -159,6 +163,7 @@ final class ShapeCommandSession {
         isActive = false
         attachedStrokeID = nil
         controlPoints = []
+        arcSweepRadians = nil
         inputText = ""
         lastError = nil
         revision += 1
@@ -168,6 +173,9 @@ final class ShapeCommandSession {
         guard isActive else { return }
         guard controlPoints.count < requiredPoints else { return }
         controlPoints.append(point)
+        if lineVariant == .arc {
+            arcSweepRadians = nil
+        }
         inputText = ""
         lastError = nil
         revision += 1
@@ -176,6 +184,15 @@ final class ShapeCommandSession {
     func movePoint(at index: Int, to point: CGPoint) {
         guard controlPoints.indices.contains(index) else { return }
         controlPoints[index] = point
+        if lineVariant == .arc {
+            arcSweepRadians = nil
+        }
+        revision += 1
+    }
+
+    func setArcSweep(_ sweep: CGFloat?) {
+        guard lineVariant == .arc else { return }
+        arcSweepRadians = sweep
         revision += 1
     }
 
@@ -261,6 +278,7 @@ final class ShapeCommandSession {
             snapped,
             controlPoints: controlPoints,
             category: category,
+            lineVariant: lineVariant,
             circleVariant: circleVariant,
             rectangleVariant: rectangleVariant
         )
@@ -374,6 +392,7 @@ final class ShapeCommandSession {
                 snapped,
                 controlPoints: prefix,
                 category: category,
+                lineVariant: lineVariant,
                 circleVariant: circleVariant,
                 rectangleVariant: rectangleVariant
             )
@@ -481,7 +500,8 @@ final class ShapeCommandSession {
             strokeWidth: strokeWidth,
             strokeColor: strokeColor,
             closed: persistentClose,
-            cornerRadius: cornerRadius
+            cornerRadius: cornerRadius,
+            arcSweepRadians: arcSweepRadians
         )
     }
 
@@ -489,6 +509,7 @@ final class ShapeCommandSession {
         isActive = false
         attachedStrokeID = nil
         controlPoints = []
+        arcSweepRadians = nil
         inputText = ""
         lastError = nil
         revision += 1

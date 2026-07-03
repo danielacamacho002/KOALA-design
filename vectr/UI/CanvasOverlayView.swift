@@ -107,6 +107,7 @@ struct CanvasOverlayView: View {
             snapped,
             controlPoints: commandSession.controlPoints,
             category: commandSession.category,
+            lineVariant: commandSession.lineVariant,
             circleVariant: commandSession.circleVariant,
             rectangleVariant: commandSession.rectangleVariant
         )
