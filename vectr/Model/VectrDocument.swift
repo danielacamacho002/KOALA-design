@@ -401,7 +401,9 @@ final class VectrDocument {
         guard targetCount >= 3 else {
             return .invalidTarget
         }
-        let current = currentAnchorCount(for: stroke)
+        // Baking fillets adds permanent anchors, so compare against the post-bake count.
+        let bakedStroke = AnchorPointEngine.bakedFilletStroke(for: stroke) ?? stroke
+        let current = currentAnchorCount(for: bakedStroke)
         if targetCount <= current {
             return .alreadyHasCount(current)
         }

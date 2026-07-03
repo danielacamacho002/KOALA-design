@@ -25,6 +25,10 @@ struct VectorStroke: Identifiable, Codable, Equatable {
     /// Corner-specific fillet radius overrides keyed by vertex index.
     /// Missing indices fall back to `cornerRadius`.
     var cornerRadiiByIndex: [Int: CGFloat]? = nil
+    /// Vertex indices that are the midpoint of a baked fillet arc. These points stay editable
+    /// anchors, but rendering/export re-expands them into a smooth circular arc passing through
+    /// (previous anchor, this midpoint, next anchor).
+    var smoothCornerIndices: Set<Int>? = nil
     /// Infinite dashed reference line (not filled as a plane).
     var isConstruction: Bool = false
     var shapeType: StrokeShapeType = .polyline
@@ -46,6 +50,7 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         isClosed: Bool = false,
         cornerRadius: CGFloat = 0,
         cornerRadiiByIndex: [Int: CGFloat]? = nil,
+        smoothCornerIndices: Set<Int>? = nil,
         isConstruction: Bool = false,
         shapeType: StrokeShapeType = .polyline,
         shapeRotation: CGFloat? = nil,
@@ -61,6 +66,7 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         self.isClosed = isClosed
         self.cornerRadius = cornerRadius
         self.cornerRadiiByIndex = cornerRadiiByIndex
+        self.smoothCornerIndices = smoothCornerIndices
         self.isConstruction = isConstruction
         self.shapeType = shapeType
         self.shapeRotation = shapeRotation
@@ -81,7 +87,31 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         if hasAnyCornerFillets {
             return FilletPathBuilder.path(for: self)
         }
+        if hasBakedSmoothCorners {
+            return smoothCGPath()
+        }
         return cgPath()
+    }
+
+    var hasBakedSmoothCorners: Bool {
+        guard let smoothCornerIndices else { return false }
+        return !smoothCornerIndices.isEmpty
+    }
+
+    /// Path that renders baked fillet corners as smooth circular arcs while keeping the stored
+    /// anchor set minimal (three anchors per corner).
+    private func smoothCGPath() -> CGPath {
+        let contour = ShapeGeometry.renderPoints(for: self)
+        let path = CGMutablePath()
+        guard let first = contour.first else { return path }
+        path.move(to: first)
+        for point in contour.dropFirst() {
+            path.addLine(to: point)
+        }
+        if isClosed, contour.count > 2 {
+            path.closeSubpath()
+        }
+        return path
     }
 
     var hasAnyCornerFillets: Bool {

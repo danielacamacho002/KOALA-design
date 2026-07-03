@@ -457,8 +457,55 @@ enum ShapeGeometry {
         case .arc:
             return stroke.points
         default:
+            if let smooth = stroke.smoothCornerIndices, !smooth.isEmpty {
+                return smoothedContourPoints(
+                    points: stroke.points,
+                    closed: stroke.isClosed,
+                    smoothMiddles: smooth
+                )
+            }
             return stroke.points
         }
+    }
+
+    /// Expands baked fillet corners (single midpoint anchors) into smooth circular arcs so the
+    /// rendered/exported contour looks curved, while the stored anchor set stays minimal.
+    static func smoothedContourPoints(
+        points: [CGPoint],
+        closed: Bool,
+        smoothMiddles: Set<Int>,
+        segmentsPerArc: Int = 16
+    ) -> [CGPoint] {
+        let count = points.count
+        guard count >= 3 else { return points }
+
+        var result: [CGPoint] = []
+        func append(_ point: CGPoint) {
+            if let last = result.last, hypot(last.x - point.x, last.y - point.y) <= 0.0001 { return }
+            result.append(point)
+        }
+
+        for index in 0..<count {
+            let isEndpoint = !closed && (index == 0 || index == count - 1)
+            if smoothMiddles.contains(index), !isEndpoint {
+                let prev = points[(index - 1 + count) % count]
+                let next = points[(index + 1) % count]
+                for point in arcPoints(start: prev, end: next, through: points[index], segments: segmentsPerArc) {
+                    append(point)
+                }
+            } else {
+                append(points[index])
+            }
+        }
+
+        if closed,
+           result.count > 2,
+           let first = result.first,
+           let last = result.last,
+           hypot(first.x - last.x, first.y - last.y) <= 0.0001 {
+            result.removeLast()
+        }
+        return result
     }
 
     static func circleFromCardinalPoints(_ points: [CGPoint]) -> (center: CGPoint, radius: CGFloat)? {
