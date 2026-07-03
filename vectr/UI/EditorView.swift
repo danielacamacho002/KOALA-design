@@ -623,7 +623,7 @@ struct EditorView: View {
                 if store.document.selectedStrokeID == nil {
                     statusMessage = "Select a shape to move or rotate"
                 } else {
-                    statusMessage = "Drag to move; drag orange handle to rotate; long-press anchor for pivot"
+                    statusMessage = "Tap an anchor to select it; double-tap to multi-select; drag to move"
                 }
             }
         default:

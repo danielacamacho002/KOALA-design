@@ -413,12 +413,28 @@ final class VectrDocument {
         return .success
     }
 
+    /// Single tap: reset the selection to only this anchor and adopt it as the rotation pivot.
+    func selectSingleAnchor(at index: Int) {
+        selectedAnchorIndices = [index]
+        moveRotationPivotAnchorIndex = index
+    }
+
+    /// Long press: multi-select toggle that leaves the other selected anchors untouched.
     func toggleAnchorSelection(at index: Int) {
         if selectedAnchorIndices.contains(index) {
             selectedAnchorIndices.remove(index)
+            if moveRotationPivotAnchorIndex == index {
+                moveRotationPivotAnchorIndex = nil
+            }
         } else {
             selectedAnchorIndices.insert(index)
         }
+    }
+
+    /// Tap on empty canvas: drop every anchor selection and reset the pivot to shape center.
+    func clearAnchorSelection() {
+        selectedAnchorIndices.removeAll()
+        moveRotationPivotAnchorIndex = nil
     }
 
     func toggleFilletCornerSelection(at index: Int) {

@@ -34,6 +34,10 @@ struct CanvasOverlayView: View {
     private let coordinateSpaceName = "editor"
     private let filletDragThreshold: CGFloat = 6
     private let rotateHandleOffset: CGFloat = 36
+    /// Invisible finger/Pencil target around each anchor handle so small squares are easy to hit.
+    private let anchorTouchTargetSize: CGFloat = 44
+    /// Dead-zone before an individual anchor starts dragging, so taps/double-taps never nudge it.
+    private let anchorDragThreshold: CGFloat = 6
 
     var body: some View {
         GeometryReader { _ in
@@ -187,6 +191,12 @@ struct CanvasOverlayView: View {
                             finishMoveDrag(strokeID: strokeID)
                         }
                 )
+                .simultaneousGesture(
+                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
+                        .onEnded { value in
+                            handleMoveBackgroundTap(at: value.location)
+                        }
+                )
 
             if let pivot {
                 pivotMarker(at: pivot)
@@ -196,25 +206,26 @@ struct CanvasOverlayView: View {
             ForEach(Array(handles.enumerated()), id: \.offset) { index, point in
                 let selected = document.selectedAnchorIndices.contains(index)
                 let isPivot = document.moveRotationPivotAnchorIndex == index
-                handleView(style: selected ? .selectedAnchor : .move)
-                    .position(document.viewport.documentToView(point))
-                    .overlay {
-                        if isPivot {
-                            Circle()
-                                .stroke(Color.yellow, lineWidth: 2)
-                                .frame(width: handleSize + 6, height: handleSize + 6)
-                                .allowsHitTesting(false)
-                        }
+                ZStack {
+                    handleView(style: selected ? .selectedAnchor : .move)
+                    if isPivot {
+                        Circle()
+                            .stroke(Color.yellow, lineWidth: 2)
+                            .frame(width: handleSize + 6, height: handleSize + 6)
                     }
-                    .highPriorityGesture(anchorMoveDrag(strokeID: strokeID, stroke: stroke, anchorIndex: index))
-                    .onTapGesture {
-                        document.toggleAnchorSelection(at: index)
-                        onChanged()
-                    }
-                    .onLongPressGesture(minimumDuration: 0.4) {
-                        document.moveRotationPivotAnchorIndex = index
-                        onChanged()
-                    }
+                }
+                .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
+                .contentShape(Rectangle())
+                .position(document.viewport.documentToView(point))
+                .highPriorityGesture(anchorMoveDrag(strokeID: strokeID, stroke: stroke, anchorIndex: index))
+                .onTapGesture(count: 2) {
+                    document.toggleAnchorSelection(at: index)
+                    onChanged()
+                }
+                .onTapGesture {
+                    document.selectSingleAnchor(at: index)
+                    onChanged()
+                }
             }
 
             centerHandle(strokeID: strokeID, stroke: stroke)
@@ -320,7 +331,7 @@ struct CanvasOverlayView: View {
     }
 
     private func anchorMoveDrag(strokeID: UUID, stroke: VectorStroke, anchorIndex: Int) -> some Gesture {
-        DragGesture(minimumDistance: 2, coordinateSpace: .named(coordinateSpaceName))
+        DragGesture(minimumDistance: anchorDragThreshold, coordinateSpace: .named(coordinateSpaceName))
             .onChanged { value in
                 handleMoveDragChanged(
                     strokeID: strokeID,
@@ -357,6 +368,16 @@ struct CanvasOverlayView: View {
         moveDragOriginPoints = []
         guard didEdit else { return }
         document.reconcileIntersectionAnchors(around: [strokeID])
+        onChanged()
+    }
+
+    /// A quick tap on the empty canvas (not on an anchor handle) clears every anchor
+    /// selection and re-runs stroke hit testing so nothing stays stuck selected.
+    private func handleMoveBackgroundTap(at viewPoint: CGPoint) {
+        document.clearAnchorSelection()
+        let threshold = document.viewport.viewToDocument(distance: 16)
+        let documentPoint = document.viewport.viewToDocument(viewPoint)
+        _ = document.selectStroke(near: documentPoint, threshold: threshold)
         onChanged()
     }
 
