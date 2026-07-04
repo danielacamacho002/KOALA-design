@@ -466,7 +466,8 @@ struct EditorView: View {
         case .move, .scale, .trim, .fillet:
             return true
         case .type:
-            // Only the selection box/handles are hittable; empty taps still place text.
+            // With a text selected, the overlay handles move/scale/tap-to-edit;
+            // with nothing selected, taps pass through so a new text can be placed.
             return store.document.selectedTextID != nil
         case .delete, .addAnchor:
             // Let canvas taps pass through so delete/add-anchor can target the shape directly.
@@ -709,7 +710,7 @@ struct EditorView: View {
         case .type:
             commandSession.cancel()
             store.document.selectedStrokeID = nil
-            statusMessage = "Tap to place text"
+            statusMessage = "Tap to place or edit text; drag to move, corners to scale"
         case .delete:
             if let id = store.document.selectedStrokeID {
                 store.document.removeStroke(id: id)

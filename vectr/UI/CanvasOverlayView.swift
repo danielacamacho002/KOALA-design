@@ -10,7 +10,7 @@ struct CanvasOverlayView: View {
     @Bindable var document: VectrDocument
     @Bindable var commandSession: ShapeCommandSession
     var onChanged: () -> Void
-    var onEditText: ((UUID) -> Void)? = nil
+    var onEditText: (UUID) -> Void = { _ in }
 
     @State private var nodeDragOriginPoints: [CGPoint] = []
     @State private var moveDragOriginPoints: [CGPoint] = []
@@ -53,8 +53,6 @@ struct CanvasOverlayView: View {
             ZStack {
                 if commandSession.isActive {
                     commandPreviewHandles
-                } else if document.activeCategory == .type {
-                    textOverlay
                 } else if document.activeCategory == .move {
                     if document.selectedTextID != nil {
                         textMoveOverlay
@@ -67,6 +65,8 @@ struct CanvasOverlayView: View {
                     } else {
                         scaleHandles
                     }
+                } else if document.activeCategory == .type {
+                    textTypeOverlay
                 } else if document.activeCategory == .trim {
                     trimOverlay
                 } else if document.activeCategory == .fillet {
@@ -677,20 +677,22 @@ struct CanvasOverlayView: View {
 
     // MARK: - Text (move / scale / rotate)
 
-    /// Type tool overlay: tap to edit, drag to move, corner handles to scale,
-    /// and a rotation handle. Enables direct text manipulation via the Type tool.
+    /// Type tool overlay for a selected text element: tap the box to edit,
+    /// drag it to move, and use corner handles to scale. No rotation here —
+    /// rotation is reserved for the Move tool.
     @ViewBuilder
-    private var textOverlay: some View {
+    private var textTypeOverlay: some View {
         if let id = document.selectedTextID,
            let element = document.textElement(with: id) {
             let viewCorners = element.corners().map { document.viewport.documentToView($0) }
-            let viewCenter = document.viewport.documentToView(element.center)
 
-            boxPath(viewCorners)
-                .fill(Color.white.opacity(0.001))
+            Color.clear
                 .contentShape(boxPath(viewCorners))
                 .gesture(textMoveDrag(id: id))
-                .onTapGesture { onEditText?(id) }
+                .simultaneousGesture(
+                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
+                        .onEnded { _ in onEditText(id) }
+                )
 
             boxPath(viewCorners)
                 .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
@@ -701,8 +703,6 @@ struct CanvasOverlayView: View {
                     .position(corner)
                     .highPriorityGesture(textScaleDrag(id: id, cornerIndex: index))
             }
-
-            textRotationHandle(id: id, viewCorners: viewCorners, viewCenter: viewCenter)
         }
     }
 
