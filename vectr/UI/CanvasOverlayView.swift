@@ -10,6 +10,7 @@ struct CanvasOverlayView: View {
     @Bindable var document: VectrDocument
     @Bindable var commandSession: ShapeCommandSession
     var onChanged: () -> Void
+    var onEditText: (UUID) -> Void = { _ in }
 
     @State private var nodeDragOriginPoints: [CGPoint] = []
     @State private var moveDragOriginPoints: [CGPoint] = []
@@ -64,6 +65,8 @@ struct CanvasOverlayView: View {
                     } else {
                         scaleHandles
                     }
+                } else if document.activeCategory == .type {
+                    textTypeOverlay
                 } else if document.activeCategory == .trim {
                     trimOverlay
                 } else if document.activeCategory == .fillet {
@@ -673,6 +676,35 @@ struct CanvasOverlayView: View {
     }
 
     // MARK: - Text (move / rotate via Move tool, scale via Scale tool)
+
+    /// Type tool overlay for a selected text element: tap the box to edit,
+    /// drag it to move, and use corner handles to scale. No rotation here —
+    /// rotation is reserved for the Move tool.
+    @ViewBuilder
+    private var textTypeOverlay: some View {
+        if let id = document.selectedTextID,
+           let element = document.textElement(with: id) {
+            let viewCorners = element.corners().map { document.viewport.documentToView($0) }
+
+            Color.clear
+                .contentShape(boxPath(viewCorners))
+                .gesture(textMoveDrag(id: id))
+                .simultaneousGesture(
+                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
+                        .onEnded { _ in onEditText(id) }
+                )
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                .allowsHitTesting(false)
+
+            ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
+                handleView(style: .edit)
+                    .position(corner)
+                    .highPriorityGesture(textScaleDrag(id: id, cornerIndex: index))
+            }
+        }
+    }
 
     /// Move tool overlay for a selected text element: drag anywhere to move,
     /// plus a rotation handle. Mirrors the shape move overlay behavior.
