@@ -456,6 +456,8 @@ enum ShapeGeometry {
             return stroke.points
         case .arc:
             return stroke.points
+        case .curve:
+            return smoothCurvePoints(anchors: stroke.points)
         default:
             return stroke.points
         }
@@ -656,6 +658,80 @@ enum ShapeGeometry {
             ))
         }
         return points
+    }
+
+    // MARK: - Curve (spline through drawn anchors)
+
+    /// Builds a smooth polyline through `anchors` using a cardinal spline.
+    /// The curvature at each anchor is derived from the direction (slope) of the
+    /// adjacent drawn lines: gentle turns stay round and flowing, sharp turns
+    /// tighten toward a crisp corner.
+    static func smoothCurvePoints(anchors: [CGPoint], samplesPerSegment: Int = 24) -> [CGPoint] {
+        guard anchors.count >= 3 else { return anchors }
+
+        var result: [CGPoint] = []
+        let count = anchors.count
+
+        for index in 0..<(count - 1) {
+            let p1 = anchors[index]
+            let p2 = anchors[index + 1]
+            let p0 = index > 0 ? anchors[index - 1] : p1
+            let p3 = index < count - 2 ? anchors[index + 2] : p2
+
+            let tension1 = curveTension(prev: p0, cur: p1, next: p2)
+            let tension2 = curveTension(prev: p1, cur: p2, next: p3)
+
+            let control1 = CGPoint(
+                x: p1.x + (p2.x - p0.x) * tension1 / 6,
+                y: p1.y + (p2.y - p0.y) * tension1 / 6
+            )
+            let control2 = CGPoint(
+                x: p2.x - (p3.x - p1.x) * tension2 / 6,
+                y: p2.y - (p3.y - p1.y) * tension2 / 6
+            )
+
+            let firstStep = index == 0 ? 0 : 1
+            for step in firstStep...samplesPerSegment {
+                let t = CGFloat(step) / CGFloat(samplesPerSegment)
+                result.append(cubicBezierPoint(p1, control1, control2, p2, t: t))
+            }
+        }
+
+        return result
+    }
+
+    /// Roundness factor in `0...1` for the corner at `cur`.
+    /// `1` (segments collinear) yields the roundest, most flowing curve;
+    /// values approach `0` as the turn between the two lines becomes sharper,
+    /// collapsing the handles so the corner reads as a crisp point.
+    private static func curveTension(prev: CGPoint, cur: CGPoint, next: CGPoint) -> CGFloat {
+        let v1 = CGPoint(x: cur.x - prev.x, y: cur.y - prev.y)
+        let v2 = CGPoint(x: next.x - cur.x, y: next.y - cur.y)
+        let length1 = hypot(v1.x, v1.y)
+        let length2 = hypot(v2.x, v2.y)
+        guard length1 > 0.000001, length2 > 0.000001 else { return 1 }
+
+        let cosAngle = max(-1, min(1, (v1.x * v2.x + v1.y * v2.y) / (length1 * length2)))
+        let deflection = acos(cosAngle) // 0 = straight, .pi = full reversal
+        return 1 - deflection / .pi
+    }
+
+    private static func cubicBezierPoint(
+        _ p0: CGPoint,
+        _ p1: CGPoint,
+        _ p2: CGPoint,
+        _ p3: CGPoint,
+        t: CGFloat
+    ) -> CGPoint {
+        let mt = 1 - t
+        let a = mt * mt * mt
+        let b = 3 * mt * mt * t
+        let c = 3 * mt * t * t
+        let d = t * t * t
+        return CGPoint(
+            x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+            y: a * p0.y + b * p1.y + c * p2.y + d * p3.y
+        )
     }
 
     static func projectCommandPoint(
