@@ -40,6 +40,7 @@ final class DrawingCanvasUIView: UIView {
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
 
     private var strokeLayers: [UUID: CAShapeLayer] = [:]
+    private var textLayers: [UUID: CATextLayer] = [:]
     private var commandPreviewLayer: CAShapeLayer?
     private var dragPreviewLayer: CAShapeLayer?
     private var commandPointLayers: [CAShapeLayer] = []
@@ -140,6 +141,28 @@ final class DrawingCanvasUIView: UIView {
             }
         }
         reloadStrokesHighlight()
+        reloadTextElements()
+    }
+
+    func reloadTextElements() {
+        let visible = document.visibleTextElements()
+        let visibleIDs = Set(visible.map(\.id))
+
+        let staleIDs = textLayers.keys.filter { !visibleIDs.contains($0) }
+        for id in staleIDs {
+            textLayers[id]?.removeFromSuperlayer()
+            textLayers.removeValue(forKey: id)
+        }
+
+        for element in visible {
+            if let existing = textLayers[element.id] {
+                TextRenderer.update(existing, for: element, viewport: document.viewport)
+            } else {
+                let created = TextRenderer.makeLayer(for: element, viewport: document.viewport)
+                layer.addSublayer(created)
+                textLayers[element.id] = created
+            }
+        }
     }
 
     private func reloadReferenceImage() {
@@ -209,6 +232,11 @@ final class DrawingCanvasUIView: UIView {
         for (id, layer) in strokeLayers {
             if let stroke = document.stroke(with: id) {
                 StrokeRenderer.updateShapeLayer(layer, stroke: stroke, viewport: document.viewport)
+            }
+        }
+        for (id, layer) in textLayers {
+            if let element = document.textElement(with: id) {
+                TextRenderer.update(layer, for: element, viewport: document.viewport)
             }
         }
         reloadReferenceImage()
@@ -290,7 +318,7 @@ final class DrawingCanvasUIView: UIView {
             if isCommandMode {
                 onCanvasTap?(documentPoint)
             }
-        case .trim, .delete, .addAnchor:
+        case .trim, .delete, .addAnchor, .type:
             onCanvasTap?(documentPoint)
         default:
             handleSelection(at: viewPoint)
