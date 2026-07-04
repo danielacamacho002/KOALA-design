@@ -116,8 +116,13 @@ final class DrawingCanvasUIView: UIView {
     func handleSelection(at viewPoint: CGPoint) {
         let documentPoint = document.viewport.viewToDocument(viewPoint)
         let threshold = document.viewport.viewToDocument(distance: 16)
-        let stroke = document.selectStroke(near: documentPoint, threshold: threshold)
-        delegate?.canvasDidSelectStroke(stroke)
+        let selection = document.selectElement(near: documentPoint, threshold: threshold)
+        switch selection {
+        case .stroke(let id):
+            delegate?.canvasDidSelectStroke(document.stroke(with: id))
+        case .text, .none:
+            delegate?.canvasDidSelectStroke(nil)
+        }
         reloadStrokesHighlight()
     }
 
