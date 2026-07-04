@@ -188,17 +188,9 @@ enum StrokeRenderer {
     private static func constructionPath(for stroke: VectorStroke, viewport: ViewportTransform) -> UIBezierPath {
         let path = UIBezierPath()
         guard let first = stroke.points.first, let last = stroke.points.last else { return path }
-        let dx = last.x - first.x
-        let dy = last.y - first.y
-        let length = hypot(dx, dy)
-        guard length > 0 else { return path }
-        let extend: CGFloat = 5000
-        let ux = dx / length
-        let uy = dy / length
-        let start = CGPoint(x: first.x - ux * extend, y: first.y - uy * extend)
-        let end = CGPoint(x: last.x + ux * extend, y: last.y + uy * extend)
-        path.move(to: viewport.documentToView(start))
-        path.addLine(to: viewport.documentToView(end))
+        guard hypot(last.x - first.x, last.y - first.y) > 0.001 else { return path }
+        path.move(to: viewport.documentToView(first))
+        path.addLine(to: viewport.documentToView(last))
         return path
     }
 
