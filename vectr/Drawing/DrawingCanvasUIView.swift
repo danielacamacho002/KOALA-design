@@ -49,7 +49,6 @@ final class DrawingCanvasUIView: UIView {
     private var pinchAnchor: CGPoint = .zero
     private var dragDrawStart: CGPoint?
     private var dragDrawCurrent: CGPoint?
-    private var pendingDragStartViewPoint: CGPoint?
     private let gridLayer = CALayer()
     private var referenceImageLayer: CALayer?
     private var cachedReferenceImageData: Data?
@@ -309,15 +308,13 @@ final class DrawingCanvasUIView: UIView {
 
         let viewPoint = gesture.location(in: self)
         let rawPoint = document.viewport.viewToDocument(viewPoint)
-        let documentPoint = dragInputPoint(for: rawPoint)
+        let documentPoint = snappedDragPoint(rawPoint)
 
         switch gesture.state {
         case .began:
-            let startRawPoint = dragBeganRawPoint(fallback: rawPoint)
-            let startPoint = dragStartPoint(for: dragInputPoint(for: startRawPoint))
+            let startPoint = dragStartPoint(for: documentPoint)
             dragDrawStart = startPoint
             dragDrawCurrent = startPoint
-            pendingDragStartViewPoint = nil
             updateDragPreviewLayer()
             onDragDrawBegan?(startPoint)
         case .changed:
@@ -332,7 +329,6 @@ final class DrawingCanvasUIView: UIView {
                 onDragDrawEnded?(start, end)
                 dragDrawStart = nil
                 dragDrawCurrent = nil
-                pendingDragStartViewPoint = nil
                 dragPreviewLayer?.removeFromSuperlayer()
                 dragPreviewLayer = nil
                 return
@@ -341,7 +337,6 @@ final class DrawingCanvasUIView: UIView {
             onDragDrawEnded?(start, end)
             dragDrawStart = nil
             dragDrawCurrent = nil
-            pendingDragStartViewPoint = nil
             dragPreviewLayer?.removeFromSuperlayer()
             dragPreviewLayer = nil
             DispatchQueue.main.async { [weak self] in
@@ -360,24 +355,6 @@ final class DrawingCanvasUIView: UIView {
             settings: document.settings,
             enabled: enabled
         )
-    }
-
-    private func dragInputPoint(for rawPoint: CGPoint) -> CGPoint {
-        // Corner-rectangle input should tolerate tiny stylus movement and preserve
-        // an unsnapped drag vector for commit fallback.
-        if activeCategory == .rectangle, rectangleVariant == .edge {
-            return rawPoint
-        }
-        return snappedDragPoint(rawPoint)
-    }
-
-    private func dragBeganRawPoint(fallback: CGPoint) -> CGPoint {
-        if activeCategory == .rectangle,
-           rectangleVariant == .edge,
-           let startViewPoint = pendingDragStartViewPoint {
-            return document.viewport.viewToDocument(startViewPoint)
-        }
-        return fallback
     }
 
     private func dragStartPoint(for point: CGPoint) -> CGPoint {
@@ -645,17 +622,7 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
         if let pan = gestureRecognizer as? UIPanGestureRecognizer,
            pan.maximumNumberOfTouches == 1 {
             // Drag-draw recognizer: respect finger drawing toggle, always allow pencil.
-            let accepted = shouldAcceptDrawingTouch(touch)
-            if accepted,
-               activeCategory == .rectangle,
-               rectangleVariant == .edge {
-                // Keep initial touch-down so corner rectangles start exactly where
-                // the pencil first touched, not where pan recognition begins.
-                pendingDragStartViewPoint = touch.location(in: self)
-            } else {
-                pendingDragStartViewPoint = nil
-            }
-            return accepted
+            return shouldAcceptDrawingTouch(touch)
         }
 
         if gestureRecognizer is UITapGestureRecognizer {
