@@ -16,8 +16,20 @@ struct MoveRotatePanelView: View {
         return document.stroke(with: id)
     }
 
+    private var isTextSelected: Bool {
+        document.selectedStrokeID == nil && document.selectedTextID != nil
+    }
+
+    private var selectedText: TextElement? {
+        guard let id = document.selectedTextID else { return nil }
+        return document.textElement(with: id)
+    }
+
     private var currentDegrees: Double {
-        selectedStroke?.rotationDegrees ?? 0
+        if isTextSelected {
+            return ShapeGeometry.normalizedRotationDegrees(selectedText?.rotation ?? 0)
+        }
+        return selectedStroke?.rotationDegrees ?? 0
     }
 
     private var pivotLabel: String {
@@ -59,9 +71,11 @@ struct MoveRotatePanelView: View {
                 .controlSize(.small)
             }
 
-            Text("Pivot: \(pivotLabel)")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
+            if !isTextSelected {
+                Text("Pivot: \(pivotLabel)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
 
             HStack(spacing: 8) {
                 Button("Reset to 0°") {
@@ -70,12 +84,14 @@ struct MoveRotatePanelView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
 
-                Button("Center pivot") {
-                    document.moveRotationPivotAnchorIndex = nil
+                if !isTextSelected {
+                    Button("Center pivot") {
+                        document.moveRotationPivotAnchorIndex = nil
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(document.moveRotationPivotAnchorIndex == nil)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(document.moveRotationPivotAnchorIndex == nil)
             }
         }
         .padding(10)
@@ -89,6 +105,9 @@ struct MoveRotatePanelView: View {
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         )
         .onChange(of: document.selectedStrokeID) { _, _ in
+            syncDegreesField()
+        }
+        .onChange(of: document.selectedTextID) { _, _ in
             syncDegreesField()
         }
         .onChange(of: document.geometryRevision) { _, _ in
@@ -110,27 +129,33 @@ struct MoveRotatePanelView: View {
     }
 
     private func apply() {
-        guard let strokeID = document.selectedStrokeID,
-              let value = Double(degreesText.trimmingCharacters(in: .whitespaces)) else { return }
-
-        document.beginInteractiveEdit()
-        document.setStrokeRotation(
-            id: strokeID,
-            toDegrees: value,
-            pivotAnchorIndex: document.moveRotationPivotAnchorIndex,
-            recordUndo: false
-        )
-        document.reconcileIntersectionAnchors(around: [strokeID])
-        syncDegreesField()
-        onApply()
+        guard let value = Double(degreesText.trimmingCharacters(in: .whitespaces)) else { return }
+        setRotation(toDegrees: value)
     }
 
     private func resetToOriginal() {
+        setRotation(toDegrees: 0)
+    }
+
+    private func setRotation(toDegrees value: Double) {
+        if isTextSelected {
+            guard let textID = document.selectedTextID else { return }
+            document.beginInteractiveEdit()
+            document.setTextRotation(
+                id: textID,
+                radians: CGFloat(value * .pi / 180),
+                recordUndo: false
+            )
+            syncDegreesField()
+            onApply()
+            return
+        }
+
         guard let strokeID = document.selectedStrokeID else { return }
         document.beginInteractiveEdit()
         document.setStrokeRotation(
             id: strokeID,
-            toDegrees: 0,
+            toDegrees: value,
             pivotAnchorIndex: document.moveRotationPivotAnchorIndex,
             recordUndo: false
         )

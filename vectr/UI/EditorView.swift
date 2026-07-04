@@ -241,7 +241,7 @@ struct EditorView: View {
                     .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .move,
-                          store.document.selectedStrokeID != nil {
+                          store.document.selectedStrokeID != nil || store.document.selectedTextID != nil {
                     MoveRotatePanelView(document: store.document) {
                         refreshCanvas()
                     }
