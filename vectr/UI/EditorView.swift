@@ -475,6 +475,7 @@ struct EditorView: View {
                 || store.document.circleVariant == .ellipse
         case .rectangle:
             return store.document.rectangleVariant == .center
+                || store.document.rectangleVariant == .edge
         default:
             return false
         }
@@ -937,8 +938,8 @@ struct EditorView: View {
                     CGPoint(x: start.x + halfW, y: start.y),
                     CGPoint(x: start.x, y: start.y + halfH)
                 ]
-            default:
-                return []
+            case .edge:
+                return [start, end]
             }
         default:
             return []
