@@ -19,6 +19,7 @@ final class DrawingCanvasUIView: UIView {
 
     var isCommandMode = false
     var activeCategory: ToolCategory = .line
+    var lineVariant: LineVariant = .line
     var commandPreviewPoints: [CGPoint] = [] {
         didSet { updateCommandPreviewLayer() }
     }
@@ -516,6 +517,9 @@ final class DrawingCanvasUIView: UIView {
     private func dragPreviewPoints(start: CGPoint, end: CGPoint) -> [CGPoint] {
         switch activeCategory {
         case .line:
+            if lineVariant == .arc {
+                return []
+            }
             return [start, end]
         case .circle:
             switch circleVariant {
@@ -600,7 +604,7 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func shouldAcceptDrawingTouch(_ touch: UITouch) -> Bool {
-        if touch.type == .pencil { return true }
+        if touch.type == .pencil || touch.type == .stylus { return true }
         guard !document.settings.allowsFingerDrawing else { return true }
         return false
     }

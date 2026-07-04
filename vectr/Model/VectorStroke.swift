@@ -25,7 +25,7 @@ struct VectorStroke: Identifiable, Codable, Equatable {
     /// Corner-specific fillet radius overrides keyed by vertex index.
     /// Missing indices fall back to `cornerRadius`.
     var cornerRadiiByIndex: [Int: CGFloat]? = nil
-    /// Infinite dashed reference line (not filled as a plane).
+    /// Dashed reference segment (not filled as a plane).
     var isConstruction: Bool = false
     var shapeType: StrokeShapeType = .polyline
     /// CCW rotation from +X for parametric circle/ellipse storage (nil treated as 0).

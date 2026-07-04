@@ -27,6 +27,9 @@ struct EditorView: View {
     @State private var dragDrawStart: CGPoint?
     @State private var dragDrawEnd: CGPoint?
     @State private var isDragDrawing = false
+    @State private var isArcDragActive = false
+    @State private var arcDragPreviousAngle: CGFloat?
+    @State private var arcDragAccumulatedSweep: CGFloat = 0
     @State private var commandPanelOffset = CGSize(width: 170, height: 8)
     @State private var hasInitializedDrawingSession = false
     @State private var editorMode: EditorMode = .design
@@ -149,6 +152,7 @@ struct EditorView: View {
                         && (store.document.activeCategory == .rectangle
                             || store.document.activeCategory == .circle),
                     allowsDragDraw: allowsDragDraw,
+                    lineVariant: store.document.lineVariant,
                     circleVariant: store.document.circleVariant,
                     rectangleVariant: store.document.rectangleVariant,
                     onCanvasTap: handleCanvasTap,
@@ -157,12 +161,18 @@ struct EditorView: View {
                         store.markDirty()
                     },
                     onDragDrawBegan: { start in
+                        if beginArcDragIfNeeded(at: start) {
+                            return
+                        }
                         startDrawingSessionIfNeeded()
                         dragDrawStart = start
                         dragDrawEnd = start
                         isDragDrawing = true
                     },
                     onDragDrawChanged: { start, end in
+                        if updateArcDragIfNeeded(to: end) {
+                            return
+                        }
                         if !isDragDrawing {
                             dragDrawStart = start
                             isDragDrawing = true
@@ -170,6 +180,9 @@ struct EditorView: View {
                         dragDrawEnd = end
                     },
                     onDragDrawEnded: { start, end in
+                        if endArcDragIfNeeded(at: end) {
+                            return
+                        }
                         commitDragDraw(start: start, end: end)
                         isDragDrawing = false
                         dragDrawStart = nil
@@ -450,8 +463,12 @@ struct EditorView: View {
         guard store.document.activeCategory.isDrawingTool else { return false }
         switch store.document.activeCategory {
         case .line:
-            return store.document.lineVariant == .line
-                || store.document.lineVariant == .constructionLine
+            switch store.document.lineVariant {
+            case .line, .constructionLine:
+                return true
+            case .arc:
+                return canBeginArcDrag
+            }
         case .circle:
             return store.document.circleVariant == .center
                 || store.document.circleVariant == .edge
@@ -465,11 +482,96 @@ struct EditorView: View {
 
     private var shouldAutoCommitAfterPoint: Bool {
         switch store.document.activeCategory {
+        case .line where store.document.lineVariant == .arc:
+            return false
         case .rectangle where store.document.rectangleVariant == .center:
             return false
         default:
             return true
         }
+    }
+
+    private var canBeginArcDrag: Bool {
+        guard store.document.activeCategory == .line,
+              store.document.lineVariant == .arc,
+              commandSession.isActive else { return false }
+        return commandSession.controlPoints.count >= 2
+    }
+
+    private func beginArcDragIfNeeded(at point: CGPoint) -> Bool {
+        guard canBeginArcDrag,
+              let center = commandSession.controlPoints.first,
+              commandSession.controlPoints.count >= 2 else { return false }
+        let start = commandSession.controlPoints[1]
+        let end = ShapeGeometry.projectArcEndpoint(center: center, start: start, point: point)
+        let startAngle = atan2(start.y - center.y, start.x - center.x)
+        let endAngle = atan2(end.y - center.y, end.x - center.x)
+        let initialSweep = atan2(sin(endAngle - startAngle), cos(endAngle - startAngle))
+
+        if commandSession.controlPoints.count == 2 {
+            commandSession.addPoint(end)
+        } else {
+            commandSession.movePoint(at: 2, to: end)
+        }
+        commandSession.setArcSweep(initialSweep)
+
+        isArcDragActive = true
+        arcDragPreviousAngle = endAngle
+        arcDragAccumulatedSweep = initialSweep
+        dragDrawStart = nil
+        dragDrawEnd = nil
+        isDragDrawing = false
+        refreshCanvas()
+        return true
+    }
+
+    private func updateArcDragIfNeeded(to point: CGPoint) -> Bool {
+        guard isArcDragActive,
+              store.document.activeCategory == .line,
+              store.document.lineVariant == .arc,
+              let center = commandSession.controlPoints.first,
+              commandSession.controlPoints.count >= 2 else { return false }
+        let start = commandSession.controlPoints[1]
+        let end = ShapeGeometry.projectArcEndpoint(center: center, start: start, point: point)
+        let endAngle = atan2(end.y - center.y, end.x - center.x)
+
+        if let previous = arcDragPreviousAngle {
+            let rawStep = endAngle - previous
+            let step = atan2(sin(rawStep), cos(rawStep))
+            arcDragAccumulatedSweep += step
+        } else {
+            let startAngle = atan2(start.y - center.y, start.x - center.x)
+            arcDragAccumulatedSweep = atan2(sin(endAngle - startAngle), cos(endAngle - startAngle))
+        }
+        arcDragPreviousAngle = endAngle
+
+        if commandSession.controlPoints.count == 2 {
+            commandSession.addPoint(end)
+        } else {
+            commandSession.movePoint(at: 2, to: end)
+        }
+        commandSession.setArcSweep(arcDragAccumulatedSweep)
+        refreshCanvas()
+        return true
+    }
+
+    private func endArcDragIfNeeded(at point: CGPoint) -> Bool {
+        guard isArcDragActive else { return false }
+        _ = updateArcDragIfNeeded(to: point)
+        let shouldCommit = commandSession.canFinish
+        resetArcDragState()
+        if shouldCommit {
+            commitCommandShape(restart: true)
+        } else {
+            startDrawingSessionIfNeeded()
+        }
+        return true
+    }
+
+    private func resetArcDragState() {
+        isArcDragActive = false
+        arcDragPreviousAngle = nil
+        arcDragAccumulatedSweep = 0
     }
 
     private func loadProjectIfNeeded() {
@@ -634,9 +736,11 @@ struct EditorView: View {
     private func startDrawingSessionIfNeeded(anchor: CGPoint? = nil) {
         guard store.document.activeCategory.isDrawingTool else {
             commandSession.cancel()
+            resetArcDragState()
             updateChromeInsets()
             return
         }
+        resetArcDragState()
         store.document.selectedStrokeID = nil
         commandSession.start(
             category: store.document.activeCategory,
@@ -706,6 +810,7 @@ struct EditorView: View {
                 snapped,
                 controlPoints: commandSession.controlPoints,
                 category: store.document.activeCategory,
+                lineVariant: store.document.lineVariant,
                 circleVariant: store.document.circleVariant,
                 rectangleVariant: store.document.rectangleVariant
             )
