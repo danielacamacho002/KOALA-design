@@ -12,6 +12,7 @@ enum DocumentCodec {
         let snapshot = DocumentSnapshot(
             layers: document.layers,
             strokes: document.strokes,
+            textElements: document.textElements,
             activeLayerID: document.activeLayerID,
             viewport: document.viewport,
             grid: document.grid,

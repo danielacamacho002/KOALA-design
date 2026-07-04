@@ -12,6 +12,7 @@ import SwiftUI
 final class VectrDocument {
     var layers: [Layer]
     var strokes: [VectorStroke]
+    var textElements: [TextElement] = []
     var activeLayerID: UUID
     var viewport: ViewportTransform
     var grid: GridSettings
@@ -32,6 +33,9 @@ final class VectrDocument {
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
+    var selectedTextID: UUID?
+    var activeFontRef: FontRef = .default
+    var activeFontSize: CGFloat = 24
     var referenceImageData: Data?
     var referenceImageFrame: CGRect?
 
@@ -76,6 +80,7 @@ final class VectrDocument {
     init(snapshot: DocumentSnapshot) {
         layers = snapshot.layers
         strokes = snapshot.strokes
+        textElements = snapshot.textElements
         activeLayerID = snapshot.activeLayerID
         viewport = snapshot.viewport
         grid = snapshot.grid
@@ -104,6 +109,69 @@ final class VectrDocument {
 
     func stroke(with id: UUID) -> VectorStroke? {
         strokes.first { $0.id == id }
+    }
+
+    // MARK: - Text Elements
+
+    func visibleTextElements() -> [TextElement] {
+        let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
+        return textElements.filter { visibleLayerIDs.contains($0.layerID) }
+    }
+
+    func textElement(with id: UUID) -> TextElement? {
+        textElements.first { $0.id == id }
+    }
+
+    func addTextElement(_ element: TextElement) {
+        pushUndo()
+        textElements.append(element)
+        geometryRevision += 1
+    }
+
+    func updateTextElement(_ element: TextElement, recordUndo: Bool = true) {
+        guard let index = textElements.firstIndex(where: { $0.id == element.id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index] = element
+        geometryRevision += 1
+    }
+
+    func removeTextElement(id: UUID) {
+        guard textElements.contains(where: { $0.id == id }) else { return }
+        pushUndo()
+        textElements.removeAll { $0.id == id }
+        if selectedTextID == id {
+            selectedTextID = nil
+        }
+        geometryRevision += 1
+    }
+
+    func translateText(id: UUID, delta: CGPoint, recordUndo: Bool = false) {
+        guard let index = textElements.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index].position.x += delta.x
+        textElements[index].position.y += delta.y
+        geometryRevision += 1
+    }
+
+    func setTextPosition(id: UUID, position: CGPoint, recordUndo: Bool = false) {
+        guard let index = textElements.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index].position = position
+        geometryRevision += 1
+    }
+
+    func setTextRotation(id: UUID, radians: CGFloat, recordUndo: Bool = false) {
+        guard let index = textElements.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index].rotation = radians
+        geometryRevision += 1
+    }
+
+    func setTextFontSize(id: UUID, size: CGFloat, recordUndo: Bool = false) {
+        guard let index = textElements.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index].fontSize = max(1, size)
+        geometryRevision += 1
     }
 
     /// End point of the most recent open line on the given layer, if any.
@@ -683,6 +751,7 @@ final class VectrDocument {
         DocumentSnapshot(
             layers: layers,
             strokes: strokes,
+            textElements: textElements,
             activeLayerID: activeLayerID,
             viewport: viewport,
             grid: grid,
@@ -701,6 +770,7 @@ final class VectrDocument {
     private func apply(_ snapshot: DocumentSnapshot) {
         layers = snapshot.layers
         strokes = snapshot.strokes
+        textElements = snapshot.textElements
         activeLayerID = snapshot.activeLayerID
         grid = snapshot.grid
         settings = snapshot.settings
@@ -721,6 +791,7 @@ final class VectrDocument {
 struct DocumentSnapshot: Codable {
     var layers: [Layer]
     var strokes: [VectorStroke]
+    var textElements: [TextElement] = []
     var activeLayerID: UUID
     var viewport: ViewportTransform
     var grid: GridSettings
