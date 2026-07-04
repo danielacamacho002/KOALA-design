@@ -20,8 +20,60 @@ struct DimensionOverlayView: View {
                 ForEach(ShapeGeometry.semanticDimensions(for: stroke)) { dimension in
                     dimensionPill(dimension, strokeID: strokeID)
                 }
+            } else if document.dimensionsVisible,
+                      let textID = document.selectedTextID,
+                      let element = document.textElement(with: textID) {
+                ForEach(textDimensions(for: element)) { dimension in
+                    textDimensionPill(dimension)
+                }
             }
         }
+    }
+
+    // MARK: - Text box dimensions (read-only width/height of the text block)
+
+    private struct TextDimension: Identifiable {
+        let id: String
+        let text: String
+        let midPoint: CGPoint
+    }
+
+    private func textDimensions(for element: TextElement) -> [TextDimension] {
+        let size = element.textSize()
+        let corners = element.corners()
+        guard corners.count == 4 else { return [] }
+        return [
+            TextDimension(
+                id: "text-width",
+                text: measurementLabel(size.width),
+                midPoint: midpoint(corners[3], corners[2])
+            ),
+            TextDimension(
+                id: "text-height",
+                text: measurementLabel(size.height),
+                midPoint: midpoint(corners[0], corners[3])
+            )
+        ]
+    }
+
+    private func textDimensionPill(_ dimension: TextDimension) -> some View {
+        Text(dimension.text)
+            .font(.caption.weight(.semibold).monospacedDigit())
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color(.systemBackground), in: Capsule())
+            .overlay(Capsule().stroke(Color.accentColor.opacity(0.35), lineWidth: 1))
+            .position(document.viewport.documentToView(dimension.midPoint))
+    }
+
+    private func measurementLabel(_ documentValue: CGFloat) -> String {
+        let pointsPerUnit = UnitConversion.pointsPerUnit(for: document.settings.units)
+        let realWorldValue = documentValue / max(pointsPerUnit, 0.0001)
+        return "\(String(format: "%.3f", realWorldValue)) \(document.settings.units.shortLabel)"
+    }
+
+    private func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
+        CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
     }
 
     @ViewBuilder

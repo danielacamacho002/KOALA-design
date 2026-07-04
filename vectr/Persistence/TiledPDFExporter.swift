@@ -33,6 +33,7 @@ enum TiledPDFExporter {
                 cgContext.clip(to: printable)
 
                 drawPrintStrokes(document: document, in: cgContext, viewport: viewport)
+                drawPrintText(document: document, in: cgContext)
 
                 cgContext.resetClip()
                 for mark in document.registrationMarks where mark.isLocked {
@@ -74,6 +75,19 @@ enum TiledPDFExporter {
                 context.strokePath()
             }
             context.setLineDash(phase: 0, lengths: [])
+        }
+    }
+
+    /// Draws text as filled vector glyph outlines, shifted by the global print
+    /// `contentOffset` so it lands on the same grid position as the strokes.
+    private static func drawPrintText(document: VectrDocument, in context: CGContext) {
+        let offset = document.printLayout.contentOffset
+        for element in document.visibleTextElements() {
+            var transform = CGAffineTransform(translationX: offset.x, y: offset.y)
+            guard let path = TextOutline.path(for: element).copy(using: &transform) else { continue }
+            context.addPath(path)
+            context.setFillColor(element.cgColor)
+            context.fillPath()
         }
     }
 

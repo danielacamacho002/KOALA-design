@@ -5,42 +5,30 @@
 
 import UIKit
 
-/// Renders a `TextElement` as a crisp `CATextLayer` in view space.
+/// Renders a `TextElement` as true vector glyph outlines in a filled
+/// `CAShapeLayer`, so on-canvas text is a real shape that matches the exported
+/// vectors exactly (same `TextOutline` path used for SVG/PDF/image export).
 enum TextRenderer {
-    static func makeLayer(for element: TextElement, viewport: ViewportTransform) -> CATextLayer {
-        let layer = CATextLayer()
-        layer.contentsScale = UIScreen.main.scale
-        layer.isWrapped = true
-        layer.alignmentMode = .left
-        layer.truncationMode = .none
+    static func makeLayer(for element: TextElement, viewport: ViewportTransform) -> CAShapeLayer {
+        let layer = CAShapeLayer()
+        layer.fillRule = .nonZero
+        layer.strokeColor = nil
         update(layer, for: element, viewport: viewport)
         return layer
     }
 
-    static func update(_ layer: CATextLayer, for element: TextElement, viewport: ViewportTransform) {
-        let scale = viewport.scale
-        let font = element.fontRef.uiFont(size: element.fontSize * scale)
-        let displayText = element.text.isEmpty ? " " : element.text
-        layer.string = NSAttributedString(
-            string: displayText,
-            attributes: [
-                .font: font,
-                .foregroundColor: element.cgColor
-            ]
-        )
+    static func update(_ layer: CAShapeLayer, for element: TextElement, viewport: ViewportTransform) {
+        var transform = documentToView(viewport)
+        let documentPath = TextOutline.path(for: element)
+        layer.path = documentPath.copy(using: &transform) ?? documentPath
+        layer.fillColor = element.cgColor
+    }
 
-        let documentSize = element.textSize()
-        let viewSize = CGSize(
-            width: max(1, documentSize.width * scale),
-            height: max(1, documentSize.height * scale)
+    /// Affine map from document space to on-screen view space.
+    private static func documentToView(_ viewport: ViewportTransform) -> CGAffineTransform {
+        CGAffineTransform(
+            a: viewport.scale, b: 0, c: 0, d: viewport.scale,
+            tx: viewport.translation.x, ty: viewport.translation.y
         )
-        let origin = viewport.documentToView(element.position)
-
-        // Reset any rotation before repositioning; frame is undefined under a transform.
-        layer.transform = CATransform3DIdentity
-        layer.frame = CGRect(origin: origin, size: viewSize)
-        if element.rotation != 0 {
-            layer.transform = CATransform3DMakeRotation(element.rotation, 0, 0, 1)
-        }
     }
 }
