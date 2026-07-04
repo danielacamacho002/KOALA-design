@@ -323,6 +323,15 @@ enum ShapeGeometry {
                 )
             }
             return stroke.boundingBox().map { CGPoint(x: $0.midX, y: $0.midY) }
+        case .polyline, .construction:
+            if let center = stablePolylineCenter(for: stroke) {
+                return center
+            }
+            if let bbox = stroke.boundingBox() {
+                return CGPoint(x: bbox.midX, y: bbox.midY)
+            }
+            guard let first = stroke.points.first, let last = stroke.points.last else { return nil }
+            return CGPoint(x: (first.x + last.x) / 2, y: (first.y + last.y) / 2)
         default:
             if let bbox = stroke.boundingBox() {
                 return CGPoint(x: bbox.midX, y: bbox.midY)
@@ -844,6 +853,52 @@ enum ShapeGeometry {
             updated.points[endIndex] = CGPoint(x: start.x + dx * scale, y: start.y + dy * scale)
         }
         return updated
+    }
+
+    private static func stablePolylineCenter(for stroke: VectorStroke) -> CGPoint? {
+        let points = normalizedPolylinePoints(stroke.points, isClosed: stroke.isClosed)
+        guard !points.isEmpty else { return nil }
+        if stroke.isClosed,
+           points.count >= 3,
+           let centroid = polygonCentroid(points) {
+            return centroid
+        }
+        let sum = points.reduce(CGPoint.zero) { partial, point in
+            CGPoint(x: partial.x + point.x, y: partial.y + point.y)
+        }
+        let count = CGFloat(points.count)
+        return CGPoint(x: sum.x / count, y: sum.y / count)
+    }
+
+    private static func normalizedPolylinePoints(_ points: [CGPoint], isClosed: Bool) -> [CGPoint] {
+        var normalized = points
+        if isClosed,
+           normalized.count > 1,
+           hypot(normalized[0].x - normalized[normalized.count - 1].x,
+                 normalized[0].y - normalized[normalized.count - 1].y) <= 0.001 {
+            normalized.removeLast()
+        }
+        return normalized
+    }
+
+    private static func polygonCentroid(_ points: [CGPoint]) -> CGPoint? {
+        guard points.count >= 3 else { return nil }
+        var twiceArea: CGFloat = 0
+        var centroidX: CGFloat = 0
+        var centroidY: CGFloat = 0
+
+        for index in points.indices {
+            let p0 = points[index]
+            let p1 = points[(index + 1) % points.count]
+            let cross = p0.x * p1.y - p1.x * p0.y
+            twiceArea += cross
+            centroidX += (p0.x + p1.x) * cross
+            centroidY += (p0.y + p1.y) * cross
+        }
+
+        guard abs(twiceArea) > 0.0001 else { return nil }
+        let scale = 1 / (3 * twiceArea)
+        return CGPoint(x: centroidX * scale, y: centroidY * scale)
     }
 
     private static func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
