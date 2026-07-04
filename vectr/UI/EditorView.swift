@@ -213,7 +213,8 @@ struct EditorView: View {
                             _ = syncAttachedStrokeFromSession(recordUndo: false)
                         }
                         store.markDirty()
-                    }
+                    },
+                    onEditText: { id in beginTextEditing(id) }
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(canvasOverlayAcceptsHits)
@@ -464,6 +465,9 @@ struct EditorView: View {
         switch store.document.activeCategory {
         case .move, .scale, .trim, .fillet:
             return true
+        case .type:
+            // Only the selection box/handles are hittable; empty taps still place text.
+            return store.document.selectedTextID != nil
         case .delete, .addAnchor:
             // Let canvas taps pass through so delete/add-anchor can target the shape directly.
             return false
