@@ -158,12 +158,41 @@ extension TextElement {
 }
 
 extension VectrDocument {
+    enum ElementHit: Equatable {
+        case text(UUID)
+        case stroke(UUID)
+        case none
+    }
+
     /// Selects the top-most visible text element hit by `documentPoint`.
     @discardableResult
     func selectTextElement(at documentPoint: CGPoint) -> TextElement? {
         let hit = visibleTextElements().reversed().first { $0.contains(documentPoint) }
         selectedTextID = hit?.id
         return hit
+    }
+
+    /// The top-most visible text element hit by `documentPoint`, without changing selection.
+    func textElement(at documentPoint: CGPoint) -> TextElement? {
+        visibleTextElements().reversed().first { $0.contains(documentPoint) }
+    }
+
+    /// Unified selection: prefers a hit text element, otherwise falls back to
+    /// stroke hit testing. Text and strokes share a single active selection so
+    /// the standard manipulation tools (move/scale/delete) treat text like a shape.
+    @discardableResult
+    func selectElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
+        if let text = textElement(at: documentPoint) {
+            selectedTextID = text.id
+            selectedStrokeID = nil
+            return .text(text.id)
+        }
+        if let stroke = selectStroke(near: documentPoint, threshold: threshold) {
+            selectedTextID = nil
+            return .stroke(stroke.id)
+        }
+        selectedTextID = nil
+        return .none
     }
 }
 #endif

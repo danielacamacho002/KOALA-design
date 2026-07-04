@@ -213,7 +213,8 @@ struct EditorView: View {
                             _ = syncAttachedStrokeFromSession(recordUndo: false)
                         }
                         store.markDirty()
-                    }
+                    },
+                    onEditText: { beginTextEditing($0) }
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(canvasOverlayAcceptsHits)
@@ -241,7 +242,7 @@ struct EditorView: View {
                     .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .move,
-                          store.document.selectedStrokeID != nil {
+                          store.document.selectedStrokeID != nil || store.document.selectedTextID != nil {
                     MoveRotatePanelView(document: store.document) {
                         refreshCanvas()
                     }
@@ -464,6 +465,10 @@ struct EditorView: View {
         switch store.document.activeCategory {
         case .move, .scale, .trim, .fillet:
             return true
+        case .type:
+            // With a text selected, the overlay handles move/scale/tap-to-edit;
+            // with nothing selected, taps pass through so a new text can be placed.
+            return store.document.selectedTextID != nil
         case .delete, .addAnchor:
             // Let canvas taps pass through so delete/add-anchor can target the shape directly.
             return false
@@ -705,13 +710,16 @@ struct EditorView: View {
         case .type:
             commandSession.cancel()
             store.document.selectedStrokeID = nil
-            statusMessage = "Tap to place text"
+            statusMessage = "Tap to place or edit text; drag to move, corners to scale"
         case .delete:
             if let id = store.document.selectedStrokeID {
                 store.document.removeStroke(id: id)
                 refreshCanvas()
+            } else if let textID = store.document.selectedTextID {
+                store.document.removeTextElement(id: textID)
+                refreshCanvas()
             } else {
-                statusMessage = "Select a line or shape to delete"
+                statusMessage = "Select a shape or text to delete"
             }
             commandSession.cancel()
         case .trim:
@@ -743,8 +751,10 @@ struct EditorView: View {
             if category == .move {
                 store.document.selectedAnchorIndices.removeAll()
                 store.document.moveRotationPivotAnchorIndex = nil
-                if store.document.selectedStrokeID == nil {
-                    statusMessage = "Select a shape to move or rotate"
+                if store.document.selectedTextID != nil {
+                    statusMessage = "Drag to move the text, or use the handle to rotate"
+                } else if store.document.selectedStrokeID == nil {
+                    statusMessage = "Select a shape or text to move or rotate"
                 } else {
                     statusMessage = "Tap an anchor to select it; double-tap to multi-select; drag to move"
                 }
@@ -913,6 +923,11 @@ struct EditorView: View {
                 refreshCanvas()
             }
         case .delete:
+            if let text = store.document.textElement(at: documentPoint) {
+                store.document.removeTextElement(id: text.id)
+                refreshCanvas()
+                return
+            }
             let threshold = store.document.viewport.viewToDocument(distance: 24)
             if let stroke = store.document.selectStroke(near: documentPoint, threshold: threshold) {
                 store.document.removeStroke(id: stroke.id)
@@ -920,10 +935,13 @@ struct EditorView: View {
             } else if let selected = store.document.selectedStrokeID {
                 store.document.removeStroke(id: selected)
                 refreshCanvas()
+            } else if let selectedText = store.document.selectedTextID {
+                store.document.removeTextElement(id: selectedText)
+                refreshCanvas()
             }
         default:
             let threshold = store.document.viewport.viewToDocument(distance: 16)
-            _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
+            store.document.selectElement(near: documentPoint, threshold: threshold)
             refreshCanvas()
         }
     }
