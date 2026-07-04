@@ -39,7 +39,8 @@ enum ShapeGeometry {
         category: ToolCategory,
         lineVariant: LineVariant,
         circleVariant: CircleVariant,
-        rectangleVariant: RectangleVariant
+        rectangleVariant: RectangleVariant,
+        arcSweepRadians: CGFloat? = nil
     ) -> [CGPoint] {
         guard !controlPoints.isEmpty else { return [] }
         switch category {
@@ -49,7 +50,12 @@ enum ShapeGeometry {
                 return controlPoints
             case .arc:
                 guard controlPoints.count >= 3 else { return controlPoints }
-                return arcPoints(start: controlPoints[0], end: controlPoints[1], through: controlPoints[2])
+                return arcPoints(
+                    center: controlPoints[0],
+                    start: controlPoints[1],
+                    end: controlPoints[2],
+                    sweep: arcSweepRadians
+                )
             }
         case .circle:
             switch circleVariant {
@@ -113,8 +119,11 @@ enum ShapeGeometry {
                 guard let start = stroke.points.first, let end = stroke.points.last else { return nil }
                 return [start, end]
             case .arc:
-                guard stroke.points.count >= 3 else { return nil }
-                return [stroke.points.first!, stroke.points[stroke.points.count / 2], stroke.points.last!]
+                guard stroke.points.count >= 3,
+                      let start = stroke.points.first,
+                      let end = stroke.points.last,
+                      let center = arcControlCenter(from: stroke.points) else { return nil }
+                return [center, start, end]
             }
         case .circle:
             switch circleVariant {
@@ -172,14 +181,16 @@ enum ShapeGeometry {
         strokeWidth: CGFloat,
         strokeColor: CodableColor,
         closed: Bool,
-        cornerRadius: CGFloat = 0
+        cornerRadius: CGFloat = 0,
+        arcSweepRadians: CGFloat? = nil
     ) -> VectorStroke? {
         let points = previewPoints(
             controlPoints: controlPoints,
             category: category,
             lineVariant: lineVariant,
             circleVariant: circleVariant,
-            rectangleVariant: rectangleVariant
+            rectangleVariant: rectangleVariant,
+            arcSweepRadians: arcSweepRadians
         )
         guard points.count >= 2 else { return nil }
 
@@ -630,43 +641,67 @@ enum ShapeGeometry {
         ]
     }
 
-    static func arcPoints(start: CGPoint, end: CGPoint, through: CGPoint, segments: Int = 32) -> [CGPoint] {
-        guard let arc = arcCenter(start: start, end: end, through: through) else {
-            return [start, through, end]
-        }
+    static func arcPoints(
+        center: CGPoint,
+        start: CGPoint,
+        end: CGPoint,
+        sweep: CGFloat? = nil,
+        segments: Int = 32
+    ) -> [CGPoint] {
+        let radius = hypot(start.x - center.x, start.y - center.y)
+        guard radius > 0.001 else { return [start, end] }
+
+        let projectedEnd = projectArcEndpoint(center: center, start: start, point: end)
+        let startAngle = atan2(start.y - center.y, start.x - center.x)
+        let endAngle = atan2(projectedEnd.y - center.y, projectedEnd.x - center.x)
+        let resolvedSweep = sweep ?? atan2(sin(endAngle - startAngle), cos(endAngle - startAngle))
+        guard abs(resolvedSweep) > 0.0001 else { return [start, projectedEnd] }
+
+        let adaptiveSegments = max(
+            segments,
+            min(128, max(12, Int(ceil(abs(resolvedSweep) / (.pi / 24)))))
+        )
         var points: [CGPoint] = []
-        let startAngle = atan2(start.y - arc.center.y, start.x - arc.center.x)
-        let endAngle = atan2(end.y - arc.center.y, end.x - arc.center.x)
-        var sweep = endAngle - startAngle
-        let throughAngle = atan2(through.y - arc.center.y, through.x - arc.center.x)
-        var testSweep = throughAngle - startAngle
-        while testSweep > .pi { testSweep -= 2 * .pi }
-        while testSweep < -.pi { testSweep += 2 * .pi }
-        while sweep > .pi { sweep -= 2 * .pi }
-        while sweep < -.pi { sweep += 2 * .pi }
-        if (testSweep > 0) != (sweep > 0) {
-            sweep = testSweep > 0 ? sweep + 2 * .pi : sweep - 2 * .pi
-        }
-        for i in 0...segments {
-            let t = CGFloat(i) / CGFloat(segments)
-            let angle = startAngle + sweep * t
+        points.reserveCapacity(adaptiveSegments + 1)
+        for i in 0...adaptiveSegments {
+            let t = CGFloat(i) / CGFloat(adaptiveSegments)
+            let angle = startAngle + resolvedSweep * t
             points.append(CGPoint(
-                x: arc.center.x + cos(angle) * arc.radius,
-                y: arc.center.y + sin(angle) * arc.radius
+                x: center.x + cos(angle) * radius,
+                y: center.y + sin(angle) * radius
             ))
         }
         return points
+    }
+
+    static func projectArcEndpoint(center: CGPoint, start: CGPoint, point: CGPoint) -> CGPoint {
+        let radius = hypot(start.x - center.x, start.y - center.y)
+        guard radius > 0.001 else { return point }
+        let dx = point.x - center.x
+        let dy = point.y - center.y
+        let distance = hypot(dx, dy)
+        guard distance > 0.001 else { return start }
+        let scale = radius / distance
+        return CGPoint(x: center.x + dx * scale, y: center.y + dy * scale)
     }
 
     static func projectCommandPoint(
         _ point: CGPoint,
         controlPoints: [CGPoint],
         category: ToolCategory,
+        lineVariant: LineVariant = .line,
         circleVariant: CircleVariant,
         rectangleVariant: RectangleVariant
     ) -> CGPoint {
         guard let center = controlPoints.first else { return point }
         switch category {
+        case .line where lineVariant == .arc:
+            guard controlPoints.count >= 2 else { return point }
+            return projectArcEndpoint(
+                center: center,
+                start: controlPoints[1],
+                point: point
+            )
         case .circle where circleVariant == .ellipse:
             if controlPoints.count == 1 {
                 let rx = max(0.001, abs(point.x - center.x))
@@ -813,6 +848,23 @@ enum ShapeGeometry {
 
     private static func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
         CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+    }
+
+    private static func arcControlCenter(from arcPoints: [CGPoint]) -> CGPoint? {
+        guard arcPoints.count >= 3 else { return nil }
+        if let fitted = fitCircle(from: arcPoints) {
+            return fitted.center
+        }
+        let start = arcPoints.first!
+        let end = arcPoints.last!
+        let through = arcPoints[arcPoints.count / 2]
+        if let arc = arcCenter(start: start, end: end, through: through) {
+            return arc.center
+        }
+        if let bbox = VectorStroke(layerID: UUID(), points: arcPoints).boundingBox() {
+            return CGPoint(x: bbox.midX, y: bbox.midY)
+        }
+        return nil
     }
 
     private static func arcCenter(start: CGPoint, end: CGPoint, through: CGPoint) -> (center: CGPoint, radius: CGFloat)? {
