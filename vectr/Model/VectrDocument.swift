@@ -617,13 +617,16 @@ final class VectrDocument {
     /// Centers visible artwork on the paper grid the first time print layout is opened.
     func autoPositionDesignOnPrintGrid() {
         guard printLayout.contentOffset == .zero, printStrokeTransforms.isEmpty else { return }
-        let strokes = visibleStrokes()
-        guard !strokes.isEmpty else { return }
 
         var points: [CGPoint] = []
-        for stroke in strokes {
+        for stroke in visibleStrokes() {
             points.append(contentsOf: ShapeGeometry.renderPoints(for: stroke))
         }
+        for element in visibleTextElements() {
+            points.append(contentsOf: element.corners())
+        }
+        guard !points.isEmpty else { return }
+
         let designBounds = PrintLayoutCoordinateSpace.boundingRect(for: points)
         let gridBounds = PrintPageGridEngine.gridBounds(for: printLayout)
         guard !designBounds.isNull, !gridBounds.isNull else { return }
@@ -699,6 +702,12 @@ final class VectrDocument {
         var points: [CGPoint] = []
         for stroke in visibleStrokes() {
             points.append(contentsOf: ShapeGeometry.renderPoints(for: transformedPrintStroke(stroke)))
+        }
+        let offset = printLayout.contentOffset
+        for element in visibleTextElements() {
+            points.append(contentsOf: element.corners().map {
+                CGPoint(x: $0.x + offset.x, y: $0.y + offset.y)
+            })
         }
         let gridBounds = PrintPageGridEngine.gridBounds(for: printLayout)
         points.append(contentsOf: [

@@ -40,7 +40,7 @@ final class DrawingCanvasUIView: UIView {
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
 
     private var strokeLayers: [UUID: CAShapeLayer] = [:]
-    private var textLayers: [UUID: CATextLayer] = [:]
+    private var textLayers: [UUID: CAShapeLayer] = [:]
     private var commandPreviewLayer: CAShapeLayer?
     private var dragPreviewLayer: CAShapeLayer?
     private var commandPointLayers: [CAShapeLayer] = []
