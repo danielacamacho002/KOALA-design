@@ -32,6 +32,7 @@ struct EditorView: View {
     @State private var arcDragAccumulatedSweep: CGFloat = 0
     @State private var commandPanelOffset = CGSize(width: 170, height: 8)
     @State private var hasInitializedDrawingSession = false
+    @State private var editingTextID: UUID?
     @State private var editorMode: EditorMode = .design
     @State private var savedDesignViewport: ViewportTransform?
     @State private var printExportDocument: EditorExportDocument?
@@ -252,6 +253,19 @@ struct EditorView: View {
                         document: store.document,
                         onApply: { refreshCanvas() },
                         onStatus: { statusMessage = $0 }
+                    )
+                    .padding(.leading, 10)
+                    .padding(.top, 8)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if let editingTextID {
+                    TextToolPanelView(
+                        document: store.document,
+                        elementID: editingTextID,
+                        onChanged: { refreshCanvas() },
+                        onDone: { endTextEditingIfNeeded() }
                     )
                     .padding(.leading, 10)
                     .padding(.top, 8)
@@ -684,7 +698,14 @@ struct EditorView: View {
     }
 
     private func handleToolSelected(_ category: ToolCategory) {
+        if category != .type {
+            endTextEditingIfNeeded()
+        }
         switch category {
+        case .type:
+            commandSession.cancel()
+            store.document.selectedStrokeID = nil
+            statusMessage = "Tap to place text"
         case .delete:
             if let id = store.document.selectedStrokeID {
                 store.document.removeStroke(id: id)
@@ -799,8 +820,45 @@ struct EditorView: View {
         }
     }
 
+    private func beginTextEditing(_ id: UUID) {
+        store.document.selectedTextID = id
+        withAnimation(.easeOut(duration: 0.15)) {
+            editingTextID = id
+        }
+    }
+
+    private func endTextEditingIfNeeded() {
+        guard let id = editingTextID else { return }
+        withAnimation(.easeOut(duration: 0.15)) {
+            editingTextID = nil
+        }
+        if let element = store.document.textElement(with: id),
+           element.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            store.document.removeTextElement(id: id)
+            refreshCanvas()
+        }
+    }
+
     private func handleCanvasTap(_ documentPoint: CGPoint) {
         switch store.document.activeCategory {
+        case .type:
+            endTextEditingIfNeeded()
+            if let hit = store.document.selectTextElement(at: documentPoint) {
+                beginTextEditing(hit.id)
+            } else {
+                let element = TextElement(
+                    layerID: store.document.activeLayerID,
+                    text: "",
+                    position: documentPoint,
+                    fontRef: store.document.activeFontRef,
+                    fontSize: store.document.activeFontSize,
+                    color: store.document.strokeColor
+                )
+                store.document.addTextElement(element)
+                beginTextEditing(element.id)
+                store.markDirty()
+                refreshCanvas()
+            }
         case .line, .circle, .rectangle:
             if commandSession.isRefiningAttachedStroke {
                 startDrawingSessionIfNeeded()
