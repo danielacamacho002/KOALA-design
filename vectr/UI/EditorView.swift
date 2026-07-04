@@ -872,14 +872,25 @@ struct EditorView: View {
     }
 
     private func commitDragDraw(start: CGPoint, end: CGPoint) {
-        let snappedStart = snapDrawingInput(start)
-        let snappedEnd = snapDrawingInput(end)
-        guard hypot(snappedEnd.x - snappedStart.x, snappedEnd.y - snappedStart.y) > 0.001 else {
+        let rawDistance = hypot(end.x - start.x, end.y - start.y)
+        guard rawDistance > 0.001 else {
             startDrawingSessionIfNeeded()
             return
         }
 
-        let controlPoints = dragControlPoints(start: snappedStart, end: snappedEnd)
+        let snappedStart = snapDrawingInput(start)
+        let snappedEnd = snapDrawingInput(end)
+        var committedStart = snappedStart
+        var committedEnd = snappedEnd
+        if store.document.activeCategory == .rectangle,
+           store.document.rectangleVariant == .edge,
+           hypot(snappedEnd.x - snappedStart.x, snappedEnd.y - snappedStart.y) <= 0.001 {
+            // Preserve a real corner-to-corner drag when snap collapses both ends.
+            committedStart = start
+            committedEnd = end
+        }
+
+        let controlPoints = dragControlPoints(start: committedStart, end: committedEnd)
         guard !controlPoints.isEmpty else {
             startDrawingSessionIfNeeded()
             return

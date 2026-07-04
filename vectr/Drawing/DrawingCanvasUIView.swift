@@ -49,6 +49,7 @@ final class DrawingCanvasUIView: UIView {
     private var pinchAnchor: CGPoint = .zero
     private var dragDrawStart: CGPoint?
     private var dragDrawCurrent: CGPoint?
+    private var dragDrawDidMove = false
     private let gridLayer = CALayer()
     private var referenceImageLayer: CALayer?
     private var cachedReferenceImageData: Data?
@@ -308,27 +309,41 @@ final class DrawingCanvasUIView: UIView {
 
         let viewPoint = gesture.location(in: self)
         let rawPoint = document.viewport.viewToDocument(viewPoint)
-        let documentPoint = snappedDragPoint(rawPoint)
+        let documentPoint = dragInputPoint(for: rawPoint)
 
         switch gesture.state {
         case .began:
             let startPoint = dragStartPoint(for: documentPoint)
             dragDrawStart = startPoint
             dragDrawCurrent = startPoint
+            dragDrawDidMove = false
             updateDragPreviewLayer()
             onDragDrawBegan?(startPoint)
         case .changed:
             guard let start = dragDrawStart else { return }
             dragDrawCurrent = documentPoint
+            dragDrawDidMove = true
             updateDragPreviewLayer()
             onDragDrawChanged?(start, documentPoint)
         case .ended, .cancelled:
             guard let start = dragDrawStart else { return }
             let end = documentPoint
+            if activeCategory == .rectangle,
+               rectangleVariant == .edge,
+               !dragDrawDidMove {
+                onCanvasTap?(end)
+                dragDrawStart = nil
+                dragDrawCurrent = nil
+                dragDrawDidMove = false
+                dragPreviewLayer?.removeFromSuperlayer()
+                dragPreviewLayer = nil
+                return
+            }
             if hypot(end.x - start.x, end.y - start.y) <= 0.001 {
                 onDragDrawEnded?(start, end)
                 dragDrawStart = nil
                 dragDrawCurrent = nil
+                dragDrawDidMove = false
                 dragPreviewLayer?.removeFromSuperlayer()
                 dragPreviewLayer = nil
                 return
@@ -337,6 +352,7 @@ final class DrawingCanvasUIView: UIView {
             onDragDrawEnded?(start, end)
             dragDrawStart = nil
             dragDrawCurrent = nil
+            dragDrawDidMove = false
             dragPreviewLayer?.removeFromSuperlayer()
             dragPreviewLayer = nil
             DispatchQueue.main.async { [weak self] in
@@ -355,6 +371,15 @@ final class DrawingCanvasUIView: UIView {
             settings: document.settings,
             enabled: enabled
         )
+    }
+
+    private func dragInputPoint(for rawPoint: CGPoint) -> CGPoint {
+        // Corner-rectangle input should tolerate tiny stylus movement and preserve
+        // an unsnapped drag vector for commit fallback.
+        if activeCategory == .rectangle, rectangleVariant == .edge {
+            return rawPoint
+        }
+        return snappedDragPoint(rawPoint)
     }
 
     private func dragStartPoint(for point: CGPoint) -> CGPoint {
