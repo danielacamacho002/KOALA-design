@@ -107,6 +107,7 @@ struct CanvasOverlayView: View {
             snapped,
             controlPoints: commandSession.controlPoints,
             category: commandSession.category,
+            lineVariant: commandSession.lineVariant,
             circleVariant: commandSession.circleVariant,
             rectangleVariant: commandSession.rectangleVariant
         )
@@ -170,10 +171,11 @@ struct CanvasOverlayView: View {
         if let strokeID = document.selectedStrokeID,
            let stroke = document.stroke(with: strokeID) {
             let handles = ShapeGeometry.handlePoints(for: stroke)
-            let pivot = ShapeGeometry.rotationPivot(
+            let computedPivot = ShapeGeometry.rotationPivot(
                 for: stroke,
                 anchorIndex: document.moveRotationPivotAnchorIndex
             )
+            let pivot = rotateDragOriginStroke != nil ? rotateDragPivot : computedPivot
 
             Color.clear
                 .contentShape(Rectangle())
@@ -228,7 +230,11 @@ struct CanvasOverlayView: View {
                 }
             }
 
-            centerHandle(strokeID: strokeID, stroke: stroke)
+            centerHandle(
+                strokeID: strokeID,
+                stroke: stroke,
+                centerOverride: rotateDragOriginStroke != nil ? rotateDragPivot : nil
+            )
         }
     }
 
@@ -609,8 +615,8 @@ struct CanvasOverlayView: View {
     // MARK: - Center anchor
 
     @ViewBuilder
-    private func centerHandle(strokeID: UUID, stroke: VectorStroke) -> some View {
-        if let center = ShapeGeometry.shapeCenter(for: stroke) {
+    private func centerHandle(strokeID: UUID, stroke: VectorStroke, centerOverride: CGPoint? = nil) -> some View {
+        if let center = centerOverride ?? ShapeGeometry.shapeCenter(for: stroke) {
             RoundedRectangle(cornerRadius: 3)
                 .fill(Color.cyan)
                 .frame(width: centerHandleSize, height: centerHandleSize)
