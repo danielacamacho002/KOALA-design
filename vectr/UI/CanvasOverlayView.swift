@@ -56,9 +56,17 @@ struct CanvasOverlayView: View {
                 } else if document.activeCategory == .type {
                     textOverlay
                 } else if document.activeCategory == .move {
-                    strokeMoveOverlay
+                    if document.selectedTextID != nil {
+                        textMoveOverlay
+                    } else {
+                        strokeMoveOverlay
+                    }
                 } else if document.activeCategory == .scale {
-                    scaleHandles
+                    if document.selectedTextID != nil {
+                        textScaleOverlay
+                    } else {
+                        scaleHandles
+                    }
                 } else if document.activeCategory == .trim {
                     trimOverlay
                 } else if document.activeCategory == .fillet {
@@ -391,10 +399,16 @@ struct CanvasOverlayView: View {
     /// A quick tap on the empty canvas (not on an anchor handle) clears every anchor
     /// selection and re-runs stroke hit testing so nothing stays stuck selected.
     private func handleMoveBackgroundTap(at viewPoint: CGPoint) {
+        handleElementBackgroundTap(at: viewPoint)
+    }
+
+    /// Reselects whatever element (text or stroke) sits under the tap, clearing
+    /// any anchor selection first.
+    private func handleElementBackgroundTap(at viewPoint: CGPoint) {
         document.clearAnchorSelection()
         let threshold = document.viewport.viewToDocument(distance: 16)
         let documentPoint = document.viewport.viewToDocument(viewPoint)
-        _ = document.selectStroke(near: documentPoint, threshold: threshold)
+        document.selectElement(near: documentPoint, threshold: threshold)
         onChanged()
     }
 
@@ -663,6 +677,8 @@ struct CanvasOverlayView: View {
 
     // MARK: - Text (move / scale / rotate)
 
+    /// Type tool overlay: tap to edit, drag to move, corner handles to scale,
+    /// and a rotation handle. Enables direct text manipulation via the Type tool.
     @ViewBuilder
     private var textOverlay: some View {
         if let id = document.selectedTextID,
@@ -687,6 +703,53 @@ struct CanvasOverlayView: View {
             }
 
             textRotationHandle(id: id, viewCorners: viewCorners, viewCenter: viewCenter)
+        }
+    }
+
+    /// Move tool overlay for a selected text element: drag anywhere to move,
+    /// plus a rotation handle. Mirrors the shape move overlay behavior.
+    @ViewBuilder
+    private var textMoveOverlay: some View {
+        if let id = document.selectedTextID,
+           let element = document.textElement(with: id) {
+            let viewCorners = element.corners().map { document.viewport.documentToView($0) }
+            let viewCenter = document.viewport.documentToView(element.center)
+
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(textMoveDrag(id: id))
+                .simultaneousGesture(
+                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
+                        .onEnded { value in
+                            handleElementBackgroundTap(at: value.location)
+                        }
+                )
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                .allowsHitTesting(false)
+
+            textRotationHandle(id: id, viewCorners: viewCorners, viewCenter: viewCenter)
+        }
+    }
+
+    /// Scale tool overlay for a selected text element: corner handles resize the
+    /// font about the element's center.
+    @ViewBuilder
+    private var textScaleOverlay: some View {
+        if let id = document.selectedTextID,
+           let element = document.textElement(with: id) {
+            let viewCorners = element.corners().map { document.viewport.documentToView($0) }
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .allowsHitTesting(false)
+
+            ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
+                handleView(style: .edit)
+                    .position(corner)
+                    .highPriorityGesture(textScaleDrag(id: id, cornerIndex: index))
+            }
         }
     }
 
