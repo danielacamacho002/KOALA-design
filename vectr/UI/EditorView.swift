@@ -471,6 +471,7 @@ struct EditorView: View {
             }
         case .circle:
             return store.document.circleVariant == .center
+                || store.document.circleVariant == .edge
                 || store.document.circleVariant == .ellipse
         case .rectangle:
             return store.document.rectangleVariant == .center
@@ -482,8 +483,6 @@ struct EditorView: View {
     private var shouldAutoCommitAfterPoint: Bool {
         switch store.document.activeCategory {
         case .line where store.document.lineVariant == .arc:
-            return false
-        case .circle where store.document.circleVariant == .ellipse:
             return false
         case .rectangle where store.document.rectangleVariant == .center:
             return false
@@ -917,6 +916,8 @@ struct EditorView: View {
             switch store.document.circleVariant {
             case .center:
                 return [start, end]
+            case .edge:
+                return [start, end]
             case .ellipse:
                 let rx = max(0.001, abs(end.x - start.x))
                 let ry = max(0.001, abs(end.y - start.y))
@@ -925,8 +926,6 @@ struct EditorView: View {
                     CGPoint(x: start.x + rx, y: start.y),
                     CGPoint(x: start.x, y: start.y + ry)
                 ]
-            default:
-                return []
             }
         case .rectangle:
             switch store.document.rectangleVariant {

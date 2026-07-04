@@ -970,6 +970,21 @@ enum ShapeGeometry {
                     isClosed: true,
                     shapeType: .circle
                 )
+            case .edge:
+                let diameter = hypot(end.x - start.x, end.y - start.y)
+                guard diameter > 0.001 else { return nil }
+                let center = CGPoint(
+                    x: (start.x + end.x) / 2,
+                    y: (start.y + end.y) / 2
+                )
+                return VectorStroke(
+                    layerID: layerID,
+                    points: circleCardinalPoints(center: center, radius: diameter / 2),
+                    strokeWidth: strokeWidth,
+                    strokeColor: strokeColor,
+                    isClosed: true,
+                    shapeType: .circle
+                )
             case .ellipse:
                 let rx = max(0.001, abs(end.x - start.x))
                 let ry = max(0.001, abs(end.y - start.y))
@@ -981,8 +996,6 @@ enum ShapeGeometry {
                     isClosed: true,
                     shapeType: .ellipse
                 )
-            default:
-                return nil
             }
         case .rectangle:
             switch rectangleVariant {

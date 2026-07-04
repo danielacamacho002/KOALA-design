@@ -526,12 +526,17 @@ final class DrawingCanvasUIView: UIView {
             case .center:
                 let radius = hypot(end.x - start.x, end.y - start.y)
                 return ShapeGeometry.circleCardinalPoints(center: start, radius: radius)
+            case .edge:
+                let center = CGPoint(
+                    x: (start.x + end.x) / 2,
+                    y: (start.y + end.y) / 2
+                )
+                let radius = hypot(end.x - start.x, end.y - start.y) / 2
+                return ShapeGeometry.circleCardinalPoints(center: center, radius: radius)
             case .ellipse:
                 let rx = max(0.001, abs(end.x - start.x))
                 let ry = max(0.001, abs(end.y - start.y))
                 return ShapeGeometry.ellipseCardinalPoints(center: start, rx: rx, ry: ry)
-            default:
-                return [start, end]
             }
         case .rectangle:
             switch rectangleVariant {
