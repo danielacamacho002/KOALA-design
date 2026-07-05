@@ -447,6 +447,32 @@ final class VectrDocument {
         }
     }
 
+    /// Shared fillet radius of the currently selected corners, for display in the fillet panel.
+    enum FilletRadiusSelection: Equatable {
+        case none
+        case uniform(CGFloat)
+        case mixed
+    }
+
+    func selectedFilletRadiusSummary() -> FilletRadiusSelection {
+        guard let id = selectedStrokeID,
+              let stroke = stroke(with: id),
+              !selectedFilletCornerIndices.isEmpty else { return .none }
+
+        let resolved = stroke.resolvedFilletCornerRadii()
+        var value: CGFloat?
+        for index in selectedFilletCornerIndices {
+            let radius = max(0, resolved[index] ?? 0)
+            if let existing = value {
+                if abs(existing - radius) > 0.0001 { return .mixed }
+            } else {
+                value = radius
+            }
+        }
+        guard let value else { return .none }
+        return .uniform(value)
+    }
+
     func clearToolSelections() {
         selectedAnchorIndices.removeAll()
         selectedFilletCornerIndices.removeAll()

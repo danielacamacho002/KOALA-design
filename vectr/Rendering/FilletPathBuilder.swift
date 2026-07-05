@@ -22,8 +22,36 @@ enum FilletPathBuilder {
             guard index < normalized.points.count else { return }
             partial[index] = radius
         }
+
+        // Baked fillets are stored as arc midpoint anchors (see `bakedGeometry`). They must keep
+        // rendering as smooth arcs even when the user adds *new* live fillets to other corners,
+        // otherwise applying a new fillet would flatten every previously baked corner.
+        let smoothMiddles = (stroke.smoothCornerIndices ?? []).filter { $0 < normalized.points.count }
+
         guard !cornerRadii.isEmpty else {
-            return plainPath(points: normalized.points, closed: normalized.closed)
+            guard !smoothMiddles.isEmpty else {
+                return plainPath(points: normalized.points, closed: normalized.closed)
+            }
+            let expanded = ShapeGeometry.smoothedContourPoints(
+                points: normalized.points,
+                closed: normalized.closed,
+                smoothMiddles: smoothMiddles
+            )
+            return plainPath(points: expanded, closed: normalized.closed)
+        }
+
+        guard smoothMiddles.isEmpty else {
+            let expanded = expandSmoothCorners(
+                points: normalized.points,
+                closed: normalized.closed,
+                smoothMiddles: smoothMiddles,
+                radiiByCorner: cornerRadii
+            )
+            return filletedPolyline(
+                points: expanded.points,
+                radiiByCorner: expanded.radiiByCorner,
+                closed: normalized.closed
+            )
         }
 
         return filletedPolyline(
@@ -74,6 +102,11 @@ enum FilletPathBuilder {
         // so the midpoint indices survive any collapsing of coincident points.
         var tagged: [(point: CGPoint, isMiddle: Bool)] = []
 
+        // Corners that were already baked into smooth arcs on a previous pass. They carry no live
+        // radius, so preserve their smooth tag here; otherwise re-baking (triggered by adding more
+        // anchors) would flatten every earlier fillet.
+        let existingSmoothMiddles = (stroke.smoothCornerIndices ?? []).filter { $0 < count }
+
         func emitCorner(_ cornerIndex: Int, prev: CGPoint, next: CGPoint) {
             let radius = max(0, radiiByCorner[cornerIndex] ?? 0)
             if radius > 0,
@@ -84,7 +117,7 @@ enum FilletPathBuilder {
                     tagged.append((point, samples.count == 3 && offset == 1))
                 }
             } else {
-                tagged.append((points[cornerIndex], false))
+                tagged.append((points[cornerIndex], existingSmoothMiddles.contains(cornerIndex)))
             }
         }
 
@@ -115,6 +148,65 @@ enum FilletPathBuilder {
     }
 
     // MARK: - Private
+
+    /// Expands baked smooth-arc midpoints into sampled arc points while remapping any live
+    /// (still-editable) fillet radii onto the indices of the newly expanded point array. This
+    /// lets a single stroke carry both permanent baked fillets and freshly applied live fillets
+    /// so that filleting a new corner never discards the baked ones.
+    private static func expandSmoothCorners(
+        points: [CGPoint],
+        closed: Bool,
+        smoothMiddles: Set<Int>,
+        radiiByCorner: [Int: CGFloat],
+        segmentsPerArc: Int = 16
+    ) -> (points: [CGPoint], radiiByCorner: [Int: CGFloat]) {
+        let count = points.count
+        guard count >= 3 else { return (points, radiiByCorner) }
+
+        var result: [CGPoint] = []
+        var radii: [Int: CGFloat] = [:]
+
+        @discardableResult
+        func append(_ point: CGPoint) -> Int {
+            if let last = result.last, hypot(last.x - point.x, last.y - point.y) <= 0.0001 {
+                return result.count - 1
+            }
+            result.append(point)
+            return result.count - 1
+        }
+
+        for index in 0..<count {
+            let isEndpoint = !closed && (index == 0 || index == count - 1)
+            if smoothMiddles.contains(index), !isEndpoint {
+                let prev = points[(index - 1 + count) % count]
+                let next = points[(index + 1) % count]
+                for point in ShapeGeometry.arcPoints(
+                    start: prev,
+                    end: next,
+                    through: points[index],
+                    segments: segmentsPerArc
+                ) {
+                    append(point)
+                }
+            } else {
+                let newIndex = append(points[index])
+                if let radius = radiiByCorner[index], radius > 0 {
+                    radii[newIndex] = radius
+                }
+            }
+        }
+
+        if closed,
+           result.count > 2,
+           let first = result.first,
+           let last = result.last,
+           hypot(first.x - last.x, first.y - last.y) <= 0.0001 {
+            radii.removeValue(forKey: result.count - 1)
+            result.removeLast()
+        }
+
+        return (result, radii)
+    }
 
     private static func sampleArc(_ arc: FilletArc) -> [CGPoint] {
         var sweep = arc.endAngle - arc.startAngle
