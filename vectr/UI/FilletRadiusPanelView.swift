@@ -45,6 +45,15 @@ struct FilletRadiusPanelView: View {
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
 
+            HStack(spacing: 4) {
+                Text("Current radius:")
+                Text(currentRadiusText)
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+
             HStack(spacing: 8) {
                 Button("Cancel", role: .cancel) { onCancel() }
                     .buttonStyle(.bordered)
@@ -69,6 +78,30 @@ struct FilletRadiusPanelView: View {
         .onAppear {
             let display = units.fromDocumentUnits(document.settings.defaultCornerRadius)
             radiusText = String(format: "%.3f", display)
+            syncRadiusTextToSelection()
+        }
+        .onChange(of: document.selectedFilletCornerIndices) { _, _ in
+            syncRadiusTextToSelection()
+        }
+    }
+
+    private var currentRadiusText: String {
+        switch document.selectedFilletRadiusSummary() {
+        case .none:
+            return "—"
+        case .mixed:
+            return "Mixed"
+        case .uniform(let radius):
+            let display = units.fromDocumentUnits(radius)
+            return String(format: "%.3f %@", display, units.shortLabel)
+        }
+    }
+
+    /// Pre-fills the input with the selected corner's existing radius so the current value is
+    /// visible and easy to tweak.
+    private func syncRadiusTextToSelection() {
+        if case .uniform(let radius) = document.selectedFilletRadiusSummary(), radius > 0 {
+            radiusText = String(format: "%.3f", units.fromDocumentUnits(radius))
         }
     }
 

@@ -477,8 +477,55 @@ enum ShapeGeometry {
         case .arc:
             return stroke.points
         default:
+            if let smooth = stroke.smoothCornerIndices, !smooth.isEmpty {
+                return smoothedContourPoints(
+                    points: stroke.points,
+                    closed: stroke.isClosed,
+                    smoothMiddles: smooth
+                )
+            }
             return stroke.points
         }
+    }
+
+    /// Expands baked fillet corners (single midpoint anchors) into smooth circular arcs so the
+    /// rendered/exported contour looks curved, while the stored anchor set stays minimal.
+    static func smoothedContourPoints(
+        points: [CGPoint],
+        closed: Bool,
+        smoothMiddles: Set<Int>,
+        segmentsPerArc: Int = 16
+    ) -> [CGPoint] {
+        let count = points.count
+        guard count >= 3 else { return points }
+
+        var result: [CGPoint] = []
+        func append(_ point: CGPoint) {
+            if let last = result.last, hypot(last.x - point.x, last.y - point.y) <= 0.0001 { return }
+            result.append(point)
+        }
+
+        for index in 0..<count {
+            let isEndpoint = !closed && (index == 0 || index == count - 1)
+            if smoothMiddles.contains(index), !isEndpoint {
+                let prev = points[(index - 1 + count) % count]
+                let next = points[(index + 1) % count]
+                for point in arcPointsThrough(start: prev, end: next, through: points[index], segments: segmentsPerArc) {
+                    append(point)
+                }
+            } else {
+                append(points[index])
+            }
+        }
+
+        if closed,
+           result.count > 2,
+           let first = result.first,
+           let last = result.last,
+           hypot(first.x - last.x, first.y - last.y) <= 0.0001 {
+            result.removeLast()
+        }
+        return result
     }
 
     static func circleFromCardinalPoints(_ points: [CGPoint]) -> (center: CGPoint, radius: CGFloat)? {
@@ -928,6 +975,41 @@ enum ShapeGeometry {
             return CGPoint(x: bbox.midX, y: bbox.midY)
         }
         return nil
+    }
+
+    /// Samples the circular arc that passes through `start`, `through`, and `end` (in that order).
+    /// Used to re-expand baked fillet midpoints into smooth curves.
+    static func arcPointsThrough(
+        start: CGPoint,
+        end: CGPoint,
+        through: CGPoint,
+        segments: Int = 32
+    ) -> [CGPoint] {
+        guard let arc = arcCenter(start: start, end: end, through: through) else {
+            return [start, through, end]
+        }
+        var points: [CGPoint] = []
+        let startAngle = atan2(start.y - arc.center.y, start.x - arc.center.x)
+        let endAngle = atan2(end.y - arc.center.y, end.x - arc.center.x)
+        var sweep = endAngle - startAngle
+        let throughAngle = atan2(through.y - arc.center.y, through.x - arc.center.x)
+        var testSweep = throughAngle - startAngle
+        while testSweep > .pi { testSweep -= 2 * .pi }
+        while testSweep < -.pi { testSweep += 2 * .pi }
+        while sweep > .pi { sweep -= 2 * .pi }
+        while sweep < -.pi { sweep += 2 * .pi }
+        if (testSweep > 0) != (sweep > 0) {
+            sweep = testSweep > 0 ? sweep + 2 * .pi : sweep - 2 * .pi
+        }
+        for i in 0...segments {
+            let t = CGFloat(i) / CGFloat(segments)
+            let angle = startAngle + sweep * t
+            points.append(CGPoint(
+                x: arc.center.x + cos(angle) * arc.radius,
+                y: arc.center.y + sin(angle) * arc.radius
+            ))
+        }
+        return points
     }
 
     private static func arcCenter(start: CGPoint, end: CGPoint, through: CGPoint) -> (center: CGPoint, radius: CGFloat)? {
