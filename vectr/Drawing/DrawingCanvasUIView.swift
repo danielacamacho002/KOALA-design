@@ -58,7 +58,7 @@ final class DrawingCanvasUIView: UIView {
     init(document: VectrDocument) {
         self.document = document
         super.init(frame: .zero)
-        backgroundColor = .systemBackground
+        backgroundColor = UIColor(red: 246/255, green: 243/255, blue: 228/255, alpha: 1)
         isMultipleTouchEnabled = true
         layer.addSublayer(gridLayer)
         setupGestures()

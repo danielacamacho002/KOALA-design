@@ -43,7 +43,8 @@ struct SideToolPaletteView: View {
             systemImage: category.systemImage,
             isActive: isActive,
             size: iconSize,
-            showsSubmenu: showsVariantMenu && isActive
+            showsSubmenu: showsVariantMenu && isActive,
+            inactiveColor: .white
         ) {
             handleToolTap(category, showsVariantMenu: showsVariantMenu)
         }
