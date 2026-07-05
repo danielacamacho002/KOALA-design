@@ -741,6 +741,9 @@ enum ShapeGeometry {
         var midPoint: CGPoint
         var value: CGFloat
         var kind: Kind
+        // The point on the shape this dimension references. Leader lines are drawn
+        // from here to the (possibly dragged-away) label position.
+        var anchor: CGPoint
 
         enum Kind {
             case segmentLength(segmentIndex: Int)
@@ -762,7 +765,8 @@ enum ShapeGeometry {
                 label: String(format: "%.3f", diameter),
                 midPoint: CGPoint(x: circle.center.x, y: circle.center.y - circle.radius - 20),
                 value: diameter,
-                kind: .circleDiameter
+                kind: .circleDiameter,
+                anchor: CGPoint(x: circle.center.x, y: circle.center.y - circle.radius)
             )]
         case .ellipse:
             guard let ellipse = ellipseFromCardinalPoints(stroke.points) else { return [] }
@@ -772,14 +776,16 @@ enum ShapeGeometry {
                     label: String(format: "rx %.3f", ellipse.rx),
                     midPoint: CGPoint(x: ellipse.center.x + ellipse.rx / 2, y: ellipse.center.y - 24),
                     value: ellipse.rx,
-                    kind: .ellipseRX
+                    kind: .ellipseRX,
+                    anchor: CGPoint(x: ellipse.center.x + ellipse.rx / 2, y: ellipse.center.y)
                 ),
                 SemanticDimension(
                     id: "ry",
                     label: String(format: "ry %.3f", ellipse.ry),
                     midPoint: CGPoint(x: ellipse.center.x - ellipse.rx - 24, y: ellipse.center.y),
                     value: ellipse.ry,
-                    kind: .ellipseRY
+                    kind: .ellipseRY,
+                    anchor: CGPoint(x: ellipse.center.x - ellipse.rx, y: ellipse.center.y)
                 )
             ]
         case .rectangle:
@@ -793,7 +799,8 @@ enum ShapeGeometry {
                     label: String(format: "%.3f", length),
                     midPoint: midpoint(start, end),
                     value: length,
-                    kind: .segmentLength(segmentIndex: index)
+                    kind: .segmentLength(segmentIndex: index),
+                    anchor: midpoint(start, end)
                 )
             }
         default:
@@ -809,7 +816,8 @@ enum ShapeGeometry {
                     label: String(format: "%.3f", length),
                     midPoint: midpoint(start, end),
                     value: length,
-                    kind: .segmentLength(segmentIndex: index)
+                    kind: .segmentLength(segmentIndex: index),
+                    anchor: midpoint(start, end)
                 )
             }
         }
