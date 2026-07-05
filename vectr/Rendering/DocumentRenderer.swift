@@ -98,6 +98,18 @@ enum DocumentRenderer {
             }
             context.setLineDash(phase: 0, lengths: [])
         }
+
+        let documentToView = CGAffineTransform(
+            a: viewport.scale, b: 0, c: 0, d: viewport.scale,
+            tx: viewport.translation.x, ty: viewport.translation.y
+        )
+        for element in document.visibleTextElements() {
+            var transform = documentToView
+            guard let viewPath = TextOutline.path(for: element).copy(using: &transform) else { continue }
+            context.addPath(viewPath)
+            context.setFillColor(element.cgColor)
+            context.fillPath()
+        }
     }
 
     static func boundingRect(for document: VectrDocument) -> CGRect {
@@ -112,7 +124,11 @@ enum DocumentRenderer {
     }
 
     private static func allPoints(in document: VectrDocument) -> [CGPoint] {
-        document.visibleStrokes().flatMap { ShapeGeometry.renderPoints(for: $0) }
+        var points = document.visibleStrokes().flatMap { ShapeGeometry.renderPoints(for: $0) }
+        for element in document.visibleTextElements() {
+            points.append(contentsOf: element.corners())
+        }
+        return points
     }
 
     private static func defaultReferenceFrame(for image: UIImage, document: VectrDocument) -> CGRect {

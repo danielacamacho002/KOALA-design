@@ -10,6 +10,7 @@ struct CanvasOverlayView: View {
     @Bindable var document: VectrDocument
     @Bindable var commandSession: ShapeCommandSession
     var onChanged: () -> Void
+    var onEditText: (UUID) -> Void = { _ in }
 
     @State private var nodeDragOriginPoints: [CGPoint] = []
     @State private var moveDragOriginPoints: [CGPoint] = []
@@ -28,6 +29,14 @@ struct CanvasOverlayView: View {
     @State private var rotateDragPreviousAngle: CGFloat = 0
     @State private var rotateDragAccumulated: CGFloat = 0
     @State private var rotateDragPivot: CGPoint = .zero
+    @State private var textMoveOrigin: CGPoint?
+    @State private var textScaleOrigin: TextElement?
+    @State private var textScaleOriginCenter: CGPoint = .zero
+    @State private var textScaleOriginDist: CGFloat = 1
+    @State private var textRotateOrigin: TextElement?
+    @State private var textRotatePivot: CGPoint = .zero
+    @State private var textRotatePreviousAngle: CGFloat = 0
+    @State private var textRotateAccumulated: CGFloat = 0
 
     private let handleSize: CGFloat = 22
     private let centerHandleSize: CGFloat = 16
@@ -45,9 +54,19 @@ struct CanvasOverlayView: View {
                 if commandSession.isActive {
                     commandPreviewHandles
                 } else if document.activeCategory == .move {
-                    strokeMoveOverlay
+                    if document.selectedTextID != nil {
+                        textMoveOverlay
+                    } else {
+                        strokeMoveOverlay
+                    }
                 } else if document.activeCategory == .scale {
-                    scaleHandles
+                    if document.selectedTextID != nil {
+                        textScaleOverlay
+                    } else {
+                        scaleHandles
+                    }
+                } else if document.activeCategory == .type {
+                    textTypeOverlay
                 } else if document.activeCategory == .trim {
                     trimOverlay
                 } else if document.activeCategory == .fillet {
@@ -107,6 +126,7 @@ struct CanvasOverlayView: View {
             snapped,
             controlPoints: commandSession.controlPoints,
             category: commandSession.category,
+            lineVariant: commandSession.lineVariant,
             circleVariant: commandSession.circleVariant,
             rectangleVariant: commandSession.rectangleVariant
         )
@@ -170,10 +190,11 @@ struct CanvasOverlayView: View {
         if let strokeID = document.selectedStrokeID,
            let stroke = document.stroke(with: strokeID) {
             let handles = ShapeGeometry.handlePoints(for: stroke)
-            let pivot = ShapeGeometry.rotationPivot(
+            let computedPivot = ShapeGeometry.rotationPivot(
                 for: stroke,
                 anchorIndex: document.moveRotationPivotAnchorIndex
             )
+            let pivot = rotateDragOriginStroke != nil ? rotateDragPivot : computedPivot
 
             Color.clear
                 .contentShape(Rectangle())
@@ -228,7 +249,11 @@ struct CanvasOverlayView: View {
                 }
             }
 
-            centerHandle(strokeID: strokeID, stroke: stroke)
+            centerHandle(
+                strokeID: strokeID,
+                stroke: stroke,
+                centerOverride: rotateDragOriginStroke != nil ? rotateDragPivot : nil
+            )
         }
     }
 
@@ -374,10 +399,16 @@ struct CanvasOverlayView: View {
     /// A quick tap on the empty canvas (not on an anchor handle) clears every anchor
     /// selection and re-runs stroke hit testing so nothing stays stuck selected.
     private func handleMoveBackgroundTap(at viewPoint: CGPoint) {
+        handleElementBackgroundTap(at: viewPoint)
+    }
+
+    /// Reselects whatever element (text or stroke) sits under the tap, clearing
+    /// any anchor selection first.
+    private func handleElementBackgroundTap(at viewPoint: CGPoint) {
         document.clearAnchorSelection()
         let threshold = document.viewport.viewToDocument(distance: 16)
         let documentPoint = document.viewport.viewToDocument(viewPoint)
-        _ = document.selectStroke(near: documentPoint, threshold: threshold)
+        document.selectElement(near: documentPoint, threshold: threshold)
         onChanged()
     }
 
@@ -609,8 +640,8 @@ struct CanvasOverlayView: View {
     // MARK: - Center anchor
 
     @ViewBuilder
-    private func centerHandle(strokeID: UUID, stroke: VectorStroke) -> some View {
-        if let center = ShapeGeometry.shapeCenter(for: stroke) {
+    private func centerHandle(strokeID: UUID, stroke: VectorStroke, centerOverride: CGPoint? = nil) -> some View {
+        if let center = centerOverride ?? ShapeGeometry.shapeCenter(for: stroke) {
             RoundedRectangle(cornerRadius: 3)
                 .fill(Color.cyan)
                 .frame(width: centerHandleSize, height: centerHandleSize)
@@ -640,6 +671,220 @@ struct CanvasOverlayView: View {
                 centerDragOriginPoints = []
                 guard didEdit else { return }
                 document.reconcileIntersectionAnchors(around: [strokeID])
+                onChanged()
+            }
+    }
+
+    // MARK: - Text (move / rotate via Move tool, scale via Scale tool)
+
+    /// Type tool overlay for a selected text element: tap the box to edit,
+    /// drag it to move, and use corner handles to scale. No rotation here —
+    /// rotation is reserved for the Move tool.
+    @ViewBuilder
+    private var textTypeOverlay: some View {
+        if let id = document.selectedTextID,
+           let element = document.textElement(with: id) {
+            let viewCorners = element.corners().map { document.viewport.documentToView($0) }
+
+            Color.clear
+                .contentShape(boxPath(viewCorners))
+                .gesture(textMoveDrag(id: id))
+                .simultaneousGesture(
+                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
+                        .onEnded { _ in onEditText(id) }
+                )
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                .allowsHitTesting(false)
+
+            ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
+                handleView(style: .edit)
+                    .position(corner)
+                    .highPriorityGesture(textScaleDrag(id: id, cornerIndex: index))
+            }
+        }
+    }
+
+    /// Move tool overlay for a selected text element: drag anywhere to move,
+    /// plus a rotation handle. Mirrors the shape move overlay behavior.
+    @ViewBuilder
+    private var textMoveOverlay: some View {
+        if let id = document.selectedTextID,
+           let element = document.textElement(with: id) {
+            let viewCorners = element.corners().map { document.viewport.documentToView($0) }
+            let viewCenter = document.viewport.documentToView(element.center)
+
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(textMoveDrag(id: id))
+                .simultaneousGesture(
+                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
+                        .onEnded { value in
+                            handleElementBackgroundTap(at: value.location)
+                        }
+                )
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                .allowsHitTesting(false)
+
+            textRotationHandle(id: id, viewCorners: viewCorners, viewCenter: viewCenter)
+        }
+    }
+
+    /// Scale tool overlay for a selected text element: corner handles resize the
+    /// font about the element's center.
+    @ViewBuilder
+    private var textScaleOverlay: some View {
+        if let id = document.selectedTextID,
+           let element = document.textElement(with: id) {
+            let viewCorners = element.corners().map { document.viewport.documentToView($0) }
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .allowsHitTesting(false)
+
+            ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
+                handleView(style: .edit)
+                    .position(corner)
+                    .highPriorityGesture(textScaleDrag(id: id, cornerIndex: index))
+            }
+        }
+    }
+
+    private func boxPath(_ corners: [CGPoint]) -> Path {
+        Path { path in
+            guard corners.count == 4 else { return }
+            path.move(to: corners[0])
+            path.addLine(to: corners[1])
+            path.addLine(to: corners[2])
+            path.addLine(to: corners[3])
+            path.closeSubpath()
+        }
+    }
+
+    private func textMoveDrag(id: UUID) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if textMoveOrigin == nil {
+                    textMoveOrigin = document.textElement(with: id)?.position
+                    document.beginInteractiveEdit()
+                }
+                guard let origin = textMoveOrigin else { return }
+                let delta = documentDelta(from: value.translation)
+                document.setTextPosition(
+                    id: id,
+                    position: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y),
+                    recordUndo: false
+                )
+                onChanged()
+            }
+            .onEnded { _ in
+                textMoveOrigin = nil
+                onChanged()
+            }
+    }
+
+    private func textScaleDrag(id: UUID, cornerIndex: Int) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if textScaleOrigin == nil {
+                    guard let element = document.textElement(with: id) else { return }
+                    textScaleOrigin = element
+                    textScaleOriginCenter = element.center
+                    let corner = element.corners()[cornerIndex]
+                    textScaleOriginDist = max(
+                        hypot(corner.x - element.center.x, corner.y - element.center.y),
+                        0.001
+                    )
+                    document.beginInteractiveEdit()
+                }
+                guard let origin = textScaleOrigin else { return }
+                let dragPoint = document.viewport.viewToDocument(value.location)
+                let newDist = hypot(
+                    dragPoint.x - textScaleOriginCenter.x,
+                    dragPoint.y - textScaleOriginCenter.y
+                )
+                let factor = newDist / textScaleOriginDist
+                let newSize = max(4, origin.fontSize * factor)
+                var updated = origin
+                updated.fontSize = newSize
+                let size = updated.textSize()
+                updated.position = CGPoint(
+                    x: textScaleOriginCenter.x - size.width / 2,
+                    y: textScaleOriginCenter.y - size.height / 2
+                )
+                document.updateTextElement(updated, recordUndo: false)
+                document.activeFontSize = newSize
+                onChanged()
+            }
+            .onEnded { _ in
+                textScaleOrigin = nil
+                onChanged()
+            }
+    }
+
+    @ViewBuilder
+    private func textRotationHandle(id: UUID, viewCorners: [CGPoint], viewCenter: CGPoint) -> some View {
+        if viewCorners.count == 4 {
+            let topMid = CGPoint(
+                x: (viewCorners[0].x + viewCorners[1].x) / 2,
+                y: (viewCorners[0].y + viewCorners[1].y) / 2
+            )
+            let dx = topMid.x - viewCenter.x
+            let dy = topMid.y - viewCenter.y
+            let length = max(hypot(dx, dy), 0.001)
+            let handlePosition = CGPoint(
+                x: topMid.x + dx / length * rotateHandleOffset,
+                y: topMid.y + dy / length * rotateHandleOffset
+            )
+
+            Path { path in
+                path.move(to: topMid)
+                path.addLine(to: handlePosition)
+            }
+            .stroke(Color.orange.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            .allowsHitTesting(false)
+
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: handleSize, height: handleSize)
+                .background(Circle().fill(Color.orange))
+                .position(handlePosition)
+                .highPriorityGesture(textRotateDrag(id: id))
+        }
+    }
+
+    private func textRotateDrag(id: UUID) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                let currentDoc = document.viewport.viewToDocument(value.location)
+                if textRotateOrigin == nil {
+                    guard let element = document.textElement(with: id) else { return }
+                    textRotateOrigin = element
+                    textRotatePivot = element.center
+                    textRotatePreviousAngle = atan2(
+                        currentDoc.y - element.center.y,
+                        currentDoc.x - element.center.x
+                    )
+                    textRotateAccumulated = 0
+                    document.beginInteractiveEdit()
+                }
+                guard let origin = textRotateOrigin else { return }
+                let angle = atan2(currentDoc.y - textRotatePivot.y, currentDoc.x - textRotatePivot.x)
+                let rawStep = angle - textRotatePreviousAngle
+                let step = atan2(sin(rawStep), cos(rawStep))
+                textRotateAccumulated += step
+                textRotatePreviousAngle = angle
+                document.setTextRotation(id: id, radians: origin.rotation + textRotateAccumulated, recordUndo: false)
+                onChanged()
+            }
+            .onEnded { _ in
+                textRotateOrigin = nil
+                textRotatePreviousAngle = 0
+                textRotateAccumulated = 0
                 onChanged()
             }
     }

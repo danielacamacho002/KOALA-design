@@ -29,7 +29,7 @@ struct VectorStroke: Identifiable, Codable, Equatable {
     /// anchors, but rendering/export re-expands them into a smooth circular arc passing through
     /// (previous anchor, this midpoint, next anchor).
     var smoothCornerIndices: Set<Int>? = nil
-    /// Infinite dashed reference line (not filled as a plane).
+    /// Dashed reference segment (not filled as a plane).
     var isConstruction: Bool = false
     var shapeType: StrokeShapeType = .polyline
     /// CCW rotation from +X for parametric circle/ellipse storage (nil treated as 0).

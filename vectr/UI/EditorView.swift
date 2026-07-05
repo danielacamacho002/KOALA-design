@@ -27,8 +27,12 @@ struct EditorView: View {
     @State private var dragDrawStart: CGPoint?
     @State private var dragDrawEnd: CGPoint?
     @State private var isDragDrawing = false
+    @State private var isArcDragActive = false
+    @State private var arcDragPreviousAngle: CGFloat?
+    @State private var arcDragAccumulatedSweep: CGFloat = 0
     @State private var commandPanelOffset = CGSize(width: 170, height: 8)
     @State private var hasInitializedDrawingSession = false
+    @State private var editingTextID: UUID?
     @State private var editorMode: EditorMode = .design
     @State private var savedDesignViewport: ViewportTransform?
     @State private var printExportDocument: EditorExportDocument?
@@ -149,6 +153,7 @@ struct EditorView: View {
                         && (store.document.activeCategory == .rectangle
                             || store.document.activeCategory == .circle),
                     allowsDragDraw: allowsDragDraw,
+                    lineVariant: store.document.lineVariant,
                     circleVariant: store.document.circleVariant,
                     rectangleVariant: store.document.rectangleVariant,
                     onCanvasTap: handleCanvasTap,
@@ -157,12 +162,18 @@ struct EditorView: View {
                         store.markDirty()
                     },
                     onDragDrawBegan: { start in
+                        if beginArcDragIfNeeded(at: start) {
+                            return
+                        }
                         startDrawingSessionIfNeeded()
                         dragDrawStart = start
                         dragDrawEnd = start
                         isDragDrawing = true
                     },
                     onDragDrawChanged: { start, end in
+                        if updateArcDragIfNeeded(to: end) {
+                            return
+                        }
                         if !isDragDrawing {
                             dragDrawStart = start
                             isDragDrawing = true
@@ -170,6 +181,9 @@ struct EditorView: View {
                         dragDrawEnd = end
                     },
                     onDragDrawEnded: { start, end in
+                        if endArcDragIfNeeded(at: end) {
+                            return
+                        }
                         commitDragDraw(start: start, end: end)
                         isDragDrawing = false
                         dragDrawStart = nil
@@ -199,7 +213,8 @@ struct EditorView: View {
                             _ = syncAttachedStrokeFromSession(recordUndo: false)
                         }
                         store.markDirty()
-                    }
+                    },
+                    onEditText: { beginTextEditing($0) }
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(canvasOverlayAcceptsHits)
@@ -227,7 +242,7 @@ struct EditorView: View {
                     .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .move,
-                          store.document.selectedStrokeID != nil {
+                          store.document.selectedStrokeID != nil || store.document.selectedTextID != nil {
                     MoveRotatePanelView(document: store.document) {
                         refreshCanvas()
                     }
@@ -239,6 +254,19 @@ struct EditorView: View {
                         document: store.document,
                         onApply: { refreshCanvas() },
                         onStatus: { statusMessage = $0 }
+                    )
+                    .padding(.leading, 10)
+                    .padding(.top, 8)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if let editingTextID {
+                    TextToolPanelView(
+                        document: store.document,
+                        elementID: editingTextID,
+                        onChanged: { refreshCanvas() },
+                        onDone: { endTextEditingIfNeeded() }
                     )
                     .padding(.leading, 10)
                     .padding(.top, 8)
@@ -437,6 +465,10 @@ struct EditorView: View {
         switch store.document.activeCategory {
         case .move, .scale, .trim, .fillet:
             return true
+        case .type:
+            // With a text selected, the overlay handles move/scale/tap-to-edit;
+            // with nothing selected, taps pass through so a new text can be placed.
+            return store.document.selectedTextID != nil
         case .delete, .addAnchor:
             // Let canvas taps pass through so delete/add-anchor can target the shape directly.
             return false
@@ -450,13 +482,19 @@ struct EditorView: View {
         guard store.document.activeCategory.isDrawingTool else { return false }
         switch store.document.activeCategory {
         case .line:
-            return store.document.lineVariant == .line
-                || store.document.lineVariant == .constructionLine
+            switch store.document.lineVariant {
+            case .line, .constructionLine:
+                return true
+            case .arc:
+                return canBeginArcDrag
+            }
         case .circle:
             return store.document.circleVariant == .center
+                || store.document.circleVariant == .edge
                 || store.document.circleVariant == .ellipse
         case .rectangle:
             return store.document.rectangleVariant == .center
+                || store.document.rectangleVariant == .edge
         default:
             return false
         }
@@ -464,13 +502,96 @@ struct EditorView: View {
 
     private var shouldAutoCommitAfterPoint: Bool {
         switch store.document.activeCategory {
-        case .circle where store.document.circleVariant == .ellipse:
+        case .line where store.document.lineVariant == .arc:
             return false
         case .rectangle where store.document.rectangleVariant == .center:
             return false
         default:
             return true
         }
+    }
+
+    private var canBeginArcDrag: Bool {
+        guard store.document.activeCategory == .line,
+              store.document.lineVariant == .arc,
+              commandSession.isActive else { return false }
+        return commandSession.controlPoints.count >= 2
+    }
+
+    private func beginArcDragIfNeeded(at point: CGPoint) -> Bool {
+        guard canBeginArcDrag,
+              let center = commandSession.controlPoints.first,
+              commandSession.controlPoints.count >= 2 else { return false }
+        let start = commandSession.controlPoints[1]
+        let end = ShapeGeometry.projectArcEndpoint(center: center, start: start, point: point)
+        let startAngle = atan2(start.y - center.y, start.x - center.x)
+        let endAngle = atan2(end.y - center.y, end.x - center.x)
+        let initialSweep = atan2(sin(endAngle - startAngle), cos(endAngle - startAngle))
+
+        if commandSession.controlPoints.count == 2 {
+            commandSession.addPoint(end)
+        } else {
+            commandSession.movePoint(at: 2, to: end)
+        }
+        commandSession.setArcSweep(initialSweep)
+
+        isArcDragActive = true
+        arcDragPreviousAngle = endAngle
+        arcDragAccumulatedSweep = initialSweep
+        dragDrawStart = nil
+        dragDrawEnd = nil
+        isDragDrawing = false
+        refreshCanvas()
+        return true
+    }
+
+    private func updateArcDragIfNeeded(to point: CGPoint) -> Bool {
+        guard isArcDragActive,
+              store.document.activeCategory == .line,
+              store.document.lineVariant == .arc,
+              let center = commandSession.controlPoints.first,
+              commandSession.controlPoints.count >= 2 else { return false }
+        let start = commandSession.controlPoints[1]
+        let end = ShapeGeometry.projectArcEndpoint(center: center, start: start, point: point)
+        let endAngle = atan2(end.y - center.y, end.x - center.x)
+
+        if let previous = arcDragPreviousAngle {
+            let rawStep = endAngle - previous
+            let step = atan2(sin(rawStep), cos(rawStep))
+            arcDragAccumulatedSweep += step
+        } else {
+            let startAngle = atan2(start.y - center.y, start.x - center.x)
+            arcDragAccumulatedSweep = atan2(sin(endAngle - startAngle), cos(endAngle - startAngle))
+        }
+        arcDragPreviousAngle = endAngle
+
+        if commandSession.controlPoints.count == 2 {
+            commandSession.addPoint(end)
+        } else {
+            commandSession.movePoint(at: 2, to: end)
+        }
+        commandSession.setArcSweep(arcDragAccumulatedSweep)
+        refreshCanvas()
+        return true
+    }
+
+    private func endArcDragIfNeeded(at point: CGPoint) -> Bool {
+        guard isArcDragActive else { return false }
+        _ = updateArcDragIfNeeded(to: point)
+        let shouldCommit = commandSession.canFinish
+        resetArcDragState()
+        if shouldCommit {
+            commitCommandShape(restart: true)
+        } else {
+            startDrawingSessionIfNeeded()
+        }
+        return true
+    }
+
+    private func resetArcDragState() {
+        isArcDragActive = false
+        arcDragPreviousAngle = nil
+        arcDragAccumulatedSweep = 0
     }
 
     private func loadProjectIfNeeded() {
@@ -582,13 +703,23 @@ struct EditorView: View {
     }
 
     private func handleToolSelected(_ category: ToolCategory) {
+        if category != .type {
+            endTextEditingIfNeeded()
+        }
         switch category {
+        case .type:
+            commandSession.cancel()
+            store.document.selectedStrokeID = nil
+            statusMessage = "Tap to place or edit text; drag to move, corners to scale"
         case .delete:
             if let id = store.document.selectedStrokeID {
                 store.document.removeStroke(id: id)
                 refreshCanvas()
+            } else if let textID = store.document.selectedTextID {
+                store.document.removeTextElement(id: textID)
+                refreshCanvas()
             } else {
-                statusMessage = "Select a line or shape to delete"
+                statusMessage = "Select a shape or text to delete"
             }
             commandSession.cancel()
         case .trim:
@@ -620,8 +751,10 @@ struct EditorView: View {
             if category == .move {
                 store.document.selectedAnchorIndices.removeAll()
                 store.document.moveRotationPivotAnchorIndex = nil
-                if store.document.selectedStrokeID == nil {
-                    statusMessage = "Select a shape to move or rotate"
+                if store.document.selectedTextID != nil {
+                    statusMessage = "Drag to move the text, or use the handle to rotate"
+                } else if store.document.selectedStrokeID == nil {
+                    statusMessage = "Select a shape or text to move or rotate"
                 } else {
                     statusMessage = "Tap an anchor to select it; double-tap to multi-select; drag to move"
                 }
@@ -635,9 +768,11 @@ struct EditorView: View {
     private func startDrawingSessionIfNeeded(anchor: CGPoint? = nil) {
         guard store.document.activeCategory.isDrawingTool else {
             commandSession.cancel()
+            resetArcDragState()
             updateChromeInsets()
             return
         }
+        resetArcDragState()
         store.document.selectedStrokeID = nil
         commandSession.start(
             category: store.document.activeCategory,
@@ -695,8 +830,45 @@ struct EditorView: View {
         }
     }
 
+    private func beginTextEditing(_ id: UUID) {
+        store.document.selectedTextID = id
+        withAnimation(.easeOut(duration: 0.15)) {
+            editingTextID = id
+        }
+    }
+
+    private func endTextEditingIfNeeded() {
+        guard let id = editingTextID else { return }
+        withAnimation(.easeOut(duration: 0.15)) {
+            editingTextID = nil
+        }
+        if let element = store.document.textElement(with: id),
+           element.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            store.document.removeTextElement(id: id)
+            refreshCanvas()
+        }
+    }
+
     private func handleCanvasTap(_ documentPoint: CGPoint) {
         switch store.document.activeCategory {
+        case .type:
+            endTextEditingIfNeeded()
+            if let hit = store.document.selectTextElement(at: documentPoint) {
+                beginTextEditing(hit.id)
+            } else {
+                let element = TextElement(
+                    layerID: store.document.activeLayerID,
+                    text: "",
+                    position: documentPoint,
+                    fontRef: store.document.activeFontRef,
+                    fontSize: store.document.activeFontSize,
+                    color: store.document.strokeColor
+                )
+                store.document.addTextElement(element)
+                beginTextEditing(element.id)
+                store.markDirty()
+                refreshCanvas()
+            }
         case .line, .circle, .rectangle:
             if commandSession.isRefiningAttachedStroke {
                 startDrawingSessionIfNeeded()
@@ -707,6 +879,7 @@ struct EditorView: View {
                 snapped,
                 controlPoints: commandSession.controlPoints,
                 category: store.document.activeCategory,
+                lineVariant: store.document.lineVariant,
                 circleVariant: store.document.circleVariant,
                 rectangleVariant: store.document.rectangleVariant
             )
@@ -750,6 +923,11 @@ struct EditorView: View {
                 refreshCanvas()
             }
         case .delete:
+            if let text = store.document.textElement(at: documentPoint) {
+                store.document.removeTextElement(id: text.id)
+                refreshCanvas()
+                return
+            }
             let threshold = store.document.viewport.viewToDocument(distance: 24)
             if let stroke = store.document.selectStroke(near: documentPoint, threshold: threshold) {
                 store.document.removeStroke(id: stroke.id)
@@ -757,10 +935,13 @@ struct EditorView: View {
             } else if let selected = store.document.selectedStrokeID {
                 store.document.removeStroke(id: selected)
                 refreshCanvas()
+            } else if let selectedText = store.document.selectedTextID {
+                store.document.removeTextElement(id: selectedText)
+                refreshCanvas()
             }
         default:
             let threshold = store.document.viewport.viewToDocument(distance: 16)
-            _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
+            store.document.selectElement(near: documentPoint, threshold: threshold)
             refreshCanvas()
         }
     }
@@ -812,6 +993,8 @@ struct EditorView: View {
             switch store.document.circleVariant {
             case .center:
                 return [start, end]
+            case .edge:
+                return [start, end]
             case .ellipse:
                 let rx = max(0.001, abs(end.x - start.x))
                 let ry = max(0.001, abs(end.y - start.y))
@@ -820,8 +1003,6 @@ struct EditorView: View {
                     CGPoint(x: start.x + rx, y: start.y),
                     CGPoint(x: start.x, y: start.y + ry)
                 ]
-            default:
-                return []
             }
         case .rectangle:
             switch store.document.rectangleVariant {
@@ -833,8 +1014,8 @@ struct EditorView: View {
                     CGPoint(x: start.x + halfW, y: start.y),
                     CGPoint(x: start.x, y: start.y + halfH)
                 ]
-            default:
-                return []
+            case .edge:
+                return [start, end]
             }
         default:
             return []

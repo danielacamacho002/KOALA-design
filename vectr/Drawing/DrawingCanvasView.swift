@@ -21,6 +21,7 @@ struct DrawingCanvasView: UIViewRepresentable {
     var isConstructionPreview: Bool = false
     var commandPreviewClosed: Bool = false
     var allowsDragDraw: Bool = false
+    var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
     var onCanvasTap: ((CGPoint) -> Void)?
@@ -126,6 +127,9 @@ struct DrawingCanvasView: UIViewRepresentable {
         }
         if uiView.allowsDragDraw != allowsDragDraw {
             uiView.allowsDragDraw = allowsDragDraw
+        }
+        if uiView.lineVariant != lineVariant {
+            uiView.lineVariant = lineVariant
         }
         if uiView.circleVariant != circleVariant {
             uiView.circleVariant = circleVariant

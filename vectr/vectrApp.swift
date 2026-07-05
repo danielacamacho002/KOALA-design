@@ -9,6 +9,10 @@ import SwiftUI
 
 @main
 struct vectrApp: App {
+    init() {
+        FontLibrary.shared.registerAllImportedFonts()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

@@ -19,6 +19,7 @@ final class DrawingCanvasUIView: UIView {
 
     var isCommandMode = false
     var activeCategory: ToolCategory = .line
+    var lineVariant: LineVariant = .line
     var commandPreviewPoints: [CGPoint] = [] {
         didSet { updateCommandPreviewLayer() }
     }
@@ -39,6 +40,7 @@ final class DrawingCanvasUIView: UIView {
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
 
     private var strokeLayers: [UUID: CAShapeLayer] = [:]
+    private var textLayers: [UUID: CAShapeLayer] = [:]
     private var commandPreviewLayer: CAShapeLayer?
     private var dragPreviewLayer: CAShapeLayer?
     private var commandPointLayers: [CAShapeLayer] = []
@@ -114,8 +116,13 @@ final class DrawingCanvasUIView: UIView {
     func handleSelection(at viewPoint: CGPoint) {
         let documentPoint = document.viewport.viewToDocument(viewPoint)
         let threshold = document.viewport.viewToDocument(distance: 16)
-        let stroke = document.selectStroke(near: documentPoint, threshold: threshold)
-        delegate?.canvasDidSelectStroke(stroke)
+        let selection = document.selectElement(near: documentPoint, threshold: threshold)
+        switch selection {
+        case .stroke(let id):
+            delegate?.canvasDidSelectStroke(document.stroke(with: id))
+        case .text, .none:
+            delegate?.canvasDidSelectStroke(nil)
+        }
         reloadStrokesHighlight()
     }
 
@@ -139,6 +146,28 @@ final class DrawingCanvasUIView: UIView {
             }
         }
         reloadStrokesHighlight()
+        reloadTextElements()
+    }
+
+    func reloadTextElements() {
+        let visible = document.visibleTextElements()
+        let visibleIDs = Set(visible.map(\.id))
+
+        let staleIDs = textLayers.keys.filter { !visibleIDs.contains($0) }
+        for id in staleIDs {
+            textLayers[id]?.removeFromSuperlayer()
+            textLayers.removeValue(forKey: id)
+        }
+
+        for element in visible {
+            if let existing = textLayers[element.id] {
+                TextRenderer.update(existing, for: element, viewport: document.viewport)
+            } else {
+                let created = TextRenderer.makeLayer(for: element, viewport: document.viewport)
+                layer.addSublayer(created)
+                textLayers[element.id] = created
+            }
+        }
     }
 
     private func reloadReferenceImage() {
@@ -208,6 +237,11 @@ final class DrawingCanvasUIView: UIView {
         for (id, layer) in strokeLayers {
             if let stroke = document.stroke(with: id) {
                 StrokeRenderer.updateShapeLayer(layer, stroke: stroke, viewport: document.viewport)
+            }
+        }
+        for (id, layer) in textLayers {
+            if let element = document.textElement(with: id) {
+                TextRenderer.update(layer, for: element, viewport: document.viewport)
             }
         }
         reloadReferenceImage()
@@ -289,7 +323,7 @@ final class DrawingCanvasUIView: UIView {
             if isCommandMode {
                 onCanvasTap?(documentPoint)
             }
-        case .trim, .delete, .addAnchor:
+        case .trim, .delete, .addAnchor, .type:
             onCanvasTap?(documentPoint)
         default:
             handleSelection(at: viewPoint)
@@ -516,18 +550,26 @@ final class DrawingCanvasUIView: UIView {
     private func dragPreviewPoints(start: CGPoint, end: CGPoint) -> [CGPoint] {
         switch activeCategory {
         case .line:
+            if lineVariant == .arc {
+                return []
+            }
             return [start, end]
         case .circle:
             switch circleVariant {
             case .center:
                 let radius = hypot(end.x - start.x, end.y - start.y)
                 return ShapeGeometry.circleCardinalPoints(center: start, radius: radius)
+            case .edge:
+                let center = CGPoint(
+                    x: (start.x + end.x) / 2,
+                    y: (start.y + end.y) / 2
+                )
+                let radius = hypot(end.x - start.x, end.y - start.y) / 2
+                return ShapeGeometry.circleCardinalPoints(center: center, radius: radius)
             case .ellipse:
                 let rx = max(0.001, abs(end.x - start.x))
                 let ry = max(0.001, abs(end.y - start.y))
                 return ShapeGeometry.ellipseCardinalPoints(center: start, rx: rx, ry: ry)
-            default:
-                return [start, end]
             }
         case .rectangle:
             switch rectangleVariant {
@@ -595,7 +637,7 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func shouldAcceptDrawingTouch(_ touch: UITouch) -> Bool {
-        if touch.type == .pencil { return true }
+        if touch.type == .pencil || touch.type == .stylus { return true }
         guard !document.settings.allowsFingerDrawing else { return true }
         return false
     }

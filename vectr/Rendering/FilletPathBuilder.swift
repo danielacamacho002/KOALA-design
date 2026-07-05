@@ -180,7 +180,7 @@ enum FilletPathBuilder {
             if smoothMiddles.contains(index), !isEndpoint {
                 let prev = points[(index - 1 + count) % count]
                 let next = points[(index + 1) % count]
-                for point in ShapeGeometry.arcPoints(
+                for point in ShapeGeometry.arcPointsThrough(
                     start: prev,
                     end: next,
                     through: points[index],
