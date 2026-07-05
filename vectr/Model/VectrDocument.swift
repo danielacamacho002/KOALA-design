@@ -23,6 +23,8 @@ final class VectrDocument {
     var selectedStrokeID: UUID?
     var snapEnabled: Bool = true
     var dimensionsVisible: Bool = false
+    // Document-space offsets of dragged dimension labels, keyed by "<strokeID>:<dimensionID>".
+    var dimensionOffsets: [String: CGPoint] = [:]
     var scaleUniform: Bool = true
     var selectedAnchorIndices: Set<Int> = []
     var selectedFilletCornerIndices: Set<Int> = []
@@ -93,6 +95,7 @@ final class VectrDocument {
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
         registrationMarks = snapshot.registrationMarks
+        dimensionOffsets = snapshot.dimensionOffsets
         settings.syncCanvasExtentToMaximum()
         syncGridFromSettings()
         refreshRegistrationMarkSuggestions()
@@ -312,6 +315,20 @@ final class VectrDocument {
 
     func beginInteractiveEdit() {
         pushUndo()
+    }
+
+    static func dimensionOffsetKey(strokeID: UUID, dimensionID: String) -> String {
+        "\(strokeID.uuidString):\(dimensionID)"
+    }
+
+    func setDimensionOffset(key: String, offset: CGPoint?, recordUndo: Bool = true) {
+        if recordUndo { pushUndo() }
+        if let offset {
+            dimensionOffsets[key] = offset
+        } else {
+            dimensionOffsets.removeValue(forKey: key)
+        }
+        geometryRevision += 1
     }
 
     func translateStroke(id: UUID, delta: CGPoint, recordUndo: Bool = false) {
@@ -772,7 +789,8 @@ final class VectrDocument {
             referenceImageFrame: referenceImageFrame,
             printLayout: printLayout,
             printStrokeTransforms: printStrokeTransforms,
-            registrationMarks: registrationMarks
+            registrationMarks: registrationMarks,
+            dimensionOffsets: dimensionOffsets
         )
     }
 
@@ -791,6 +809,7 @@ final class VectrDocument {
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
         registrationMarks = snapshot.registrationMarks
+        dimensionOffsets = snapshot.dimensionOffsets
         settings.syncCanvasExtentToMaximum()
         syncGridFromSettings()
         printLayoutRevision += 1
@@ -813,4 +832,5 @@ struct DocumentSnapshot: Codable {
     var printLayout: PrintLayoutSettings = PrintLayoutSettings()
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
     var registrationMarks: [RegistrationMark] = []
+    var dimensionOffsets: [String: CGPoint] = [:]
 }
