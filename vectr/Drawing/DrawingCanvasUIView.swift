@@ -3,6 +3,7 @@
 //  vectr
 //
 
+import SwiftUI
 import UIKit
 
 protocol DrawingCanvasDelegate: AnyObject {
@@ -58,7 +59,7 @@ final class DrawingCanvasUIView: UIView {
     init(document: VectrDocument) {
         self.document = document
         super.init(frame: .zero)
-        backgroundColor = UIColor(red: 246/255, green: 243/255, blue: 228/255, alpha: 1)
+        backgroundColor = UIColor(Color(hex: AppearanceSettings.defaultCanvasHex))
         isMultipleTouchEnabled = true
         layer.addSublayer(gridLayer)
         setupGestures()

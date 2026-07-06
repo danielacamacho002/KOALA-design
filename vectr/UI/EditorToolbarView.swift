@@ -18,6 +18,7 @@ struct EditorToolbarView: View {
     var onToolSelected: (ToolCategory) -> Void
     var onVariantSelected: () -> Void
     var onSwitchToPrintLayout: (() -> Void)?
+    var backgroundColor: Color = Color(hex: AppearanceSettings.defaultToolbarHex)
 
     private let toolbarHeight: CGFloat = 48
 
@@ -66,7 +67,7 @@ struct EditorToolbarView: View {
         .frame(height: toolbarHeight)
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(red: 84/255, green: 85/255, blue: 81/255))
+        .background(backgroundColor)
     }
 
     private func toolbarIconButton(

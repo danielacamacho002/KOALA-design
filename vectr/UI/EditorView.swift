@@ -37,6 +37,8 @@ struct EditorView: View {
     @State private var savedDesignViewport: ViewportTransform?
     @State private var printExportDocument: EditorExportDocument?
     @State private var lastSavedSnapshot: DocumentSnapshot?
+    @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
+    @AppStorage(AppearanceSettings.toolbarColorKey) private var toolbarColorHex = AppearanceSettings.defaultToolbarHex
 
     init(projectURL: URL? = nil, projectLibrary: ProjectLibrary? = nil) {
         self.projectURL = projectURL
@@ -156,6 +158,7 @@ struct EditorView: View {
                     lineVariant: store.document.lineVariant,
                     circleVariant: store.document.circleVariant,
                     rectangleVariant: store.document.rectangleVariant,
+                    canvasBackgroundColor: Color(hex: canvasColorHex),
                     onCanvasTap: handleCanvasTap,
                     onStrokeSelected: { stroke in
                         store.document.selectedStrokeID = stroke?.id
@@ -356,7 +359,8 @@ struct EditorView: View {
                 onSave: { saveDocument() },
                 onToolSelected: handleToolSelected,
                 onVariantSelected: { startDrawingSessionIfNeeded() },
-                onSwitchToPrintLayout: { switchToPrintLayoutMode() }
+                onSwitchToPrintLayout: { switchToPrintLayoutMode() },
+                backgroundColor: Color(hex: toolbarColorHex)
             )
         }
     }
