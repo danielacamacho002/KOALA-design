@@ -36,6 +36,9 @@ struct VectorStroke: Identifiable, Codable, Equatable {
     var rotationBaseCenter: CGPoint? = nil
     /// Nested closed contours subtracted from the fill (even-odd), e.g. inner circle holes.
     var cutoutPoints: [[CGPoint]] = []
+    /// Editable Bezier tangent handles for `.curve` strokes, one entry per anchor in `points`.
+    /// When nil, curves fall back to the auto-computed cardinal spline.
+    var curveHandles: [CurveHandle]? = nil
 
     init(
         id: UUID = UUID(),
@@ -51,7 +54,8 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         shapeRotation: CGFloat? = nil,
         rotationBasePoints: [CGPoint]? = nil,
         rotationBaseCenter: CGPoint? = nil,
-        cutoutPoints: [[CGPoint]] = []
+        cutoutPoints: [[CGPoint]] = [],
+        curveHandles: [CurveHandle]? = nil
     ) {
         self.id = id
         self.layerID = layerID
@@ -67,6 +71,7 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         self.rotationBasePoints = rotationBasePoints
         self.rotationBaseCenter = rotationBaseCenter
         self.cutoutPoints = cutoutPoints
+        self.curveHandles = curveHandles
     }
 
     var resolvedShapeRotation: CGFloat {
@@ -134,12 +139,15 @@ struct VectorStroke: Identifiable, Codable, Equatable {
 
     func cgPath() -> CGPath {
         let path = CGMutablePath()
-        guard let first = points.first else { return path }
+        // Curves are stored as sparse anchors; expand to the smoothed geometry so
+        // exported/extruded paths match what is drawn on screen.
+        let pathPoints = shapeType == .curve ? ShapeGeometry.renderPoints(for: self) : points
+        guard let first = pathPoints.first else { return path }
         path.move(to: first)
-        for point in points.dropFirst() {
+        for point in pathPoints.dropFirst() {
             path.addLine(to: point)
         }
-        if isClosed, points.count > 2 {
+        if isClosed, pathPoints.count > 2 {
             path.closeSubpath()
         }
         return path
@@ -227,6 +235,20 @@ struct VectorStroke: Identifiable, Codable, Equatable {
             path.addLine(to: point)
         }
         path.closeSubpath()
+    }
+}
+
+/// Bezier tangent handles for a single curve anchor, stored as offsets from the anchor.
+/// Absolute control point = anchor + offset.
+struct CurveHandle: Codable, Equatable {
+    /// Control point leading into the anchor (from the previous segment).
+    var inOffset: CGPoint
+    /// Control point leading out of the anchor (toward the next segment).
+    var outOffset: CGPoint
+
+    init(inOffset: CGPoint = .zero, outOffset: CGPoint = .zero) {
+        self.inOffset = inOffset
+        self.outOffset = outOffset
     }
 }
 

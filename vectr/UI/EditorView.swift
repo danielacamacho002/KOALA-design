@@ -818,9 +818,12 @@ struct EditorView: View {
             strokeWidth: store.document.strokeWidth,
             strokeColor: store.document.strokeColor,
             isClosed: false,
-            shapeType: .curve
+            shapeType: .curve,
+            curveHandles: ShapeGeometry.defaultCurveHandles(anchors: anchors)
         )
         store.document.addStroke(stroke)
+        // Select the new curve so its anchor + tangent handles are immediately editable.
+        store.document.selectedStrokeID = stroke.id
         store.markDirty()
         refreshCanvas()
     }

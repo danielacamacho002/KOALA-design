@@ -425,7 +425,26 @@ enum ShapeGeometry {
         updated.cutoutPoints = stroke.cutoutPoints.map {
             rotatePoints($0, around: pivot, by: angle)
         }
+
+        if let handles = stroke.curveHandles {
+            let cosR = cos(angle)
+            let sinR = sin(angle)
+            updated.curveHandles = handles.map { handle in
+                CurveHandle(
+                    inOffset: rotateVector(handle.inOffset, cos: cosR, sin: sinR),
+                    outOffset: rotateVector(handle.outOffset, cos: cosR, sin: sinR)
+                )
+            }
+        }
         return updated
+    }
+
+    /// Rotates a free vector (offset) about the origin.
+    private static func rotateVector(_ vector: CGPoint, cos cosR: CGFloat, sin sinR: CGFloat) -> CGPoint {
+        CGPoint(
+            x: vector.x * cosR - vector.y * sinR,
+            y: vector.x * sinR + vector.y * cosR
+        )
     }
 
     static func renderPoints(for stroke: VectorStroke) -> [CGPoint] {
@@ -457,6 +476,9 @@ enum ShapeGeometry {
         case .arc:
             return stroke.points
         case .curve:
+            if let handles = stroke.curveHandles, handles.count == stroke.points.count {
+                return curvePoints(anchors: stroke.points, handles: handles)
+            }
             return smoothCurvePoints(anchors: stroke.points)
         default:
             return stroke.points
@@ -698,6 +720,75 @@ enum ShapeGeometry {
         }
 
         return result
+    }
+
+    /// Samples a curve through `anchors` using explicit, editable Bezier tangent handles.
+    /// Each segment `i -> i+1` uses `anchors[i] + handles[i].outOffset` and
+    /// `anchors[i+1] + handles[i+1].inOffset` as its two cubic control points.
+    static func curvePoints(
+        anchors: [CGPoint],
+        handles: [CurveHandle],
+        samplesPerSegment: Int = 24
+    ) -> [CGPoint] {
+        guard anchors.count >= 2, handles.count == anchors.count else { return anchors }
+
+        var result: [CGPoint] = []
+        let count = anchors.count
+
+        for index in 0..<(count - 1) {
+            let p1 = anchors[index]
+            let p2 = anchors[index + 1]
+            let control1 = CGPoint(
+                x: p1.x + handles[index].outOffset.x,
+                y: p1.y + handles[index].outOffset.y
+            )
+            let control2 = CGPoint(
+                x: p2.x + handles[index + 1].inOffset.x,
+                y: p2.y + handles[index + 1].inOffset.y
+            )
+
+            let firstStep = index == 0 ? 0 : 1
+            for step in firstStep...samplesPerSegment {
+                let t = CGFloat(step) / CGFloat(samplesPerSegment)
+                result.append(cubicBezierPoint(p1, control1, control2, p2, t: t))
+            }
+        }
+
+        return result
+    }
+
+    /// Derives editable tangent handles from the auto-computed cardinal spline so a
+    /// freshly committed curve keeps its current look but becomes reshapeable.
+    static func defaultCurveHandles(anchors: [CGPoint]) -> [CurveHandle] {
+        let count = anchors.count
+        guard count >= 2 else {
+            return anchors.map { _ in CurveHandle() }
+        }
+
+        var handles = anchors.map { _ in CurveHandle() }
+
+        for index in 0..<(count - 1) {
+            let p1 = anchors[index]
+            let p2 = anchors[index + 1]
+            let p0 = index > 0 ? anchors[index - 1] : p1
+            let p3 = index < count - 2 ? anchors[index + 2] : p2
+
+            let tension1 = curveTension(prev: p0, cur: p1, next: p2)
+            let tension2 = curveTension(prev: p1, cur: p2, next: p3)
+
+            // Outgoing handle at p1 for this segment.
+            handles[index].outOffset = CGPoint(
+                x: (p2.x - p0.x) * tension1 / 6,
+                y: (p2.y - p0.y) * tension1 / 6
+            )
+            // Incoming handle at p2 for this segment.
+            handles[index + 1].inOffset = CGPoint(
+                x: -(p3.x - p1.x) * tension2 / 6,
+                y: -(p3.y - p1.y) * tension2 / 6
+            )
+        }
+
+        return handles
     }
 
     /// Roundness factor in `0...1` for the corner at `cur`.
