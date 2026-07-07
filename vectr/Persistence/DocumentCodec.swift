@@ -12,6 +12,7 @@ enum DocumentCodec {
         let snapshot = DocumentSnapshot(
             layers: document.layers,
             strokes: document.strokes,
+            textElements: document.textElements,
             activeLayerID: document.activeLayerID,
             viewport: document.viewport,
             grid: document.grid,
@@ -23,7 +24,8 @@ enum DocumentCodec {
             referenceImageFrame: document.referenceImageFrame,
             printLayout: document.printLayout,
             printStrokeTransforms: document.printStrokeTransforms,
-            registrationMarks: document.registrationMarks
+            registrationMarks: document.registrationMarks,
+            dimensionOffsets: document.dimensionOffsets
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

@@ -12,7 +12,20 @@ enum StrokeEditor {
         guard points.indices.contains(index), points.count > 2 else { return nil }
         points.remove(at: index)
         let closed = stroke.isClosed && points.count > 2
-        return updatedStroke(stroke, points: points, isClosed: closed)
+        let smooth = remappedSmoothForDeletion(stroke.smoothCornerIndices, removedIndex: index)
+        return updatedStroke(stroke, points: points, isClosed: closed, smoothMiddles: smooth)
+    }
+
+    /// Shifts baked-arc midpoint indices after removing an anchor. Corners whose arc span is
+    /// touched by the removal are dropped so a stale/distorted arc is never rendered.
+    private static func remappedSmoothForDeletion(_ indices: Set<Int>?, removedIndex: Int) -> Set<Int>? {
+        guard let indices, !indices.isEmpty else { return nil }
+        let shifted = indices.compactMap { middle -> Int? in
+            if middle == removedIndex || middle - 1 == removedIndex || middle + 1 == removedIndex { return nil }
+            return middle > removedIndex ? middle - 1 : middle
+        }
+        let set = Set(shifted)
+        return set.isEmpty ? nil : set
     }
 
     /// Removes one side from a closed shape (reopens as polyline), or removes a vertex from an open path.
@@ -111,7 +124,12 @@ enum StrokeEditor {
         projectPointOnSegment(point: point, start: start, end: end).distance
     }
 
-    private static func updatedStroke(_ stroke: VectorStroke, points: [CGPoint], isClosed: Bool) -> VectorStroke {
+    private static func updatedStroke(
+        _ stroke: VectorStroke,
+        points: [CGPoint],
+        isClosed: Bool,
+        smoothMiddles: Set<Int>? = nil
+    ) -> VectorStroke {
         var shapeType = stroke.shapeType
         if !isClosed, shapeType == .circle || shapeType == .ellipse || shapeType == .rectangle {
             shapeType = .polyline
@@ -129,6 +147,7 @@ enum StrokeEditor {
             isClosed: isClosed,
             cornerRadius: stroke.cornerRadius,
             cornerRadiiByIndex: nil,
+            smoothCornerIndices: smoothMiddles,
             isConstruction: stroke.isConstruction,
             shapeType: shapeType,
             cutoutPoints: isClosed ? stroke.cutoutPoints : [],

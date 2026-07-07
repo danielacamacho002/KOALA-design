@@ -11,13 +11,14 @@ struct SideToolPaletteView: View {
     var onVariantSelected: () -> Void
 
     @State private var openVariantMenu: ToolCategory?
+    @State private var fontLibrary = FontLibrary.shared
 
     private let iconSize: CGFloat = 34
 
     var body: some View {
         HStack(spacing: 2) {
             ForEach(ToolCategory.shapeCategories, id: \.self) { category in
-                toolButton(category, showsVariantMenu: category.isDrawingTool)
+                toolButton(category, showsVariantMenu: category.isDrawingTool || category == .type)
             }
 
             ToolPaletteSeparator()
@@ -42,7 +43,8 @@ struct SideToolPaletteView: View {
             systemImage: category.systemImage,
             isActive: isActive,
             size: iconSize,
-            showsSubmenu: showsVariantMenu && isActive
+            showsSubmenu: showsVariantMenu && isActive,
+            inactiveColor: .white
         ) {
             handleToolTap(category, showsVariantMenu: showsVariantMenu)
         }
@@ -50,15 +52,22 @@ struct SideToolPaletteView: View {
 
         if showsVariantMenu {
             button.popover(isPresented: variantMenuBinding(for: category), arrowEdge: .top) {
-                ToolVariantDropdown(
-                    options: variantOptions(for: category),
-                    selectedIndex: selectedVariantIndex(for: category),
-                    onSelect: { index in
-                        applyVariant(category: category, index: index)
+                if category == .type {
+                    FontPickerView(document: document, library: fontLibrary) {
                         openVariantMenu = nil
                     }
-                )
-                .presentationCompactAdaptation(.popover)
+                    .presentationCompactAdaptation(.popover)
+                } else {
+                    ToolVariantDropdown(
+                        options: variantOptions(for: category),
+                        selectedIndex: selectedVariantIndex(for: category),
+                        onSelect: { index in
+                            applyVariant(category: category, index: index)
+                            openVariantMenu = nil
+                        }
+                    )
+                    .presentationCompactAdaptation(.popover)
+                }
             }
         } else {
             button

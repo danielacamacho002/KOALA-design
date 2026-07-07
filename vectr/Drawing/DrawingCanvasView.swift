@@ -21,8 +21,10 @@ struct DrawingCanvasView: UIViewRepresentable {
     var isConstructionPreview: Bool = false
     var commandPreviewClosed: Bool = false
     var allowsDragDraw: Bool = false
+    var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
+    var canvasBackgroundColor: Color = Color(hex: AppearanceSettings.defaultCanvasHex)
     var onCanvasTap: ((CGPoint) -> Void)?
     var onStrokeSelected: ((VectorStroke?) -> Void)?
     var onDragDrawBegan: ((CGPoint) -> Void)?
@@ -104,6 +106,10 @@ struct DrawingCanvasView: UIViewRepresentable {
     }
 
     private func configure(_ uiView: DrawingCanvasUIView) {
+        let resolvedBackground = UIColor(canvasBackgroundColor)
+        if uiView.backgroundColor != resolvedBackground {
+            uiView.backgroundColor = resolvedBackground
+        }
         if uiView.isCommandMode != isCommandMode {
             uiView.isCommandMode = isCommandMode
         }
@@ -127,6 +133,9 @@ struct DrawingCanvasView: UIViewRepresentable {
         }
         if uiView.allowsDragDraw != allowsDragDraw {
             uiView.allowsDragDraw = allowsDragDraw
+        }
+        if uiView.lineVariant != lineVariant {
+            uiView.lineVariant = lineVariant
         }
         if uiView.circleVariant != circleVariant {
             uiView.circleVariant = circleVariant

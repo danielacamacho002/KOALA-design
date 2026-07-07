@@ -39,7 +39,8 @@ enum ShapeGeometry {
         category: ToolCategory,
         lineVariant: LineVariant,
         circleVariant: CircleVariant,
-        rectangleVariant: RectangleVariant
+        rectangleVariant: RectangleVariant,
+        arcSweepRadians: CGFloat? = nil
     ) -> [CGPoint] {
         guard !controlPoints.isEmpty else { return [] }
         switch category {
@@ -49,7 +50,12 @@ enum ShapeGeometry {
                 return controlPoints
             case .arc:
                 guard controlPoints.count >= 3 else { return controlPoints }
-                return arcPoints(start: controlPoints[0], end: controlPoints[1], through: controlPoints[2])
+                return arcPoints(
+                    center: controlPoints[0],
+                    start: controlPoints[1],
+                    end: controlPoints[2],
+                    sweep: arcSweepRadians
+                )
             }
         case .circle:
             switch circleVariant {
@@ -113,8 +119,11 @@ enum ShapeGeometry {
                 guard let start = stroke.points.first, let end = stroke.points.last else { return nil }
                 return [start, end]
             case .arc:
-                guard stroke.points.count >= 3 else { return nil }
-                return [stroke.points.first!, stroke.points[stroke.points.count / 2], stroke.points.last!]
+                guard stroke.points.count >= 3,
+                      let start = stroke.points.first,
+                      let end = stroke.points.last,
+                      let center = arcControlCenter(from: stroke.points) else { return nil }
+                return [center, start, end]
             }
         case .circle:
             switch circleVariant {
@@ -172,14 +181,16 @@ enum ShapeGeometry {
         strokeWidth: CGFloat,
         strokeColor: CodableColor,
         closed: Bool,
-        cornerRadius: CGFloat = 0
+        cornerRadius: CGFloat = 0,
+        arcSweepRadians: CGFloat? = nil
     ) -> VectorStroke? {
         let points = previewPoints(
             controlPoints: controlPoints,
             category: category,
             lineVariant: lineVariant,
             circleVariant: circleVariant,
-            rectangleVariant: rectangleVariant
+            rectangleVariant: rectangleVariant,
+            arcSweepRadians: arcSweepRadians
         )
         guard points.count >= 2 else { return nil }
 
@@ -312,6 +323,15 @@ enum ShapeGeometry {
                 )
             }
             return stroke.boundingBox().map { CGPoint(x: $0.midX, y: $0.midY) }
+        case .polyline, .construction:
+            if let center = stablePolylineCenter(for: stroke) {
+                return center
+            }
+            if let bbox = stroke.boundingBox() {
+                return CGPoint(x: bbox.midX, y: bbox.midY)
+            }
+            guard let first = stroke.points.first, let last = stroke.points.last else { return nil }
+            return CGPoint(x: (first.x + last.x) / 2, y: (first.y + last.y) / 2)
         default:
             if let bbox = stroke.boundingBox() {
                 return CGPoint(x: bbox.midX, y: bbox.midY)
@@ -481,8 +501,55 @@ enum ShapeGeometry {
             }
             return smoothCurvePoints(anchors: stroke.points)
         default:
+            if let smooth = stroke.smoothCornerIndices, !smooth.isEmpty {
+                return smoothedContourPoints(
+                    points: stroke.points,
+                    closed: stroke.isClosed,
+                    smoothMiddles: smooth
+                )
+            }
             return stroke.points
         }
+    }
+
+    /// Expands baked fillet corners (single midpoint anchors) into smooth circular arcs so the
+    /// rendered/exported contour looks curved, while the stored anchor set stays minimal.
+    static func smoothedContourPoints(
+        points: [CGPoint],
+        closed: Bool,
+        smoothMiddles: Set<Int>,
+        segmentsPerArc: Int = 16
+    ) -> [CGPoint] {
+        let count = points.count
+        guard count >= 3 else { return points }
+
+        var result: [CGPoint] = []
+        func append(_ point: CGPoint) {
+            if let last = result.last, hypot(last.x - point.x, last.y - point.y) <= 0.0001 { return }
+            result.append(point)
+        }
+
+        for index in 0..<count {
+            let isEndpoint = !closed && (index == 0 || index == count - 1)
+            if smoothMiddles.contains(index), !isEndpoint {
+                let prev = points[(index - 1 + count) % count]
+                let next = points[(index + 1) % count]
+                for point in arcPointsThrough(start: prev, end: next, through: points[index], segments: segmentsPerArc) {
+                    append(point)
+                }
+            } else {
+                append(points[index])
+            }
+        }
+
+        if closed,
+           result.count > 2,
+           let first = result.first,
+           let last = result.last,
+           hypot(first.x - last.x, first.y - last.y) <= 0.0001 {
+            result.removeLast()
+        }
+        return result
     }
 
     static func circleFromCardinalPoints(_ points: [CGPoint]) -> (center: CGPoint, radius: CGFloat)? {
@@ -654,29 +721,34 @@ enum ShapeGeometry {
         ]
     }
 
-    static func arcPoints(start: CGPoint, end: CGPoint, through: CGPoint, segments: Int = 32) -> [CGPoint] {
-        guard let arc = arcCenter(start: start, end: end, through: through) else {
-            return [start, through, end]
-        }
+    static func arcPoints(
+        center: CGPoint,
+        start: CGPoint,
+        end: CGPoint,
+        sweep: CGFloat? = nil,
+        segments: Int = 32
+    ) -> [CGPoint] {
+        let radius = hypot(start.x - center.x, start.y - center.y)
+        guard radius > 0.001 else { return [start, end] }
+
+        let projectedEnd = projectArcEndpoint(center: center, start: start, point: end)
+        let startAngle = atan2(start.y - center.y, start.x - center.x)
+        let endAngle = atan2(projectedEnd.y - center.y, projectedEnd.x - center.x)
+        let resolvedSweep = sweep ?? atan2(sin(endAngle - startAngle), cos(endAngle - startAngle))
+        guard abs(resolvedSweep) > 0.0001 else { return [start, projectedEnd] }
+
+        let adaptiveSegments = max(
+            segments,
+            min(128, max(12, Int(ceil(abs(resolvedSweep) / (.pi / 24)))))
+        )
         var points: [CGPoint] = []
-        let startAngle = atan2(start.y - arc.center.y, start.x - arc.center.x)
-        let endAngle = atan2(end.y - arc.center.y, end.x - arc.center.x)
-        var sweep = endAngle - startAngle
-        let throughAngle = atan2(through.y - arc.center.y, through.x - arc.center.x)
-        var testSweep = throughAngle - startAngle
-        while testSweep > .pi { testSweep -= 2 * .pi }
-        while testSweep < -.pi { testSweep += 2 * .pi }
-        while sweep > .pi { sweep -= 2 * .pi }
-        while sweep < -.pi { sweep += 2 * .pi }
-        if (testSweep > 0) != (sweep > 0) {
-            sweep = testSweep > 0 ? sweep + 2 * .pi : sweep - 2 * .pi
-        }
-        for i in 0...segments {
-            let t = CGFloat(i) / CGFloat(segments)
-            let angle = startAngle + sweep * t
+        points.reserveCapacity(adaptiveSegments + 1)
+        for i in 0...adaptiveSegments {
+            let t = CGFloat(i) / CGFloat(adaptiveSegments)
+            let angle = startAngle + resolvedSweep * t
             points.append(CGPoint(
-                x: arc.center.x + cos(angle) * arc.radius,
-                y: arc.center.y + sin(angle) * arc.radius
+                x: center.x + cos(angle) * radius,
+                y: center.y + sin(angle) * radius
             ))
         }
         return points
@@ -825,15 +897,34 @@ enum ShapeGeometry {
         )
     }
 
+    static func projectArcEndpoint(center: CGPoint, start: CGPoint, point: CGPoint) -> CGPoint {
+        let radius = hypot(start.x - center.x, start.y - center.y)
+        guard radius > 0.001 else { return point }
+        let dx = point.x - center.x
+        let dy = point.y - center.y
+        let distance = hypot(dx, dy)
+        guard distance > 0.001 else { return start }
+        let scale = radius / distance
+        return CGPoint(x: center.x + dx * scale, y: center.y + dy * scale)
+    }
+
     static func projectCommandPoint(
         _ point: CGPoint,
         controlPoints: [CGPoint],
         category: ToolCategory,
+        lineVariant: LineVariant = .line,
         circleVariant: CircleVariant,
         rectangleVariant: RectangleVariant
     ) -> CGPoint {
         guard let center = controlPoints.first else { return point }
         switch category {
+        case .line where lineVariant == .arc:
+            guard controlPoints.count >= 2 else { return point }
+            return projectArcEndpoint(
+                center: center,
+                start: controlPoints[1],
+                point: point
+            )
         case .circle where circleVariant == .ellipse:
             if controlPoints.count == 1 {
                 let rx = max(0.001, abs(point.x - center.x))
@@ -864,6 +955,9 @@ enum ShapeGeometry {
         var midPoint: CGPoint
         var value: CGFloat
         var kind: Kind
+        // The point on the shape this dimension references. Leader lines are drawn
+        // from here to the (possibly dragged-away) label position.
+        var anchor: CGPoint
 
         enum Kind {
             case segmentLength(segmentIndex: Int)
@@ -885,7 +979,8 @@ enum ShapeGeometry {
                 label: String(format: "%.3f", diameter),
                 midPoint: CGPoint(x: circle.center.x, y: circle.center.y - circle.radius - 20),
                 value: diameter,
-                kind: .circleDiameter
+                kind: .circleDiameter,
+                anchor: CGPoint(x: circle.center.x, y: circle.center.y - circle.radius)
             )]
         case .ellipse:
             guard let ellipse = ellipseFromCardinalPoints(stroke.points) else { return [] }
@@ -895,14 +990,16 @@ enum ShapeGeometry {
                     label: String(format: "rx %.3f", ellipse.rx),
                     midPoint: CGPoint(x: ellipse.center.x + ellipse.rx / 2, y: ellipse.center.y - 24),
                     value: ellipse.rx,
-                    kind: .ellipseRX
+                    kind: .ellipseRX,
+                    anchor: CGPoint(x: ellipse.center.x + ellipse.rx / 2, y: ellipse.center.y)
                 ),
                 SemanticDimension(
                     id: "ry",
                     label: String(format: "ry %.3f", ellipse.ry),
                     midPoint: CGPoint(x: ellipse.center.x - ellipse.rx - 24, y: ellipse.center.y),
                     value: ellipse.ry,
-                    kind: .ellipseRY
+                    kind: .ellipseRY,
+                    anchor: CGPoint(x: ellipse.center.x - ellipse.rx, y: ellipse.center.y)
                 )
             ]
         case .rectangle:
@@ -916,7 +1013,8 @@ enum ShapeGeometry {
                     label: String(format: "%.3f", length),
                     midPoint: midpoint(start, end),
                     value: length,
-                    kind: .segmentLength(segmentIndex: index)
+                    kind: .segmentLength(segmentIndex: index),
+                    anchor: midpoint(start, end)
                 )
             }
         default:
@@ -932,7 +1030,8 @@ enum ShapeGeometry {
                     label: String(format: "%.3f", length),
                     midPoint: midpoint(start, end),
                     value: length,
-                    kind: .segmentLength(segmentIndex: index)
+                    kind: .segmentLength(segmentIndex: index),
+                    anchor: midpoint(start, end)
                 )
             }
         }
@@ -978,8 +1077,106 @@ enum ShapeGeometry {
         return updated
     }
 
+    private static func stablePolylineCenter(for stroke: VectorStroke) -> CGPoint? {
+        let points = normalizedPolylinePoints(stroke.points, isClosed: stroke.isClosed)
+        guard !points.isEmpty else { return nil }
+        if stroke.isClosed,
+           points.count >= 3,
+           let centroid = polygonCentroid(points) {
+            return centroid
+        }
+        let sum = points.reduce(CGPoint.zero) { partial, point in
+            CGPoint(x: partial.x + point.x, y: partial.y + point.y)
+        }
+        let count = CGFloat(points.count)
+        return CGPoint(x: sum.x / count, y: sum.y / count)
+    }
+
+    private static func normalizedPolylinePoints(_ points: [CGPoint], isClosed: Bool) -> [CGPoint] {
+        var normalized = points
+        if isClosed,
+           normalized.count > 1,
+           hypot(normalized[0].x - normalized[normalized.count - 1].x,
+                 normalized[0].y - normalized[normalized.count - 1].y) <= 0.001 {
+            normalized.removeLast()
+        }
+        return normalized
+    }
+
+    private static func polygonCentroid(_ points: [CGPoint]) -> CGPoint? {
+        guard points.count >= 3 else { return nil }
+        var twiceArea: CGFloat = 0
+        var centroidX: CGFloat = 0
+        var centroidY: CGFloat = 0
+
+        for index in points.indices {
+            let p0 = points[index]
+            let p1 = points[(index + 1) % points.count]
+            let cross = p0.x * p1.y - p1.x * p0.y
+            twiceArea += cross
+            centroidX += (p0.x + p1.x) * cross
+            centroidY += (p0.y + p1.y) * cross
+        }
+
+        guard abs(twiceArea) > 0.0001 else { return nil }
+        let scale = 1 / (3 * twiceArea)
+        return CGPoint(x: centroidX * scale, y: centroidY * scale)
+    }
+
     private static func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
         CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+    }
+
+    private static func arcControlCenter(from arcPoints: [CGPoint]) -> CGPoint? {
+        guard arcPoints.count >= 3 else { return nil }
+        if let fitted = fitCircle(from: arcPoints) {
+            return fitted.center
+        }
+        let start = arcPoints.first!
+        let end = arcPoints.last!
+        let through = arcPoints[arcPoints.count / 2]
+        if let arc = arcCenter(start: start, end: end, through: through) {
+            return arc.center
+        }
+        if let bbox = VectorStroke(layerID: UUID(), points: arcPoints).boundingBox() {
+            return CGPoint(x: bbox.midX, y: bbox.midY)
+        }
+        return nil
+    }
+
+    /// Samples the circular arc that passes through `start`, `through`, and `end` (in that order).
+    /// Used to re-expand baked fillet midpoints into smooth curves.
+    static func arcPointsThrough(
+        start: CGPoint,
+        end: CGPoint,
+        through: CGPoint,
+        segments: Int = 32
+    ) -> [CGPoint] {
+        guard let arc = arcCenter(start: start, end: end, through: through) else {
+            return [start, through, end]
+        }
+        var points: [CGPoint] = []
+        let startAngle = atan2(start.y - arc.center.y, start.x - arc.center.x)
+        let endAngle = atan2(end.y - arc.center.y, end.x - arc.center.x)
+        var sweep = endAngle - startAngle
+        let throughAngle = atan2(through.y - arc.center.y, through.x - arc.center.x)
+        var testSweep = throughAngle - startAngle
+        while testSweep > .pi { testSweep -= 2 * .pi }
+        while testSweep < -.pi { testSweep += 2 * .pi }
+        while sweep > .pi { sweep -= 2 * .pi }
+        while sweep < -.pi { sweep += 2 * .pi }
+        if (testSweep > 0) != (sweep > 0) {
+            sweep = testSweep > 0 ? sweep + 2 * .pi : sweep - 2 * .pi
+        }
+        for i in 0...segments {
+            let t = CGFloat(i) / CGFloat(segments)
+            let angle = startAngle + sweep * t
+            points.append(CGPoint(
+                x: arc.center.x + cos(angle) * arc.radius,
+                y: arc.center.y + sin(angle) * arc.radius
+            ))
+        }
+        return points
     }
 
     private static func arcCenter(start: CGPoint, end: CGPoint, through: CGPoint) -> (center: CGPoint, radius: CGFloat)? {
@@ -1030,6 +1227,21 @@ enum ShapeGeometry {
                     isClosed: true,
                     shapeType: .circle
                 )
+            case .edge:
+                let diameter = hypot(end.x - start.x, end.y - start.y)
+                guard diameter > 0.001 else { return nil }
+                let center = CGPoint(
+                    x: (start.x + end.x) / 2,
+                    y: (start.y + end.y) / 2
+                )
+                return VectorStroke(
+                    layerID: layerID,
+                    points: circleCardinalPoints(center: center, radius: diameter / 2),
+                    strokeWidth: strokeWidth,
+                    strokeColor: strokeColor,
+                    isClosed: true,
+                    shapeType: .circle
+                )
             case .ellipse:
                 let rx = max(0.001, abs(end.x - start.x))
                 let ry = max(0.001, abs(end.y - start.y))
@@ -1041,8 +1253,6 @@ enum ShapeGeometry {
                     isClosed: true,
                     shapeType: .ellipse
                 )
-            default:
-                return nil
             }
         case .rectangle:
             switch rectangleVariant {

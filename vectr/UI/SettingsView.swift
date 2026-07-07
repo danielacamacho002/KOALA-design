@@ -16,6 +16,8 @@ struct SettingsView: View {
     @State private var cornerRadiusDisplay: Double = 0
     @State private var thicknessDisplay: Double = 1.5
 
+    @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
+
     var body: some View {
         NavigationStack {
             Form {
@@ -43,6 +45,14 @@ struct SettingsView: View {
                     Text("Apple Pencil input always remains enabled.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("Appearance") {
+                    ColorSettingRow(
+                        title: "Canvas color",
+                        selectedHex: $canvasColorHex,
+                        presets: AppearanceSettings.canvasPresets
+                    )
                 }
 
                 Section("Canvas & grid") {
@@ -155,5 +165,36 @@ struct SettingsView: View {
             return "\(Int(value)) \(unit)"
         }
         return String(format: "%.1f %@", value, unit)
+    }
+}
+
+private struct ColorSettingRow: View {
+    let title: String
+    @Binding var selectedHex: String
+    let presets: [String]
+
+    var body: some View {
+        LabeledContent(title) {
+            HStack(spacing: 10) {
+                ForEach(presets, id: \.self) { preset in
+                    let isSelected = preset.caseInsensitiveCompare(selectedHex) == .orderedSame
+                    Button {
+                        selectedHex = preset
+                    } label: {
+                        Circle()
+                            .fill(Color(hex: preset))
+                            .frame(width: 24, height: 24)
+                            .overlay {
+                                Circle().strokeBorder(
+                                    isSelected ? Color.accentColor : Color.primary.opacity(0.15),
+                                    lineWidth: isSelected ? 3 : 1
+                                )
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(title) #\(preset)")
+                }
+            }
+        }
     }
 }

@@ -12,6 +12,7 @@ import SwiftUI
 final class VectrDocument {
     var layers: [Layer]
     var strokes: [VectorStroke]
+    var textElements: [TextElement] = []
     var activeLayerID: UUID
     var viewport: ViewportTransform
     var grid: GridSettings
@@ -22,6 +23,8 @@ final class VectrDocument {
     var selectedStrokeID: UUID?
     var snapEnabled: Bool = true
     var dimensionsVisible: Bool = false
+    // Document-space offsets of dragged dimension labels, keyed by "<strokeID>:<dimensionID>".
+    var dimensionOffsets: [String: CGPoint] = [:]
     var scaleUniform: Bool = true
     var selectedAnchorIndices: Set<Int> = []
     var selectedFilletCornerIndices: Set<Int> = []
@@ -32,6 +35,9 @@ final class VectrDocument {
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
+    var selectedTextID: UUID?
+    var activeFontRef: FontRef = .default
+    var activeFontSize: CGFloat = 24
     var referenceImageData: Data?
     var referenceImageFrame: CGRect?
 
@@ -76,6 +82,7 @@ final class VectrDocument {
     init(snapshot: DocumentSnapshot) {
         layers = snapshot.layers
         strokes = snapshot.strokes
+        textElements = snapshot.textElements
         activeLayerID = snapshot.activeLayerID
         viewport = snapshot.viewport
         grid = snapshot.grid
@@ -88,6 +95,7 @@ final class VectrDocument {
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
         registrationMarks = snapshot.registrationMarks
+        dimensionOffsets = snapshot.dimensionOffsets
         settings.syncCanvasExtentToMaximum()
         syncGridFromSettings()
         refreshRegistrationMarkSuggestions()
@@ -104,6 +112,69 @@ final class VectrDocument {
 
     func stroke(with id: UUID) -> VectorStroke? {
         strokes.first { $0.id == id }
+    }
+
+    // MARK: - Text Elements
+
+    func visibleTextElements() -> [TextElement] {
+        let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
+        return textElements.filter { visibleLayerIDs.contains($0.layerID) }
+    }
+
+    func textElement(with id: UUID) -> TextElement? {
+        textElements.first { $0.id == id }
+    }
+
+    func addTextElement(_ element: TextElement) {
+        pushUndo()
+        textElements.append(element)
+        geometryRevision += 1
+    }
+
+    func updateTextElement(_ element: TextElement, recordUndo: Bool = true) {
+        guard let index = textElements.firstIndex(where: { $0.id == element.id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index] = element
+        geometryRevision += 1
+    }
+
+    func removeTextElement(id: UUID) {
+        guard textElements.contains(where: { $0.id == id }) else { return }
+        pushUndo()
+        textElements.removeAll { $0.id == id }
+        if selectedTextID == id {
+            selectedTextID = nil
+        }
+        geometryRevision += 1
+    }
+
+    func translateText(id: UUID, delta: CGPoint, recordUndo: Bool = false) {
+        guard let index = textElements.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index].position.x += delta.x
+        textElements[index].position.y += delta.y
+        geometryRevision += 1
+    }
+
+    func setTextPosition(id: UUID, position: CGPoint, recordUndo: Bool = false) {
+        guard let index = textElements.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index].position = position
+        geometryRevision += 1
+    }
+
+    func setTextRotation(id: UUID, radians: CGFloat, recordUndo: Bool = false) {
+        guard let index = textElements.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index].rotation = radians
+        geometryRevision += 1
+    }
+
+    func setTextFontSize(id: UUID, size: CGFloat, recordUndo: Bool = false) {
+        guard let index = textElements.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index].fontSize = max(1, size)
+        geometryRevision += 1
     }
 
     /// End point of the most recent open line on the given layer, if any.
@@ -244,6 +315,20 @@ final class VectrDocument {
 
     func beginInteractiveEdit() {
         pushUndo()
+    }
+
+    static func dimensionOffsetKey(strokeID: UUID, dimensionID: String) -> String {
+        "\(strokeID.uuidString):\(dimensionID)"
+    }
+
+    func setDimensionOffset(key: String, offset: CGPoint?, recordUndo: Bool = true) {
+        if recordUndo { pushUndo() }
+        if let offset {
+            dimensionOffsets[key] = offset
+        } else {
+            dimensionOffsets.removeValue(forKey: key)
+        }
+        geometryRevision += 1
     }
 
     func translateStroke(id: UUID, delta: CGPoint, recordUndo: Bool = false) {
@@ -401,7 +486,9 @@ final class VectrDocument {
         guard targetCount >= 3 else {
             return .invalidTarget
         }
-        let current = currentAnchorCount(for: stroke)
+        // Baking fillets adds permanent anchors, so compare against the post-bake count.
+        let bakedStroke = AnchorPointEngine.bakedFilletStroke(for: stroke) ?? stroke
+        let current = currentAnchorCount(for: bakedStroke)
         if targetCount <= current {
             return .alreadyHasCount(current)
         }
@@ -443,6 +530,32 @@ final class VectrDocument {
         } else {
             selectedFilletCornerIndices.insert(index)
         }
+    }
+
+    /// Shared fillet radius of the currently selected corners, for display in the fillet panel.
+    enum FilletRadiusSelection: Equatable {
+        case none
+        case uniform(CGFloat)
+        case mixed
+    }
+
+    func selectedFilletRadiusSummary() -> FilletRadiusSelection {
+        guard let id = selectedStrokeID,
+              let stroke = stroke(with: id),
+              !selectedFilletCornerIndices.isEmpty else { return .none }
+
+        let resolved = stroke.resolvedFilletCornerRadii()
+        var value: CGFloat?
+        for index in selectedFilletCornerIndices {
+            let radius = max(0, resolved[index] ?? 0)
+            if let existing = value {
+                if abs(existing - radius) > 0.0001 { return .mixed }
+            } else {
+                value = radius
+            }
+        }
+        guard let value else { return .none }
+        return .uniform(value)
     }
 
     func clearToolSelections() {
@@ -549,13 +662,16 @@ final class VectrDocument {
     /// Centers visible artwork on the paper grid the first time print layout is opened.
     func autoPositionDesignOnPrintGrid() {
         guard printLayout.contentOffset == .zero, printStrokeTransforms.isEmpty else { return }
-        let strokes = visibleStrokes()
-        guard !strokes.isEmpty else { return }
 
         var points: [CGPoint] = []
-        for stroke in strokes {
+        for stroke in visibleStrokes() {
             points.append(contentsOf: ShapeGeometry.renderPoints(for: stroke))
         }
+        for element in visibleTextElements() {
+            points.append(contentsOf: element.corners())
+        }
+        guard !points.isEmpty else { return }
+
         let designBounds = PrintLayoutCoordinateSpace.boundingRect(for: points)
         let gridBounds = PrintPageGridEngine.gridBounds(for: printLayout)
         guard !designBounds.isNull, !gridBounds.isNull else { return }
@@ -632,6 +748,12 @@ final class VectrDocument {
         for stroke in visibleStrokes() {
             points.append(contentsOf: ShapeGeometry.renderPoints(for: transformedPrintStroke(stroke)))
         }
+        let offset = printLayout.contentOffset
+        for element in visibleTextElements() {
+            points.append(contentsOf: element.corners().map {
+                CGPoint(x: $0.x + offset.x, y: $0.y + offset.y)
+            })
+        }
         let gridBounds = PrintPageGridEngine.gridBounds(for: printLayout)
         points.append(contentsOf: [
             gridBounds.origin,
@@ -683,6 +805,7 @@ final class VectrDocument {
         DocumentSnapshot(
             layers: layers,
             strokes: strokes,
+            textElements: textElements,
             activeLayerID: activeLayerID,
             viewport: viewport,
             grid: grid,
@@ -694,13 +817,15 @@ final class VectrDocument {
             referenceImageFrame: referenceImageFrame,
             printLayout: printLayout,
             printStrokeTransforms: printStrokeTransforms,
-            registrationMarks: registrationMarks
+            registrationMarks: registrationMarks,
+            dimensionOffsets: dimensionOffsets
         )
     }
 
     private func apply(_ snapshot: DocumentSnapshot) {
         layers = snapshot.layers
         strokes = snapshot.strokes
+        textElements = snapshot.textElements
         activeLayerID = snapshot.activeLayerID
         grid = snapshot.grid
         settings = snapshot.settings
@@ -712,6 +837,7 @@ final class VectrDocument {
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
         registrationMarks = snapshot.registrationMarks
+        dimensionOffsets = snapshot.dimensionOffsets
         settings.syncCanvasExtentToMaximum()
         syncGridFromSettings()
         printLayoutRevision += 1
@@ -721,6 +847,7 @@ final class VectrDocument {
 struct DocumentSnapshot: Codable {
     var layers: [Layer]
     var strokes: [VectorStroke]
+    var textElements: [TextElement] = []
     var activeLayerID: UUID
     var viewport: ViewportTransform
     var grid: GridSettings
@@ -733,4 +860,5 @@ struct DocumentSnapshot: Codable {
     var printLayout: PrintLayoutSettings = PrintLayoutSettings()
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
     var registrationMarks: [RegistrationMark] = []
+    var dimensionOffsets: [String: CGPoint] = [:]
 }

@@ -22,6 +22,37 @@ enum AnchorPointEngine {
             && anchorCount(for: stroke) >= 3
     }
 
+    /// Collapses any live fillets on the stroke into permanent anchor points and clears the
+    /// fillet modifier. Returns `nil` when there is nothing to bake so callers can fall back
+    /// to the original stroke.
+    static func bakedFilletStroke(for stroke: VectorStroke) -> VectorStroke? {
+        guard stroke.hasAnyCornerFillets,
+              let baked = FilletPathBuilder.bakedGeometry(for: stroke),
+              baked.points.count >= 3 else { return nil }
+
+        // Once fillets are baked, the geometry is a plain polyline; rectangle/parametric
+        // types no longer describe the point set, so demote to polyline.
+        var shapeType = stroke.shapeType
+        if shapeType != .polyline {
+            shapeType = .polyline
+        }
+
+        return VectorStroke(
+            id: stroke.id,
+            layerID: stroke.layerID,
+            points: baked.points,
+            strokeWidth: stroke.strokeWidth,
+            strokeColor: stroke.strokeColor,
+            isClosed: stroke.isClosed,
+            cornerRadius: 0,
+            cornerRadiiByIndex: nil,
+            smoothCornerIndices: baked.smoothMiddles.isEmpty ? nil : baked.smoothMiddles,
+            isConstruction: stroke.isConstruction,
+            shapeType: shapeType,
+            cutoutPoints: stroke.cutoutPoints
+        )
+    }
+
     static func anchorCount(for stroke: VectorStroke) -> Int {
         dedupedHandlePoints(for: stroke).count
     }
@@ -33,7 +64,10 @@ enum AnchorPointEngine {
     ) -> VectorStroke? {
         guard canEditAnchors(on: stroke) else { return nil }
 
-        let working = editableStroke(for: stroke)
+        // Bake live fillets into permanent anchors first so the rounded corners survive editing.
+        let bakedBase = bakedFilletStroke(for: stroke) ?? stroke
+
+        let working = editableStroke(for: bakedBase)
         guard let projection = StrokeEditor.projectPointOnNearestEdge(
             in: working,
             point: point,
@@ -54,12 +88,34 @@ enum AnchorPointEngine {
             newPoints: points,
             insertedAt: insertIndex
         )
+        let remappedSmooth = shiftedSmoothIndices(working.smoothCornerIndices, insertedAt: insertIndex)
 
-        return updatedStroke(working, points: points, cornerRadiiByIndex: remappedCorners)
+        return updatedStroke(
+            working,
+            points: points,
+            cornerRadiiByIndex: remappedCorners,
+            smoothMiddles: remappedSmooth
+        )
     }
 
-    static func distributeToTotal(stroke: VectorStroke, targetCount: Int) -> VectorStroke? {
-        guard canEditAnchors(on: stroke), targetCount >= 3 else { return nil }
+    /// Shifts baked-arc midpoint indices to account for a newly inserted anchor. If the anchor
+    /// lands inside an arc span (adjacent to its midpoint) that corner's smoothing is dropped,
+    /// since the arc's defining neighbors would otherwise change.
+    private static func shiftedSmoothIndices(_ indices: Set<Int>?, insertedAt: Int) -> Set<Int>? {
+        guard let indices, !indices.isEmpty else { return nil }
+        let shifted = indices.compactMap { middle -> Int? in
+            if insertedAt == middle || insertedAt == middle + 1 { return nil }
+            return middle >= insertedAt ? middle + 1 : middle
+        }
+        let set = Set(shifted)
+        return set.isEmpty ? nil : set
+    }
+
+    static func distributeToTotal(stroke inputStroke: VectorStroke, targetCount: Int) -> VectorStroke? {
+        guard canEditAnchors(on: inputStroke), targetCount >= 3 else { return nil }
+
+        // Bake live fillets into permanent anchors first so the rounded corners survive editing.
+        let stroke = bakedFilletStroke(for: inputStroke) ?? inputStroke
 
         let existing = dedupedHandlePoints(for: stroke)
         let current = existing.count
@@ -329,7 +385,8 @@ enum AnchorPointEngine {
     private static func updatedStroke(
         _ stroke: VectorStroke,
         points: [CGPoint],
-        cornerRadiiByIndex: [Int: CGFloat]?
+        cornerRadiiByIndex: [Int: CGFloat]?,
+        smoothMiddles: Set<Int>? = nil
     ) -> VectorStroke {
         var shapeType = stroke.shapeType
         if shapeType == .circle || shapeType == .ellipse {
@@ -348,6 +405,7 @@ enum AnchorPointEngine {
             isClosed: true,
             cornerRadius: keepRectangleRadius ? stroke.cornerRadius : 0,
             cornerRadiiByIndex: keepRectangleRadius ? cornerRadiiByIndex : nil,
+            smoothCornerIndices: smoothMiddles,
             isConstruction: stroke.isConstruction,
             shapeType: shapeType,
             cutoutPoints: stroke.cutoutPoints

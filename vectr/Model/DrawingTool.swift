@@ -10,6 +10,7 @@ enum ToolCategory: String, CaseIterable, Codable {
     case circle
     case rectangle
     case curve
+    case type
     case move
     case scale
     case dimensions
@@ -31,6 +32,7 @@ enum ToolCategory: String, CaseIterable, Codable {
         case .circle: return "Circle"
         case .rectangle: return "Rectangle"
         case .curve: return "Curve"
+        case .type: return "Type"
         case .move: return "Move"
         case .scale: return "Scale"
         case .dimensions: return "Dimensions"
@@ -47,6 +49,7 @@ enum ToolCategory: String, CaseIterable, Codable {
         case .circle: return "circle"
         case .rectangle: return "rectangle"
         case .curve: return "scribble.variable"
+        case .type: return "textformat"
         case .move: return "arrow.up.and.down.and.arrow.left.and.right"
         case .scale: return "arrow.up.left.and.arrow.down.right"
         case .dimensions: return "ruler"
@@ -58,7 +61,7 @@ enum ToolCategory: String, CaseIterable, Codable {
     }
 
     static var shapeCategories: [ToolCategory] {
-        [.line, .circle, .rectangle, .curve]
+        [.line, .circle, .rectangle, .curve, .type]
     }
 
     static var actionCategories: [ToolCategory] {
