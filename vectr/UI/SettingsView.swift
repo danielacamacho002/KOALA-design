@@ -68,6 +68,16 @@ struct SettingsView: View {
                         document.settings.defaultGridSpacingInUnits = CGFloat(value)
                         document.syncGridFromSettings()
                     }
+
+                    Picker("Snap to", selection: $document.grid.snapSubdivisions) {
+                        Text("Corners").tag(1)
+                        Text("Halves").tag(2)
+                        Text("Quarters").tag(4)
+                    }
+
+                    Text("Snap to fractions of a grid square without changing the grid.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Lines") {

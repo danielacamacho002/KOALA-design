@@ -26,7 +26,7 @@ func snapDrawingPoint(
     enabled: Bool
 ) -> CGPoint {
     guard enabled, grid.snapEnabled else { return point }
-    let spacing = grid.visualSpacing(for: settings)
+    let spacing = grid.effectiveSnapSpacing(for: settings)
     return snapPointToGrid(point, gridSpacing: spacing)
 }
 
@@ -59,7 +59,7 @@ struct SnapEngine {
         if grid.snapEnabled {
             let gridPoint = snapPointToGrid(
                 point,
-                gridSpacing: grid.visualSpacing(for: documentSettings)
+                gridSpacing: grid.effectiveSnapSpacing(for: documentSettings)
             )
             if gridPoint != point {
                 snapped = gridPoint
@@ -90,7 +90,7 @@ struct SnapEngine {
     }
 
     func snapToGrid(_ point: CGPoint, documentSettings: DocumentSettings) -> CGPoint {
-        snapPointToGrid(point, gridSpacing: grid.visualSpacing(for: documentSettings))
+        snapPointToGrid(point, gridSpacing: grid.effectiveSnapSpacing(for: documentSettings))
     }
 
     func snapToObjects(_ point: CGPoint, threshold: CGFloat = 12) -> CGPoint? {

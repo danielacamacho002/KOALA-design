@@ -190,7 +190,8 @@ struct EditorView: View {
                         isDragDrawing = false
                         dragDrawStart = nil
                         dragDrawEnd = nil
-                    }
+                    },
+                    onCurveCommitted: commitCurve
                 )
                 .ignoresSafeArea()
 
@@ -481,8 +482,9 @@ struct EditorView: View {
     }
 
     private var allowsDragDraw: Bool {
-        guard store.document.activeCategory.isDrawingTool else { return false }
         switch store.document.activeCategory {
+        case .curve:
+            return true
         case .line:
             switch store.document.lineVariant {
             case .line, .constructionLine:
@@ -748,6 +750,10 @@ struct EditorView: View {
             } else {
                 statusMessage = "Tap an edge to add an anchor, or enter total anchor count"
             }
+        case .curve:
+            commandSession.cancel()
+            store.document.selectedStrokeID = nil
+            statusMessage = "Draw lines with Apple Pencil; double-tap to finish the curve"
         case .move, .scale, .dimensions:
             commandSession.cancel()
             if category == .move {
@@ -985,6 +991,24 @@ struct EditorView: View {
         } else {
             commandSession.cancel()
         }
+    }
+
+    private func commitCurve(anchors: [CGPoint]) {
+        guard anchors.count >= 2 else { return }
+        let stroke = VectorStroke(
+            layerID: store.document.activeLayerID,
+            points: anchors,
+            strokeWidth: store.document.strokeWidth,
+            strokeColor: store.document.strokeColor,
+            isClosed: false,
+            shapeType: .curve,
+            curveHandles: ShapeGeometry.defaultCurveHandles(anchors: anchors)
+        )
+        store.document.addStroke(stroke)
+        // Select the new curve so its anchor + tangent handles are immediately editable.
+        store.document.selectedStrokeID = stroke.id
+        store.markDirty()
+        refreshCanvas()
     }
 
     private func dragControlPoints(start: CGPoint, end: CGPoint) -> [CGPoint] {
