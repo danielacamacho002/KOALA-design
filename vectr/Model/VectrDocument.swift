@@ -500,6 +500,30 @@ final class VectrDocument {
         return .success
     }
 
+    @discardableResult
+    func applyPattern(to strokeID: UUID, settings: PatternSettings) -> PatternApplyResult {
+        guard let source = stroke(with: strokeID) else {
+            return .noSelection
+        }
+        if let layer = layers.first(where: { $0.id == source.layerID }), layer.isLocked {
+            return .layerLocked
+        }
+
+        let copies = PatternEngine.generatedCopies(from: source, settings: settings)
+        guard !copies.isEmpty else {
+            return .nothingToCreate
+        }
+
+        pushUndo()
+        let createdIDs = copies.map(\.id)
+        strokes.append(contentsOf: copies)
+        reconcileIntersectionAnchors(around: Set(createdIDs))
+        ClosedShapeDetector.reconcile(document: self)
+        DonutDetector.reconcile(document: self)
+        geometryRevision += 1
+        return .success(created: copies.count)
+    }
+
     /// Single tap: reset the selection to only this anchor and adopt it as the rotation pivot.
     func selectSingleAnchor(at index: Int) {
         selectedAnchorIndices = [index]
