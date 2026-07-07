@@ -18,7 +18,7 @@ struct SideToolPaletteView: View {
     var body: some View {
         HStack(spacing: 2) {
             ForEach(ToolCategory.shapeCategories, id: \.self) { category in
-                toolButton(category, showsVariantMenu: category.isDrawingTool || category == .type)
+                toolButton(category, showsVariantMenu: category == .type)
             }
 
             ToolPaletteSeparator()

@@ -287,7 +287,8 @@ struct EditorView: View {
                         onCancel: {
                             updateChromeInsets()
                             refreshCanvas()
-                        }
+                        },
+                        onVariantChanged: { startDrawingSessionIfNeeded() }
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
@@ -704,7 +705,7 @@ struct EditorView: View {
     }
 
     private func handleToolSelected(_ category: ToolCategory) {
-        showCommandPanel = false
+        showCommandPanel = category.isDrawingTool
         if category != .type {
             endTextEditingIfNeeded()
         }

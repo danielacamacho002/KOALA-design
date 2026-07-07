@@ -15,6 +15,7 @@ struct ToolCommandPanelView: View {
     var onSubmitPoint: () -> Void
     var onDone: () -> Void
     var onCancel: () -> Void
+    var onVariantChanged: () -> Void
 
     private let panelWidth: CGFloat = 150
     private static let thicknessRange: ClosedRange<CGFloat> = 0.5...48
@@ -26,6 +27,8 @@ struct ToolCommandPanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             panelHeader
+
+            variantSection
 
             Text(session.prompt)
                 .font(.system(size: 10))
@@ -57,9 +60,7 @@ struct ToolCommandPanelView: View {
             thicknessRow
             colorRow
 
-            HStack(spacing: 6) {
-                Spacer()
-
+            HStack {
                 Button {
                     session.cancel()
                     onCancel()
@@ -73,19 +74,7 @@ struct ToolCommandPanelView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Cancel")
 
-                Button {
-                    onDone()
-                } label: {
-                    Image(systemName: "checkmark")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 26, height: 26)
-                        .background(Color(.secondarySystemBackground))
-                }
-                .buttonStyle(.plain)
-                .disabled(!session.canFinish)
-                .opacity(session.canFinish ? 1 : 0.4)
-                .accessibilityLabel("Done")
+                Spacer()
             }
         }
         .padding(8)
@@ -99,6 +88,60 @@ struct ToolCommandPanelView: View {
     private var panelHeader: some View {
         Text(session.toolTitle)
             .font(.caption.weight(.semibold))
+    }
+
+    // MARK: - Tool variant
+
+    @ViewBuilder
+    private var variantSection: some View {
+        let options = variantOptions
+        if !options.isEmpty {
+            VStack(spacing: 2) {
+                ForEach(Array(options.enumerated()), id: \.offset) { index, label in
+                    let isSelected = index == selectedVariantIndex
+                    Button {
+                        applyVariant(index: index)
+                    } label: {
+                        Text(label)
+                            .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                            .foregroundStyle(isSelected ? Color.white : Color.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 6)
+                            .frame(height: 22)
+                            .background(isSelected ? Color.accentColor : Color(.secondarySystemBackground))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var variantOptions: [String] {
+        switch document.activeCategory {
+        case .line: LineVariant.allCases.map(\.label)
+        case .circle: CircleVariant.allCases.map(\.label)
+        case .rectangle: RectangleVariant.allCases.map(\.label)
+        default: []
+        }
+    }
+
+    private var selectedVariantIndex: Int {
+        switch document.activeCategory {
+        case .line: LineVariant.allCases.firstIndex(of: document.lineVariant) ?? 0
+        case .circle: CircleVariant.allCases.firstIndex(of: document.circleVariant) ?? 0
+        case .rectangle: RectangleVariant.allCases.firstIndex(of: document.rectangleVariant) ?? 0
+        default: 0
+        }
+    }
+
+    private func applyVariant(index: Int) {
+        switch document.activeCategory {
+        case .line: document.lineVariant = LineVariant.allCases[index]
+        case .circle: document.circleVariant = CircleVariant.allCases[index]
+        case .rectangle: document.rectangleVariant = RectangleVariant.allCases[index]
+        default: return
+        }
+        onVariantChanged()
     }
 
     // MARK: - Line thickness
@@ -225,6 +268,11 @@ struct ToolCommandPanelView: View {
     }
 
     private func submitInput() {
+        // Return on an empty field finishes shapes that don't auto-commit (arc, center rectangle).
+        if session.inputText.trimmingCharacters(in: .whitespaces).isEmpty {
+            if session.canFinish { onDone() }
+            return
+        }
         guard session.submit(
             units: units,
             grid: grid,
