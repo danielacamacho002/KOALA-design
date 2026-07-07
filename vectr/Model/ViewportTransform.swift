@@ -135,7 +135,7 @@ struct ViewportTransform: Codable, Equatable {
     }
 
     /// Default view for a new empty project: reasonable zoom with origin centered.
-    mutating func resetToDefaultView(in viewSize: CGSize, defaultScale: CGFloat = 5) {
+    mutating func resetToDefaultView(in viewSize: CGSize, defaultScale: CGFloat = 1) {
         scale = defaultScale
         centerOnAxisOrigin(in: viewSize)
     }
