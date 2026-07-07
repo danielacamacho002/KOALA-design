@@ -38,7 +38,6 @@ struct EditorView: View {
     @State private var printExportDocument: EditorExportDocument?
     @State private var lastSavedSnapshot: DocumentSnapshot?
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
-    @AppStorage(AppearanceSettings.toolbarColorKey) private var toolbarColorHex = AppearanceSettings.defaultToolbarHex
 
     init(projectURL: URL? = nil, projectLibrary: ProjectLibrary? = nil) {
         self.projectURL = projectURL
@@ -359,8 +358,7 @@ struct EditorView: View {
                 onSave: { saveDocument() },
                 onToolSelected: handleToolSelected,
                 onVariantSelected: { startDrawingSessionIfNeeded() },
-                onSwitchToPrintLayout: { switchToPrintLayoutMode() },
-                backgroundColor: Color(hex: toolbarColorHex)
+                onSwitchToPrintLayout: { switchToPrintLayoutMode() }
             )
         }
     }

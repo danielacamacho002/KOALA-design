@@ -8,13 +8,13 @@ import SwiftUI
 /// App-wide appearance preferences persisted in UserDefaults.
 enum AppearanceSettings {
     static let canvasColorKey = "appearance.canvasColorHex"
-    static let toolbarColorKey = "appearance.toolbarColorHex"
 
     static let defaultCanvasHex = "F6F3E4"
-    static let defaultToolbarHex = "545551"
 
-    static let canvasPresets: [String] = ["F6F3E4", "FAF8ED", "FEFDF7"]
-    static let toolbarPresets: [String] = ["545551", "4D4D4D"]
+    static let canvasPresets: [String] = ["F6F3E4", "FEFDF7"]
+
+    /// Fixed toolbar color (not user-configurable).
+    static let toolbarHex = "4D4D4D"
 }
 
 extension Color {

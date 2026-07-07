@@ -17,7 +17,6 @@ struct SettingsView: View {
     @State private var thicknessDisplay: Double = 1.5
 
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
-    @AppStorage(AppearanceSettings.toolbarColorKey) private var toolbarColorHex = AppearanceSettings.defaultToolbarHex
 
     var body: some View {
         NavigationStack {
@@ -54,14 +53,6 @@ struct SettingsView: View {
                         selectedHex: $canvasColorHex,
                         presets: AppearanceSettings.canvasPresets
                     )
-                    ColorSettingRow(
-                        title: "Toolbar color",
-                        selectedHex: $toolbarColorHex,
-                        presets: AppearanceSettings.toolbarPresets
-                    )
-                    Text("Applies to every project.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
                 Section("Canvas & grid") {
@@ -173,18 +164,8 @@ private struct ColorSettingRow: View {
     let presets: [String]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(title)
-                Spacer()
-                ColorPicker("", selection: Binding(
-                    get: { Color(hex: selectedHex) },
-                    set: { selectedHex = $0.hexString }
-                ))
-                .labelsHidden()
-            }
-
-            HStack(spacing: 12) {
+        LabeledContent(title) {
+            HStack(spacing: 10) {
                 ForEach(presets, id: \.self) { preset in
                     let isSelected = preset.caseInsensitiveCompare(selectedHex) == .orderedSame
                     Button {
@@ -192,7 +173,7 @@ private struct ColorSettingRow: View {
                     } label: {
                         Circle()
                             .fill(Color(hex: preset))
-                            .frame(width: 30, height: 30)
+                            .frame(width: 24, height: 24)
                             .overlay {
                                 Circle().strokeBorder(
                                     isSelected ? Color.accentColor : Color.primary.opacity(0.15),
@@ -205,6 +186,5 @@ private struct ColorSettingRow: View {
                 }
             }
         }
-        .padding(.vertical, 4)
     }
 }
