@@ -27,6 +27,7 @@ struct EditorToolbarView: View {
                 Image(systemName: "chevron.left")
                     .font(.body.weight(.medium))
                     .frame(width: 32, height: toolbarHeight)
+                    .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
 
@@ -65,7 +66,7 @@ struct EditorToolbarView: View {
         .frame(height: toolbarHeight)
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial)
+        .background(Color(hex: AppearanceSettings.toolbarHex))
     }
 
     private func toolbarIconButton(
@@ -78,7 +79,7 @@ struct EditorToolbarView: View {
             Image(systemName: systemImage)
                 .font(.body)
                 .frame(width: 36, height: toolbarHeight)
-                .foregroundStyle(disabled ? Color.primary.opacity(0.28) : Color.primary.opacity(0.82))
+                .foregroundStyle(disabled ? Color.white.opacity(0.3) : Color.white)
         }
         .buttonStyle(.plain)
         .disabled(disabled)

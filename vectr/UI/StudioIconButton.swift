@@ -11,7 +11,8 @@ struct StudioIconButton: View {
     var isActive: Bool = false
     var size: CGFloat = 44
     var showsSubmenu: Bool = false
-    let action: () -> Void
+    var inactiveColor: Color = Color.primary.opacity(0.72)
+    var action: () -> Void
 
     var body: some View {
         Button(action: action) {
@@ -20,7 +21,7 @@ struct StudioIconButton: View {
                     .font(.system(size: 17, weight: isActive ? .semibold : .regular))
                     .symbolRenderingMode(.monochrome)
                     .frame(width: size, height: size)
-                    .foregroundStyle(isActive ? Color.accentColor : Color.primary.opacity(0.72))
+                    .foregroundStyle(isActive ? Color.accentColor : inactiveColor)
                     .background {
                         if isActive {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -32,7 +33,7 @@ struct StudioIconButton: View {
                 if showsSubmenu {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 6, weight: .bold))
-                        .foregroundStyle(isActive ? Color.accentColor : Color.primary.opacity(0.45))
+                        .foregroundStyle(isActive ? Color.accentColor : inactiveColor.opacity(0.62))
                         .offset(x: -3, y: -3)
                 }
             }
