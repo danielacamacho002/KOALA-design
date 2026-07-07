@@ -105,20 +105,136 @@ final class VectrDocument {
         strokes.filter { $0.layerID == layerID }
     }
 
+    /// Strokes on visible layers, ordered back-to-front by layer (index 0 = backmost layer),
+    /// stable within a layer by insertion order.
     func visibleStrokes() -> [VectorStroke] {
+        let order = layerIndexByID()
         let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
-        return strokes.filter { visibleLayerIDs.contains($0.layerID) }
+        return strokes
+            .enumerated()
+            .filter { visibleLayerIDs.contains($0.element.layerID) }
+            .sorted { lhs, rhs in
+                let l = order[lhs.element.layerID] ?? 0
+                let r = order[rhs.element.layerID] ?? 0
+                return l == r ? lhs.offset < rhs.offset : l < r
+            }
+            .map(\.element)
+    }
+
+    /// Visible strokes excluding those on locked layers, for hit-testing/selection.
+    func selectableStrokes() -> [VectorStroke] {
+        let lockedLayerIDs = Set(layers.filter(\.isLocked).map(\.id))
+        guard !lockedLayerIDs.isEmpty else { return visibleStrokes() }
+        return visibleStrokes().filter { !lockedLayerIDs.contains($0.layerID) }
     }
 
     func stroke(with id: UUID) -> VectorStroke? {
         strokes.first { $0.id == id }
     }
 
+    // MARK: - Layers
+
+    private func layerIndexByID() -> [UUID: Int] {
+        Dictionary(uniqueKeysWithValues: layers.enumerated().map { ($1.id, $0) })
+    }
+
+    @discardableResult
+    func addLayer() -> Layer {
+        pushUndo()
+        let layer = Layer(name: nextLayerName())
+        layers.append(layer)
+        activeLayerID = layer.id
+        geometryRevision += 1
+        return layer
+    }
+
+    private func nextLayerName() -> String {
+        let existing = Set(layers.map(\.name))
+        var n = layers.count + 1
+        while existing.contains("Layer \(n)") { n += 1 }
+        return "Layer \(n)"
+    }
+
+    /// Deletes a layer along with its strokes and text. The last remaining layer cannot be deleted.
+    func deleteLayer(id: UUID) {
+        guard layers.count > 1,
+              let index = layers.firstIndex(where: { $0.id == id }) else { return }
+        pushUndo()
+        layers.remove(at: index)
+        strokes.removeAll { $0.layerID == id }
+        textElements.removeAll { $0.layerID == id }
+        if let selected = selectedStrokeID, stroke(with: selected) == nil {
+            selectedStrokeID = nil
+        }
+        if let selectedText = selectedTextID, textElement(with: selectedText) == nil {
+            selectedTextID = nil
+        }
+        if activeLayerID == id {
+            activeLayerID = layers[min(index, layers.count - 1)].id
+        }
+        geometryRevision += 1
+    }
+
+    func renameLayer(id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let index = layers.firstIndex(where: { $0.id == id }),
+              layers[index].name != trimmed else { return }
+        pushUndo()
+        layers[index].name = trimmed
+    }
+
+    func toggleLayerVisibility(id: UUID) {
+        guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
+        pushUndo()
+        layers[index].isVisible.toggle()
+        geometryRevision += 1
+    }
+
+    func toggleLayerLock(id: UUID) {
+        guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
+        pushUndo()
+        layers[index].isLocked.toggle()
+        geometryRevision += 1
+    }
+
+    func setActiveLayer(id: UUID) {
+        guard activeLayerID != id, layers.contains(where: { $0.id == id }) else { return }
+        activeLayerID = id
+    }
+
+    /// Replaces the layer stack with a reordered copy of the same layers (index 0 = backmost).
+    func reorderLayers(_ newOrder: [Layer]) {
+        guard newOrder.map(\.id) != layers.map(\.id),
+              Set(newOrder.map(\.id)) == Set(layers.map(\.id)),
+              newOrder.count == layers.count else { return }
+        pushUndo()
+        layers = newOrder
+        geometryRevision += 1
+    }
+
     // MARK: - Text Elements
 
+    /// Text elements on visible layers, ordered back-to-front by layer like `visibleStrokes()`.
     func visibleTextElements() -> [TextElement] {
+        let order = layerIndexByID()
         let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
-        return textElements.filter { visibleLayerIDs.contains($0.layerID) }
+        return textElements
+            .enumerated()
+            .filter { visibleLayerIDs.contains($0.element.layerID) }
+            .sorted { lhs, rhs in
+                let l = order[lhs.element.layerID] ?? 0
+                let r = order[rhs.element.layerID] ?? 0
+                return l == r ? lhs.offset < rhs.offset : l < r
+            }
+            .map(\.element)
+    }
+
+    /// Visible text elements excluding those on locked layers, for hit-testing/selection.
+    func selectableTextElements() -> [TextElement] {
+        let lockedLayerIDs = Set(layers.filter(\.isLocked).map(\.id))
+        guard !lockedLayerIDs.isEmpty else { return visibleTextElements() }
+        return visibleTextElements().filter { !lockedLayerIDs.contains($0.layerID) }
     }
 
     func textElement(with id: UUID) -> TextElement? {
@@ -609,14 +725,15 @@ final class VectrDocument {
     }
 
     func selectStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
-        if let fillHit = visibleStrokes().reversed().first(where: { $0.contains(documentPoint) }) {
+        let candidates = selectableStrokes()
+        if let fillHit = candidates.reversed().first(where: { $0.contains(documentPoint) }) {
             selectedStrokeID = fillHit.id
             return fillHit
         }
 
         var best: VectorStroke?
         var bestDistance = threshold
-        for stroke in visibleStrokes().reversed() {
+        for stroke in candidates.reversed() {
             let distance = stroke.distance(to: documentPoint)
             if distance < bestDistance {
                 bestDistance = distance
