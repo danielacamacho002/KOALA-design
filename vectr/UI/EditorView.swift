@@ -30,7 +30,7 @@ struct EditorView: View {
     @State private var isArcDragActive = false
     @State private var arcDragPreviousAngle: CGFloat?
     @State private var arcDragAccumulatedSweep: CGFloat = 0
-    @State private var commandPanelOffset = CGSize(width: 170, height: 8)
+    @State private var showCommandPanel = true
     @State private var hasInitializedDrawingSession = false
     @State private var editingTextID: UUID?
     @State private var editorMode: EditorMode = .design
@@ -274,11 +274,10 @@ struct EditorView: View {
                 }
             }
             .overlay(alignment: .topLeading) {
-                if commandSession.isActive {
+                if commandSession.isActive && showCommandPanel {
                     ToolCommandPanelView(
                         session: commandSession,
-                        dragOffset: $commandPanelOffset,
-                        containerSize: geometry.size,
+                        document: store.document,
                         units: store.document.settings.units,
                         grid: store.document.grid,
                         documentSettings: store.document.settings,
@@ -290,13 +289,13 @@ struct EditorView: View {
                             refreshCanvas()
                         }
                     )
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
-            .overlay(alignment: .topTrailing) {
+            .overlay(alignment: .bottomLeading) {
                 ConstraintSettingsView(document: store.document)
-                    .padding(.trailing, 16)
-                    .padding(.top, 10)
+                    .padding(.leading, 16)
+                    .padding(.bottom, 16)
             }
             .overlay(alignment: .bottomTrailing) {
                 RecenterCanvasButton {
@@ -334,7 +333,6 @@ struct EditorView: View {
                 canvasSize = size
                 updateChromeInsets()
                 applyInitialViewportLayoutIfNeeded()
-                commandPanelOffset = clampCommandPanelOffset(commandPanelOffset, in: size)
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -355,7 +353,10 @@ struct EditorView: View {
                 onShare: { showExportSheet = true },
                 onSave: { saveDocument() },
                 onToolSelected: handleToolSelected,
-                onVariantSelected: { startDrawingSessionIfNeeded() },
+                onVariantSelected: {
+                    showCommandPanel = true
+                    startDrawingSessionIfNeeded()
+                },
                 onSwitchToPrintLayout: { switchToPrintLayoutMode() }
             )
         }
@@ -703,6 +704,7 @@ struct EditorView: View {
     }
 
     private func handleToolSelected(_ category: ToolCategory) {
+        showCommandPanel = false
         if category != .type {
             endTextEditingIfNeeded()
         }
@@ -803,20 +805,6 @@ struct EditorView: View {
         store.markDirty()
     }
 
-    private func clampCommandPanelOffset(_ proposed: CGSize, in size: CGSize) -> CGSize {
-        let panelWidth: CGFloat = 172
-        let panelHeight: CGFloat = 220
-        let margin: CGFloat = 8
-        let minX = margin
-        let maxX = max(minX, size.width - panelWidth - margin)
-        let minY: CGFloat = margin
-        let maxY = max(minY, size.height - panelHeight - margin)
-        return CGSize(
-            width: min(max(proposed.width, minX), maxX),
-            height: min(max(proposed.height, minY), maxY)
-        )
-    }
-
     private func handleCommandPointSubmitted() {
         if commandSession.isRefiningAttachedStroke {
             if syncAttachedStrokeFromSession(recordUndo: false) {
@@ -850,6 +838,7 @@ struct EditorView: View {
     }
 
     private func handleCanvasTap(_ documentPoint: CGPoint) {
+        showCommandPanel = false
         switch store.document.activeCategory {
         case .type:
             endTextEditingIfNeeded()

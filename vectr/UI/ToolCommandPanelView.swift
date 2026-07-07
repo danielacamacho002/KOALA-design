@@ -7,8 +7,7 @@ import SwiftUI
 
 struct ToolCommandPanelView: View {
     @Bindable var session: ShapeCommandSession
-    @Binding var dragOffset: CGSize
-    var containerSize: CGSize
+    @Bindable var document: VectrDocument
     var units: MeasurementUnit
     var grid: GridSettings
     var documentSettings: DocumentSettings
@@ -17,44 +16,36 @@ struct ToolCommandPanelView: View {
     var onDone: () -> Void
     var onCancel: () -> Void
 
-    private let panelWidth: CGFloat = 172
+    private let panelWidth: CGFloat = 150
+    private static let thicknessRange: ClosedRange<CGFloat> = 0.5...48
+    private static let thicknessStep: CGFloat = 0.5
 
-    @State private var dragStartOffset: CGSize = .zero
-    @State private var isDragging = false
+    @State private var thicknessText = ""
+    @State private var showColorPicker = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             panelHeader
 
             Text(session.prompt)
-                .font(.subheadline.weight(.medium))
-
-            HStack(spacing: 6) {
-                FingerOnlyTextField(
-                    placeholder: inputPlaceholder,
-                    text: $session.inputText,
-                    keyboardType: .numbersAndPunctuation,
-                    onSubmit: submitInput
-                )
-                .frame(height: 36)
-
-                Button(action: submitInput) {
-                    Image(systemName: "return")
-                        .font(.caption.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-
-            Text(session.inputHint(units: units))
-                .font(.caption2)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+
+            FingerOnlyTextField(
+                placeholder: inputPlaceholder,
+                text: $session.inputText,
+                keyboardType: .numbersAndPunctuation,
+                fontSize: 13,
+                cornerRadius: 0,
+                onSubmit: submitInput
+            )
+            .frame(height: 30)
 
             if let error = session.lastError {
                 Text(error)
                     .font(.caption2)
                     .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let placed = session.placedPointsLabel(units: units) {
@@ -63,88 +54,170 @@ struct ToolCommandPanelView: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 8) {
-                Button("Cancel", role: .cancel) {
+            thicknessRow
+            colorRow
+
+            HStack(spacing: 6) {
+                Spacer()
+
+                Button {
                     session.cancel()
                     onCancel()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 26, height: 26)
+                        .background(Color(.secondarySystemBackground))
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancel")
 
-                Button("Done") { onDone() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(!session.canFinish)
+                Button {
+                    onDone()
+                } label: {
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 26, height: 26)
+                        .background(Color(.secondarySystemBackground))
+                }
+                .buttonStyle(.plain)
+                .disabled(!session.canFinish)
+                .opacity(session.canFinish ? 1 : 0.4)
+                .accessibilityLabel("Done")
             }
         }
-        .padding(10)
+        .padding(8)
         .frame(width: panelWidth)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(.systemBackground).opacity(0.92))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(isDragging ? 0.18 : 0.1), radius: isDragging ? 10 : 6, y: 3)
-        .scaleEffect(isDragging ? 1.02 : 1)
-        .animation(.easeOut(duration: 0.15), value: isDragging)
-        .offset(dragOffset)
+        .background(Rectangle().fill(Color(.systemBackground).opacity(0.92)))
+        .overlay(Rectangle().stroke(Color.primary.opacity(0.08), lineWidth: 1))
+        .onAppear { syncThicknessText() }
+        .onChange(of: document.strokeWidth) { _, _ in syncThicknessText() }
     }
 
     private var panelHeader: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "line.3.horizontal")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .frame(width: 14)
-
-            Text(session.toolTitle)
-                .font(.caption.weight(.semibold))
-
-            Spacer()
-
-            Text("\(session.controlPoints.count)/\(session.requiredPoints)")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 2)
-        .contentShape(Rectangle())
-        .gesture(panelDragGesture)
-        .accessibilityLabel("Drag to reposition command panel")
+        Text(session.toolTitle)
+            .font(.caption.weight(.semibold))
     }
 
-    private var panelDragGesture: some Gesture {
-        DragGesture(minimumDistance: 2)
-            .onChanged { value in
-                if !isDragging {
-                    dragStartOffset = dragOffset
-                    isDragging = true
+    // MARK: - Line thickness
+
+    private var thicknessRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Thickness")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 4) {
+                thicknessStepButton(systemImage: "minus", delta: -Self.thicknessStep)
+
+                FingerOnlyTextField(
+                    placeholder: "pt",
+                    text: $thicknessText,
+                    keyboardType: .numbersAndPunctuation,
+                    fontSize: 12,
+                    cornerRadius: 0,
+                    onSubmit: commitThicknessText
+                )
+                .frame(height: 26)
+
+                thicknessStepButton(systemImage: "plus", delta: Self.thicknessStep)
+            }
+        }
+    }
+
+    private func thicknessStepButton(systemImage: String, delta: CGFloat) -> some View {
+        Button {
+            setThickness(document.strokeWidth + delta)
+        } label: {
+            Image(systemName: systemImage)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 26, height: 26)
+                .background(Color(.secondarySystemBackground))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func commitThicknessText() {
+        let cleaned = thicknessText
+            .replacingOccurrences(of: "pt", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let value = Double(cleaned) else {
+            syncThicknessText()
+            return
+        }
+        setThickness(CGFloat(value))
+    }
+
+    private func setThickness(_ proposed: CGFloat) {
+        let clamped = min(Self.thicknessRange.upperBound, max(Self.thicknessRange.lowerBound, proposed))
+        document.strokeWidth = clamped
+        syncThicknessText()
+    }
+
+    private func syncThicknessText() {
+        let width = document.strokeWidth
+        if width.truncatingRemainder(dividingBy: 1) == 0 {
+            thicknessText = String(format: "%.0f", width)
+        } else {
+            thicknessText = String(format: "%.1f", width)
+        }
+    }
+
+    // MARK: - Line color
+
+    private var colorRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Color")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                Rectangle()
+                    .fill(document.strokeColor.color)
+                    .frame(width: 26, height: 26)
+                    .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
+
+                Button {
+                    showColorPicker = true
+                } label: {
+                    colorWheel
+                        .frame(width: 28, height: 28)
                 }
-                dragOffset = clampedOffset(
-                    CGSize(
-                        width: dragStartOffset.width + value.translation.width,
-                        height: dragStartOffset.height + value.translation.height
+                .buttonStyle(.plain)
+                .accessibilityLabel("Line color")
+                .sheet(isPresented: $showColorPicker) {
+                    SystemColorPickerSheet(
+                        color: Binding(
+                            get: { document.strokeColor.color },
+                            set: { document.strokeColor = CodableColor($0) }
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private var colorWheel: some View {
+        Circle()
+            .fill(
+                AngularGradient(
+                    colors: (0...12).map { Color(hue: Double($0) / 12.0, saturation: 0.85, brightness: 0.95) },
+                    center: .center
+                )
+            )
+            .overlay(
+                Circle().fill(
+                    RadialGradient(
+                        colors: [Color.white.opacity(0.85), Color.white.opacity(0)],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: 14
                     )
                 )
-            }
-            .onEnded { _ in
-                isDragging = false
-            }
-    }
-
-    private func clampedOffset(_ proposed: CGSize) -> CGSize {
-        let margin: CGFloat = 8
-        let panelHeight: CGFloat = 220
-        let minX = margin
-        let maxX = max(minX, containerSize.width - panelWidth - margin)
-        let minY = margin
-        let maxY = max(minY, containerSize.height - panelHeight - margin)
-        return CGSize(
-            width: min(max(proposed.width, minX), maxX),
-            height: min(max(proposed.height, minY), maxY)
-        )
+            )
     }
 
     private var inputPlaceholder: String {
@@ -162,32 +235,42 @@ struct ToolCommandPanelView: View {
     }
 }
 
-extension ShapeCommandSession {
-    func inputHint(units: MeasurementUnit) -> String {
-        let u = units.shortLabel
-        if controlPoints.isEmpty {
-            return "Enter x, y in \(u) — e.g. 0,0 or 50,30"
-        }
+/// Full system color picker (wheel, sliders, eyedropper) presented as a sheet.
+private struct SystemColorPickerSheet: UIViewControllerRepresentable {
+    @Binding var color: Color
 
-        if category == .circle, circleVariant == .center, controlPoints.count == 1 {
-            return "Radius: 50 · Diameter: d100 · Polar: 50 90"
-        }
-        if category == .circle, circleVariant == .ellipse {
-            if controlPoints.count == 1 {
-                return "Enter horizontal radius rx — e.g. 40"
-            }
-            return "Enter vertical radius ry — e.g. 25"
-        }
-        if category == .rectangle, rectangleVariant == .center {
-            if controlPoints.count == 1 {
-                return "Half-width distance — e.g. 50"
-            }
-            return "Half-height distance — e.g. 30"
-        }
-
-        return "Absolute x, y · relative @dx,dy · polar: 15 90"
+    func makeUIViewController(context: Context) -> UIColorPickerViewController {
+        let picker = UIColorPickerViewController()
+        picker.delegate = context.coordinator
+        picker.selectedColor = UIColor(color)
+        picker.supportsAlpha = false
+        return picker
     }
 
+    func updateUIViewController(_ picker: UIColorPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(color: $color)
+    }
+
+    final class Coordinator: NSObject, UIColorPickerViewControllerDelegate {
+        @Binding var color: Color
+
+        init(color: Binding<Color>) {
+            _color = color
+        }
+
+        func colorPickerViewController(
+            _ viewController: UIColorPickerViewController,
+            didSelect selectedColor: UIColor,
+            continuously: Bool
+        ) {
+            color = Color(selectedColor)
+        }
+    }
+}
+
+extension ShapeCommandSession {
     func placedPointsLabel(units: MeasurementUnit) -> String? {
         guard let last = controlPoints.last else { return nil }
         let x = units.fromDocumentUnits(last.x)

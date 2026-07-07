@@ -23,16 +23,18 @@ struct FingerOnlyTextField: UIViewRepresentable {
     var placeholder: String
     @Binding var text: String
     var keyboardType: UIKeyboardType = .default
+    var fontSize: CGFloat = UIFont.labelFontSize
+    var cornerRadius: CGFloat = 8
     var onSubmit: (() -> Void)?
 
     func makeUIView(context: Context) -> UITextField {
         let field = FingerOnlyUITextField()
         field.delegate = context.coordinator
         field.placeholder = placeholder
-        field.font = UIFont.monospacedSystemFont(ofSize: UIFont.labelFontSize, weight: .regular)
+        field.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         field.borderStyle = .none
         field.backgroundColor = .secondarySystemBackground
-        field.layer.cornerRadius = 8
+        field.layer.cornerRadius = cornerRadius
         field.keyboardType = keyboardType
         field.autocorrectionType = .no
         field.autocapitalizationType = .none
@@ -46,6 +48,7 @@ struct FingerOnlyTextField: UIViewRepresentable {
         }
         uiView.placeholder = placeholder
         uiView.keyboardType = keyboardType
+        uiView.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
     }
 
     func makeCoordinator() -> Coordinator {
