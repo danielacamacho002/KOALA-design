@@ -633,7 +633,16 @@ struct EditorView: View {
 
     private func applyInitialViewportLayoutIfNeeded() {
         guard store.needsInitialViewportLayout, canvasSize.width > 0, canvasSize.height > 0 else { return }
-        store.document.viewport.resetToDefaultView(in: canvasSize)
+        let contentPoints = store.document.visibleStrokes().flatMap { ShapeGeometry.renderPoints(for: $0) }
+        if contentPoints.isEmpty {
+            store.document.viewport.resetToDefaultView(in: canvasSize)
+        } else {
+            store.document.viewport.fitToPoints(contentPoints, in: canvasSize)
+            store.document.viewport.clampToCanvasExtent(
+                in: canvasSize,
+                canvasExtent: store.document.settings.canvasExtent
+            )
+        }
         store.needsInitialViewportLayout = false
         refreshCanvas()
     }
