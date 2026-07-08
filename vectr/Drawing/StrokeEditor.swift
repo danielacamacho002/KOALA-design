@@ -134,6 +134,10 @@ enum StrokeEditor {
         if !isClosed, shapeType == .circle || shapeType == .ellipse || shapeType == .rectangle {
             shapeType = .polyline
         }
+        // Curve anchors changed count/order: rebuild tangent handles to stay in sync.
+        let curveHandles = shapeType == .curve
+            ? ShapeGeometry.defaultCurveHandles(anchors: points)
+            : nil
         return VectorStroke(
             id: stroke.id,
             layerID: stroke.layerID,
@@ -146,7 +150,8 @@ enum StrokeEditor {
             smoothCornerIndices: smoothMiddles,
             isConstruction: stroke.isConstruction,
             shapeType: shapeType,
-            cutoutPoints: isClosed ? stroke.cutoutPoints : []
+            cutoutPoints: isClosed ? stroke.cutoutPoints : [],
+            curveHandles: curveHandles
         )
     }
 }

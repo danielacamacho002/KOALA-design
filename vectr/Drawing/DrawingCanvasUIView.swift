@@ -3,6 +3,7 @@
 //  vectr
 //
 
+import SwiftUI
 import UIKit
 
 protocol DrawingCanvasDelegate: AnyObject {
@@ -18,7 +19,13 @@ final class DrawingCanvasUIView: UIView {
     }
 
     var isCommandMode = false
-    var activeCategory: ToolCategory = .line
+    var activeCategory: ToolCategory = .line {
+        didSet {
+            if oldValue == .curve, activeCategory != .curve {
+                resetCurve()
+            }
+        }
+    }
     var lineVariant: LineVariant = .line
     var commandPreviewPoints: [CGPoint] = [] {
         didSet { updateCommandPreviewLayer() }
@@ -38,6 +45,8 @@ final class DrawingCanvasUIView: UIView {
     var onDragDrawBegan: ((CGPoint) -> Void)?
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
+    /// Emitted when a curve is finished (double-tap) with its drawn anchor points.
+    var onCurveCommitted: (([CGPoint]) -> Void)?
 
     private var strokeLayers: [UUID: CAShapeLayer] = [:]
     private var textLayers: [UUID: CAShapeLayer] = [:]
@@ -50,6 +59,11 @@ final class DrawingCanvasUIView: UIView {
     private var pinchAnchor: CGPoint = .zero
     private var dragDrawStart: CGPoint?
     private var dragDrawCurrent: CGPoint?
+    private var curveAnchors: [CGPoint] = []
+    private var curveDragStart: CGPoint?
+    private var curveDragCurrent: CGPoint?
+    private var curvePreviewLayer: CAShapeLayer?
+    private var curveAnchorLayers: [CAShapeLayer] = []
     private let gridLayer = CALayer()
     private var referenceImageLayer: CALayer?
     private var cachedReferenceImageData: Data?
@@ -58,7 +72,7 @@ final class DrawingCanvasUIView: UIView {
     init(document: VectrDocument) {
         self.document = document
         super.init(frame: .zero)
-        backgroundColor = .systemBackground
+        backgroundColor = UIColor(Color(hex: AppearanceSettings.defaultCanvasHex))
         isMultipleTouchEnabled = true
         layer.addSublayer(gridLayer)
         setupGestures()
@@ -259,6 +273,7 @@ final class DrawingCanvasUIView: UIView {
         reloadReferenceImage()
         updateCommandPreviewLayer()
         updateDragPreviewLayer()
+        updateCurvePreview()
         setNeedsDisplay()
     }
 
@@ -285,6 +300,11 @@ final class DrawingCanvasUIView: UIView {
         dragDraw.delegate = self
         addGestureRecognizer(dragDraw)
         tap.require(toFail: dragDraw)
+
+        let curveFinish = UITapGestureRecognizer(target: self, action: #selector(handleCurveFinish(_:)))
+        curveFinish.numberOfTapsRequired = 2
+        curveFinish.delegate = self
+        addGestureRecognizer(curveFinish)
     }
 
     @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
@@ -337,6 +357,9 @@ final class DrawingCanvasUIView: UIView {
             }
         case .trim, .delete, .addAnchor, .type:
             onCanvasTap?(documentPoint)
+        case .curve:
+            // Curve points come from Pencil drags; a double-tap finishes it.
+            break
         default:
             handleSelection(at: viewPoint)
         }
@@ -344,6 +367,10 @@ final class DrawingCanvasUIView: UIView {
 
     @objc private func handleDragDraw(_ gesture: UIPanGestureRecognizer) {
         guard allowsDragDraw else { return }
+        if activeCategory == .curve {
+            handleCurveDrag(gesture)
+            return
+        }
         switch gesture.state {
         case .began, .changed:
             guard gesture.numberOfTouches == 1 else { return }
@@ -421,6 +448,155 @@ final class DrawingCanvasUIView: UIView {
             }
         }
         return point
+    }
+
+    // MARK: - Curve building
+
+    private func handleCurveDrag(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began, .changed:
+            guard gesture.numberOfTouches == 1 else { return }
+        default:
+            break
+        }
+
+        let rawPoint = document.viewport.viewToDocument(gesture.location(in: self))
+        let documentPoint = snappedDragPoint(rawPoint)
+
+        switch gesture.state {
+        case .began:
+            curveDragStart = documentPoint
+            curveDragCurrent = documentPoint
+            updateCurvePreview()
+        case .changed:
+            curveDragCurrent = documentPoint
+            updateCurvePreview()
+        case .ended:
+            if let start = curveDragStart {
+                appendCurveLine(start: start, end: documentPoint)
+            }
+            curveDragStart = nil
+            curveDragCurrent = nil
+            updateCurvePreview()
+        case .cancelled, .failed:
+            curveDragStart = nil
+            curveDragCurrent = nil
+            updateCurvePreview()
+        default:
+            break
+        }
+    }
+
+    private func appendCurveLine(start: CGPoint, end: CGPoint) {
+        let tolerance = curveConnectTolerance
+        if curveAnchors.isEmpty {
+            curveAnchors.append(start)
+        } else if let last = curveAnchors.last,
+                  hypot(start.x - last.x, start.y - last.y) > tolerance {
+            // New line started away from the last point: bridge with a jump anchor.
+            curveAnchors.append(start)
+        }
+        if let last = curveAnchors.last,
+           hypot(end.x - last.x, end.y - last.y) <= 0.0001 {
+            return
+        }
+        curveAnchors.append(end)
+    }
+
+    @objc private func handleCurveFinish(_ gesture: UITapGestureRecognizer) {
+        guard activeCategory == .curve else { return }
+        commitCurve()
+    }
+
+    private func commitCurve() {
+        let anchors = curveAnchors
+        resetCurve()
+        guard anchors.count >= 2 else { return }
+        onCurveCommitted?(anchors)
+    }
+
+    private func resetCurve() {
+        curveAnchors.removeAll()
+        curveDragStart = nil
+        curveDragCurrent = nil
+        updateCurvePreview()
+    }
+
+    private var curveConnectTolerance: CGFloat {
+        document.grid.visualSpacing(for: document.settings) * 0.5
+    }
+
+    private func previewCurveAnchors() -> [CGPoint] {
+        var anchors = curveAnchors
+        guard let current = curveDragCurrent, let start = curveDragStart else { return anchors }
+        if anchors.isEmpty {
+            anchors.append(start)
+        } else if let last = anchors.last,
+                  hypot(start.x - last.x, start.y - last.y) > curveConnectTolerance {
+            anchors.append(start)
+        }
+        anchors.append(current)
+        return anchors
+    }
+
+    private func updateCurvePreview() {
+        curveAnchorLayers.forEach { $0.removeFromSuperlayer() }
+        curveAnchorLayers.removeAll()
+
+        let anchors = previewCurveAnchors()
+
+        guard !anchors.isEmpty else {
+            curvePreviewLayer?.removeFromSuperlayer()
+            curvePreviewLayer = nil
+            return
+        }
+
+        let pointRadius: CGFloat = 4
+        for point in curveAnchors {
+            let dot = CAShapeLayer()
+            let viewPoint = document.viewport.documentToView(point)
+            dot.path = UIBezierPath(
+                ovalIn: CGRect(
+                    x: viewPoint.x - pointRadius,
+                    y: viewPoint.y - pointRadius,
+                    width: pointRadius * 2,
+                    height: pointRadius * 2
+                )
+            ).cgPath
+            dot.fillColor = UIColor.systemBlue.cgColor
+            dot.strokeColor = UIColor.white.cgColor
+            dot.lineWidth = 1.5
+            layer.addSublayer(dot)
+            curveAnchorLayers.append(dot)
+        }
+
+        guard anchors.count >= 2 else {
+            curvePreviewLayer?.removeFromSuperlayer()
+            curvePreviewLayer = nil
+            return
+        }
+
+        let pathLayer: CAShapeLayer
+        if let existing = curvePreviewLayer {
+            pathLayer = existing
+        } else {
+            let newLayer = CAShapeLayer()
+            newLayer.fillColor = UIColor.clear.cgColor
+            newLayer.lineCap = .round
+            newLayer.lineJoin = .round
+            self.layer.addSublayer(newLayer)
+            curvePreviewLayer = newLayer
+            pathLayer = newLayer
+        }
+
+        let smoothed = ShapeGeometry.smoothCurvePoints(anchors: anchors)
+        pathLayer.path = StrokeRenderer.livePath(
+            points: smoothed,
+            viewport: document.viewport,
+            closed: false
+        ).cgPath
+        pathLayer.strokeColor = document.strokeColor.platformCGColor
+        pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
     }
 
     // MARK: - Command preview
@@ -678,7 +854,15 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
             return shouldAcceptDrawingTouch(touch)
         }
 
-        if gestureRecognizer is UITapGestureRecognizer {
+        if let tap = gestureRecognizer as? UITapGestureRecognizer {
+            if tap.numberOfTapsRequired == 2 {
+                // Double-tap recognizer only finishes curves; inert elsewhere.
+                return activeCategory == .curve && shouldAcceptDrawingTouch(touch)
+            }
+            if activeCategory == .curve {
+                // Curve points come from Pencil drags; ignore stray single taps.
+                return false
+            }
             switch activeCategory {
             case .line, .circle, .rectangle:
                 if isCommandMode {

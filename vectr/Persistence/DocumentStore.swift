@@ -40,7 +40,8 @@ final class DocumentStore {
         fileURL = url
         fileName = url.deletingPathExtension().lastPathComponent
         hasUnsavedChanges = false
-        needsInitialViewportLayout = false
+        // Always re-center on the grid origin when opening, ignoring the viewport saved in the file.
+        needsInitialViewportLayout = true
     }
 
     func save(to url: URL? = nil) throws {
