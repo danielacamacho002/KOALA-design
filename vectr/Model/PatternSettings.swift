@@ -47,8 +47,10 @@ struct PatternSettings: Equatable {
     var columns: Int = 2
     var spacingX: CGFloat = 50
     var spacingY: CGFloat = 50
-    var includeOriginal: Bool = true
     var rotateCopies: Bool = false
+    /// Radial and spiral only. When on, count is the number of new copies and the source stays put.
+    /// When off, count is the total number of shapes after apply and the source moves to the first slot.
+    var keepOriginal: Bool = true
     /// Center-to-center distance between copies along the curved path.
     var tightness: CGFloat = 10
     var linearDirection: LinearDirection = .horizontal

@@ -17,8 +17,14 @@ struct PatternPanelView: View {
         guard document.selectedStrokeID != nil,
               let stroke = document.selectedStrokeID.flatMap({ document.stroke(with: $0) }),
               let layer = document.layers.first(where: { $0.id == stroke.layerID }),
-              !layer.isLocked else { return false }
-        return !PatternEngine.generatedCopies(from: stroke, settings: settings).isEmpty
+              !layer.isLocked,
+              let strokeID = document.selectedStrokeID else { return false }
+        let application = PatternEngine.application(
+            from: stroke,
+            sourceID: strokeID,
+            settings: settings
+        )
+        return application.repositionedSource != nil || !application.newStrokes.isEmpty
     }
 
     var body: some View {
@@ -41,11 +47,11 @@ struct PatternPanelView: View {
 
             modeControls
 
-            Toggle("Include original", isOn: $settings.includeOriginal)
-                .font(.caption2)
-                .onChange(of: settings.includeOriginal) { _, _ in onPreviewChange() }
-
             if settings.mode == .radial || settings.mode == .spiral {
+                Toggle("Keep original", isOn: $settings.keepOriginal)
+                    .font(.caption2)
+                    .onChange(of: settings.keepOriginal) { _, _ in onPreviewChange() }
+
                 Toggle("Rotate copies", isOn: $settings.rotateCopies)
                     .font(.caption2)
                     .onChange(of: settings.rotateCopies) { _, _ in onPreviewChange() }
@@ -194,9 +200,25 @@ struct PatternPanelView: View {
                       let layer = document.layers.first(where: { $0.id == stroke.layerID }),
                       layer.isLocked {
                 Text("Layer is locked")
-            } else if let stroke = document.selectedStrokeID.flatMap({ document.stroke(with: $0) }) {
-                let copies = PatternEngine.generatedCopies(from: stroke, settings: settings).count
-                Text("Preview: \(copies) new cop\(copies == 1 ? "y" : "ies")")
+            } else if let stroke = document.selectedStrokeID.flatMap({ document.stroke(with: $0) }),
+                      let strokeID = document.selectedStrokeID {
+                let application = PatternEngine.application(
+                    from: stroke,
+                    sourceID: strokeID,
+                    settings: settings
+                )
+                if settings.mode == .radial || settings.mode == .spiral {
+                    if settings.keepOriginal {
+                        let copies = application.newStrokes.count
+                        Text("Preview: \(copies) new cop\(copies == 1 ? "y" : "ies") + original")
+                    } else {
+                        let total = application.newStrokes.count + (application.repositionedSource != nil ? 1 : 0)
+                        Text("Preview: \(total) shape\(total == 1 ? "" : "s") total")
+                    }
+                } else {
+                    let copies = application.newStrokes.count
+                    Text("Preview: \(copies) shape\(copies == 1 ? "" : "s") total")
+                }
             }
         }
         .font(.caption2.monospacedDigit())

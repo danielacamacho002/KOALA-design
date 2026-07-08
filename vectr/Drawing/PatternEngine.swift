@@ -7,9 +7,17 @@ import CoreGraphics
 import Foundation
 
 enum PatternEngine {
-    private struct Placement {
+    struct Placement {
         var translation: CGPoint
         var rotation: CGFloat
+    }
+
+    struct Application {
+        /// When set, the source stroke is updated in place to the first pattern slot.
+        var repositionedSource: VectorStroke?
+        /// When true, the source stroke is removed after new strokes are added.
+        var removeSource: Bool
+        var newStrokes: [VectorStroke]
     }
 
     private static let minimumRadius: CGFloat = 1
@@ -24,13 +32,74 @@ enum PatternEngine {
     static func generatedCopies(from stroke: VectorStroke, settings: PatternSettings) -> [VectorStroke] {
         let pivot = ShapeGeometry.shapeCenter(for: stroke)
             ?? strokeCenter(from: stroke)
-        let placements = computePlacements(settings: settings)
-        return placements.map { placement in
+        return computePlacements(settings: settings).map { placement in
             transformedCopy(
                 stroke,
                 pivot: pivot,
                 translation: placement.translation,
                 rotation: placement.rotation
+            )
+        }
+    }
+
+    static func application(
+        from stroke: VectorStroke,
+        sourceID: UUID,
+        settings: PatternSettings
+    ) -> Application {
+        let pivot = ShapeGeometry.shapeCenter(for: stroke)
+            ?? strokeCenter(from: stroke)
+        let placements = computePlacements(settings: settings)
+
+        guard !placements.isEmpty else {
+            return Application(repositionedSource: nil, removeSource: false, newStrokes: [])
+        }
+
+        switch settings.mode {
+        case .grid, .linear:
+            let newStrokes = placements.map { placement in
+                transformedCopy(
+                    stroke,
+                    pivot: pivot,
+                    translation: placement.translation,
+                    rotation: placement.rotation
+                )
+            }
+            return Application(repositionedSource: nil, removeSource: true, newStrokes: newStrokes)
+
+        case .radial, .spiral:
+            if settings.keepOriginal {
+                let newStrokes = placements.map { placement in
+                    transformedCopy(
+                        stroke,
+                        pivot: pivot,
+                        translation: placement.translation,
+                        rotation: placement.rotation
+                    )
+                }
+                return Application(repositionedSource: nil, removeSource: false, newStrokes: newStrokes)
+            }
+
+            var repositioned = transformedCopy(
+                stroke,
+                pivot: pivot,
+                translation: placements[0].translation,
+                rotation: placements[0].rotation
+            )
+            repositioned.id = sourceID
+
+            let newStrokes = placements.dropFirst().map { placement in
+                transformedCopy(
+                    stroke,
+                    pivot: pivot,
+                    translation: placement.translation,
+                    rotation: placement.rotation
+                )
+            }
+            return Application(
+                repositionedSource: repositioned,
+                removeSource: false,
+                newStrokes: newStrokes
             )
         }
     }
@@ -62,7 +131,6 @@ enum PatternEngine {
         for index in 0..<total {
             let row = index / columns
             let column = index % columns
-            if settings.includeOriginal, row == 0, column == 0 { continue }
             placements.append(
                 Placement(
                     translation: CGPoint(
@@ -81,7 +149,6 @@ enum PatternEngine {
         var placements: [Placement] = []
 
         for index in 0..<count {
-            if settings.includeOriginal, index == 0 { continue }
             let offset: CGPoint
             switch settings.linearDirection {
             case .horizontal:
@@ -100,14 +167,12 @@ enum PatternEngine {
         let tightness = max(settings.tightness, minimumRadius)
         var placements: [Placement] = []
 
-        for index in 0..<count {
-            if settings.includeOriginal, index == 0 { continue }
-
+        for copyIndex in 0..<count {
             let angle: CGFloat
             if settings.radialSpreadEven {
-                angle = CGFloat(index) * (2 * .pi / CGFloat(count))
+                angle = CGFloat(copyIndex) * (2 * .pi / CGFloat(count))
             } else {
-                angle = CGFloat(index) * (tightness / startRadius)
+                angle = CGFloat(copyIndex) * (tightness / startRadius)
             }
 
             let translation = CGPoint(
@@ -129,12 +194,9 @@ enum PatternEngine {
 
         var angle: CGFloat = 0
         var radius = startRadius
-        var placedCount = 0
 
-        for index in 0..<count {
-            if settings.includeOriginal, index == 0 { continue }
-
-            if placedCount > 0 {
+        for copyIndex in 0..<count {
+            if copyIndex > 0 {
                 let deltaAngle = tightness / max(radius, minimumRadius)
                 angle += deltaAngle
                 radius = startRadius + angle * radiusGrowthPerRadian
@@ -146,7 +208,6 @@ enum PatternEngine {
             )
             let rotation = settings.rotateCopies ? angle : 0
             placements.append(Placement(translation: translation, rotation: rotation))
-            placedCount += 1
         }
         return placements
     }
