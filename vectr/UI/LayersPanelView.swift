@@ -19,9 +19,9 @@ struct LayersPanelView: View {
     @State private var renameText = ""
     @FocusState private var renameFieldFocused: Bool
 
-    private let panelWidth: CGFloat = 220
-    private let rowHeight: CGFloat = 40
-    private let maxListHeight: CGFloat = 280
+    private let panelWidth: CGFloat = 248
+    private let rowHeight: CGFloat = 44
+    private let maxListHeight: CGFloat = 308
 
     var body: some View {
         Group {
@@ -137,6 +137,9 @@ struct LayersPanelView: View {
     @ViewBuilder
     private func layerRow(_ layer: Layer) -> some View {
         HStack(spacing: 6) {
+            LayerThumbnailView(document: document, layerID: layer.id)
+                .onTapGesture { activate(layer) }
+
             if renamingLayerID == layer.id {
                 TextField("Layer name", text: $renameText)
                     .font(.caption)
@@ -183,21 +186,30 @@ struct LayersPanelView: View {
                     onChanged()
                 }
                 .accessibilityLabel(layer.isLocked ? "Unlock layer" : "Lock layer")
-        }
-        .contextMenu {
-            Button {
-                beginRename(layer)
-            } label: {
-                Label("Rename", systemImage: "pencil")
-            }
 
-            Button(role: .destructive) {
-                document.deleteLayer(id: layer.id)
-                onChanged()
+            Menu {
+                Button {
+                    beginRename(layer)
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+
+                Button(role: .destructive) {
+                    document.deleteLayer(id: layer.id)
+                    onChanged()
+                } label: {
+                    Label("Delete Layer", systemImage: "trash")
+                }
+                .disabled(document.layers.count <= 1)
             } label: {
-                Label("Delete Layer", systemImage: "trash")
+                Image(systemName: "ellipsis")
+                    .font(.caption)
+                    .foregroundStyle(Color.primary.opacity(0.6))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
             }
-            .disabled(document.layers.count <= 1)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Layer options")
         }
     }
 
@@ -231,5 +243,44 @@ struct LayersPanelView: View {
         displayed.move(fromOffsets: source, toOffset: destination)
         document.reorderLayers(displayed.reversed())
         onChanged()
+    }
+}
+
+/// Small preview of a single layer's content, zoomed to fit that layer's
+/// drawing. Re-renders whenever document geometry changes.
+private struct LayerThumbnailView: View {
+    let document: VectrDocument
+    let layerID: UUID
+
+    @State private var image: UIImage?
+
+    private let thumbnailSize = CGSize(width: 38, height: 30)
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(Color(.systemBackground))
+
+            if let image {
+                Image(uiImage: image)
+            } else {
+                Image(systemName: "scribble")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.primary.opacity(0.2))
+            }
+        }
+        .frame(width: thumbnailSize.width, height: thumbnailSize.height)
+        .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
+        .contentShape(Rectangle())
+        .onAppear { regenerate() }
+        .onChange(of: document.geometryRevision) { _, _ in regenerate() }
+    }
+
+    private func regenerate() {
+        image = LayerThumbnailRenderer.render(
+            document: document,
+            layerID: layerID,
+            size: thumbnailSize
+        )
     }
 }
