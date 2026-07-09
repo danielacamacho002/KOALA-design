@@ -37,6 +37,8 @@ struct EditorView: View {
     @State private var savedDesignViewport: ViewportTransform?
     @State private var printExportDocument: EditorExportDocument?
     @State private var lastSavedSnapshot: DocumentSnapshot?
+    @State private var patternSettings = PatternSettings()
+    @State private var patternPreviewStrokes: [VectorStroke] = []
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
 
     init(projectURL: URL? = nil, projectLibrary: ProjectLibrary? = nil) {
@@ -211,6 +213,7 @@ struct EditorView: View {
                 CanvasOverlayView(
                     document: store.document,
                     commandSession: commandSession,
+                    patternPreviewStrokes: patternPreviewStrokes,
                     onChanged: {
                         if commandSession.isRefiningAttachedStroke {
                             _ = syncAttachedStrokeFromSession(recordUndo: false)
@@ -256,6 +259,21 @@ struct EditorView: View {
                     AddAnchorPanelView(
                         document: store.document,
                         onApply: { refreshCanvas() },
+                        onStatus: { statusMessage = $0 }
+                    )
+                    .padding(.leading, 10)
+                    .padding(.top, 8)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else if store.document.activeCategory == .pattern {
+                    PatternPanelView(
+                        document: store.document,
+                        units: store.document.settings.units,
+                        settings: $patternSettings,
+                        onPreviewChange: updatePatternPreview,
+                        onApply: {
+                            patternPreviewStrokes = []
+                            refreshCanvas()
+                        },
                         onStatus: { statusMessage = $0 }
                     )
                     .padding(.leading, 10)
@@ -474,8 +492,8 @@ struct EditorView: View {
             // With a text selected, the overlay handles move/scale/tap-to-edit;
             // with nothing selected, taps pass through so a new text can be placed.
             return store.document.selectedTextID != nil
-        case .delete, .addAnchor:
-            // Let canvas taps pass through so delete/add-anchor can target the shape directly.
+        case .delete, .addAnchor, .pattern:
+            // Let canvas taps pass through so delete/add-anchor/pattern can target the shape directly.
             return false
         default:
             if store.document.dimensionsVisible { return false }
@@ -695,7 +713,7 @@ struct EditorView: View {
     private func updateChromeInsets() {
         let panelWidth: CGFloat
         switch store.document.activeCategory {
-        case .fillet, .addAnchor:
+        case .fillet, .addAnchor, .pattern:
             panelWidth = 188
         default:
             panelWidth = 0
@@ -712,6 +730,9 @@ struct EditorView: View {
         showCommandPanel = category.isDrawingTool
         if category != .type {
             endTextEditingIfNeeded()
+        }
+        if category != .pattern {
+            patternPreviewStrokes = []
         }
         switch category {
         case .type:
@@ -752,6 +773,18 @@ struct EditorView: View {
                 statusMessage = "Select a closed shape, then tap an edge or enter total anchor count"
             } else {
                 statusMessage = "Tap an edge to add an anchor, or enter total anchor count"
+            }
+        case .pattern:
+            commandSession.cancel()
+            store.document.clearToolSelections()
+            patternPreviewStrokes = []
+            if let id = store.document.selectedStrokeID,
+               let stroke = store.document.stroke(with: id) {
+                patternSettings = PatternSettings.defaults(for: stroke)
+                updatePatternPreview()
+                statusMessage = "Adjust pattern settings, then tap Apply"
+            } else {
+                statusMessage = "Select a shape, then choose grid, linear, radial, or spiral"
             }
         case .curve:
             commandSession.cancel()
@@ -920,6 +953,17 @@ struct EditorView: View {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
                 refreshCanvas()
             }
+        case .pattern:
+            let threshold = store.document.viewport.viewToDocument(distance: 16)
+            store.document.selectElement(near: documentPoint, threshold: threshold)
+            if let id = store.document.selectedStrokeID,
+               let stroke = store.document.stroke(with: id) {
+                patternSettings = PatternSettings.defaults(for: stroke)
+            } else {
+                patternPreviewStrokes = []
+            }
+            updatePatternPreview()
+            refreshCanvas()
         case .delete:
             if let text = store.document.textElement(at: documentPoint) {
                 store.document.removeTextElement(id: text.id)
@@ -1129,6 +1173,16 @@ struct EditorView: View {
         store.document.updateStroke(updated, recordUndo: recordUndo)
         store.document.selectedStrokeID = updated.id
         return true
+    }
+
+    private func updatePatternPreview() {
+        guard store.document.activeCategory == .pattern,
+              let strokeID = store.document.selectedStrokeID,
+              let stroke = store.document.stroke(with: strokeID) else {
+            patternPreviewStrokes = []
+            return
+        }
+        patternPreviewStrokes = PatternEngine.generatedCopies(from: stroke, settings: patternSettings)
     }
 
     private func refreshCanvas() {

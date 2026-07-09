@@ -500,6 +500,64 @@ final class VectrDocument {
         return .success
     }
 
+    @discardableResult
+    func applyPattern(to strokeID: UUID, settings: PatternSettings) -> PatternApplyResult {
+        guard let source = stroke(with: strokeID) else {
+            return .noSelection
+        }
+        if let layer = layers.first(where: { $0.id == source.layerID }), layer.isLocked {
+            return .layerLocked
+        }
+
+        let application = PatternEngine.application(
+            from: source,
+            sourceID: strokeID,
+            settings: settings
+        )
+        guard application.repositionedSource != nil || !application.newStrokes.isEmpty else {
+            return .nothingToCreate
+        }
+
+        pushUndo()
+
+        if let repositioned = application.repositionedSource,
+           let index = strokes.firstIndex(where: { $0.id == strokeID }) {
+            strokes[index] = repositioned
+        }
+
+        if application.removeSource {
+            strokes.removeAll { $0.id == strokeID }
+        }
+
+        strokes.append(contentsOf: application.newStrokes)
+
+        if application.removeSource {
+            selectedStrokeID = application.newStrokes.last?.id
+        } else {
+            selectedStrokeID = strokeID
+        }
+
+        var affectedIDs = Set(application.newStrokes.map(\.id))
+        if application.repositionedSource != nil || !application.removeSource {
+            affectedIDs.insert(strokeID)
+        }
+        reconcileIntersectionAnchors(around: affectedIDs)
+        ClosedShapeDetector.reconcile(document: self)
+        DonutDetector.reconcile(document: self)
+        geometryRevision += 1
+
+        let createdCount: Int
+        switch settings.mode {
+        case .radial, .spiral where settings.keepOriginal:
+            createdCount = application.newStrokes.count
+        case .radial, .spiral:
+            createdCount = application.newStrokes.count + (application.repositionedSource != nil ? 1 : 0)
+        default:
+            createdCount = application.newStrokes.count
+        }
+        return .success(created: createdCount)
+    }
+
     /// Single tap: reset the selection to only this anchor and adopt it as the rotation pivot.
     func selectSingleAnchor(at index: Int) {
         selectedAnchorIndices = [index]
