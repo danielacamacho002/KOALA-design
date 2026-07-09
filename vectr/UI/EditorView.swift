@@ -31,6 +31,7 @@ struct EditorView: View {
     @State private var arcDragPreviousAngle: CGFloat?
     @State private var arcDragAccumulatedSweep: CGFloat = 0
     @State private var showCommandPanel = true
+    @State private var showLayersPanel = false
     @State private var hasInitializedDrawingSession = false
     @State private var editingTextID: UUID?
     @State private var editorMode: EditorMode = .design
@@ -318,6 +319,11 @@ struct EditorView: View {
                 ConstraintSettingsView(document: store.document)
                     .padding(.leading, 16)
                     .padding(.bottom, 16)
+            }
+            .overlay(alignment: .topTrailing) {
+                LayersPanelView(document: store.document, isExpanded: $showLayersPanel) {
+                    refreshCanvas()
+                }
             }
             .overlay(alignment: .bottomTrailing) {
                 RecenterCanvasButton {
@@ -728,6 +734,7 @@ struct EditorView: View {
 
     private func handleToolSelected(_ category: ToolCategory) {
         showCommandPanel = category.isDrawingTool
+        showLayersPanel = false
         if category != .type {
             endTextEditingIfNeeded()
         }
@@ -881,6 +888,7 @@ struct EditorView: View {
 
     private func handleCanvasTap(_ documentPoint: CGPoint) {
         showCommandPanel = false
+        showLayersPanel = false
         switch store.document.activeCategory {
         case .type:
             endTextEditingIfNeeded()

@@ -142,9 +142,18 @@ final class DrawingCanvasUIView: UIView {
 
     // MARK: - Stroke layers
 
+    /// Content layers are banded by document-layer index (+1 keeps them above the
+    /// grid/reference image at 0); previews use `Self.previewZPosition` to stay on top.
+    private func layerZPositions() -> [UUID: CGFloat] {
+        Dictionary(uniqueKeysWithValues: document.layers.enumerated().map { ($1.id, CGFloat($0 + 1)) })
+    }
+
+    static let previewZPosition: CGFloat = 10_000
+
     func reloadStrokes() {
         let visible = document.visibleStrokes()
         let visibleIDs = Set(visible.map(\.id))
+        let zPositions = layerZPositions()
 
         let staleIDs = strokeLayers.keys.filter { !visibleIDs.contains($0) }
         for id in staleIDs {
@@ -158,6 +167,7 @@ final class DrawingCanvasUIView: UIView {
             } else {
                 addStrokeLayer(stroke)
             }
+            strokeLayers[stroke.id]?.zPosition = zPositions[stroke.layerID] ?? 1
         }
         reloadStrokesHighlight()
         reloadTextElements()
@@ -166,6 +176,7 @@ final class DrawingCanvasUIView: UIView {
     func reloadTextElements() {
         let visible = document.visibleTextElements()
         let visibleIDs = Set(visible.map(\.id))
+        let zPositions = layerZPositions()
 
         let staleIDs = textLayers.keys.filter { !visibleIDs.contains($0) }
         for id in staleIDs {
@@ -181,6 +192,7 @@ final class DrawingCanvasUIView: UIView {
                 layer.addSublayer(created)
                 textLayers[element.id] = created
             }
+            textLayers[element.id]?.zPosition = zPositions[element.layerID] ?? 1
         }
     }
 
@@ -619,6 +631,7 @@ final class DrawingCanvasUIView: UIView {
             dot.fillColor = UIColor.systemBlue.cgColor
             dot.strokeColor = UIColor.white.cgColor
             dot.lineWidth = 1.5
+            dot.zPosition = Self.previewZPosition
             layer.addSublayer(dot)
             commandPointLayers.append(dot)
         }
@@ -637,6 +650,7 @@ final class DrawingCanvasUIView: UIView {
             newLayer.fillColor = UIColor.clear.cgColor
             newLayer.lineCap = .round
             newLayer.lineJoin = .round
+            newLayer.zPosition = Self.previewZPosition
             self.layer.addSublayer(newLayer)
             commandPreviewLayer = newLayer
             pathLayer = newLayer
@@ -698,6 +712,7 @@ final class DrawingCanvasUIView: UIView {
             newLayer.fillColor = UIColor.clear.cgColor
             newLayer.lineCap = .round
             newLayer.lineJoin = .round
+            newLayer.zPosition = Self.previewZPosition
             self.layer.addSublayer(newLayer)
             dragPreviewLayer = newLayer
             pathLayer = newLayer
