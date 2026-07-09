@@ -45,6 +45,7 @@ final class VectrDocument {
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
     var registrationMarks: [RegistrationMark] = []
     var printSelectedStrokeID: UUID?
+    var printSelectedTextID: UUID?
     var printLayoutRevision = 0
 
     private var undoStack: [DocumentSnapshot] = []
@@ -860,6 +861,31 @@ final class VectrDocument {
         printLayoutRevision += 1
     }
 
+    #if canImport(UIKit)
+    /// Unified print-layout selection: prefers a hit text element, otherwise
+    /// falls back to stroke hit testing. Text and strokes each keep their own
+    /// print selection slot; selecting one kind clears the other.
+    @discardableResult
+    func selectPrintElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
+        for element in visibleTextElements().reversed() {
+            let transform = effectivePrintTransform(for: element.id)
+            let affine = PrintLayoutCoordinateSpace.textPrintTransform(for: element, transform: transform)
+            let local = documentPoint.applying(affine.inverted())
+            if element.contains(local) {
+                printSelectedTextID = element.id
+                printSelectedStrokeID = nil
+                return .text(element.id)
+            }
+        }
+        if let stroke = selectPrintStroke(near: documentPoint, threshold: threshold) {
+            printSelectedTextID = nil
+            return .stroke(stroke.id)
+        }
+        printSelectedTextID = nil
+        return .none
+    }
+    #endif
+
     func selectPrintStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
         for stroke in visibleStrokes().reversed() {
             let transformed = transformedPrintStroke(stroke)
@@ -923,11 +949,11 @@ final class VectrDocument {
         for stroke in visibleStrokes() {
             points.append(contentsOf: ShapeGeometry.renderPoints(for: transformedPrintStroke(stroke)))
         }
-        let offset = printLayout.contentOffset
         for element in visibleTextElements() {
-            points.append(contentsOf: element.corners().map {
-                CGPoint(x: $0.x + offset.x, y: $0.y + offset.y)
-            })
+            points.append(contentsOf: PrintLayoutCoordinateSpace.transformedTextCorners(
+                element,
+                transform: effectivePrintTransform(for: element.id)
+            ))
         }
         let gridBounds = PrintPageGridEngine.gridBounds(for: printLayout)
         points.append(contentsOf: [

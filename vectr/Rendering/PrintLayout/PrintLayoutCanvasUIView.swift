@@ -138,8 +138,8 @@ final class PrintLayoutCanvasUIView: UIView {
     }
 
     /// Renders text elements as filled vector glyph outlines on the print grid,
-    /// so text is treated as a shape like strokes. Text follows the global
-    /// artwork `contentOffset` (same shift every stroke receives).
+    /// so text is treated as a shape like strokes. Each element applies its own
+    /// print transform (which includes the global artwork `contentOffset`).
     private func reloadTextElements() {
         let visibleIDs = Set(document.visibleTextElements().map(\.id))
         for (id, layer) in textLayers where !visibleIDs.contains(id) {
@@ -147,31 +147,47 @@ final class PrintLayoutCanvasUIView: UIView {
             textLayers.removeValue(forKey: id)
         }
 
-        let offset = document.printLayout.contentOffset
         let documentToView = CGAffineTransform(
             a: document.viewport.scale, b: 0, c: 0, d: document.viewport.scale,
             tx: document.viewport.translation.x, ty: document.viewport.translation.y
         )
-        let printToView = CGAffineTransform(translationX: offset.x, y: offset.y)
-            .concatenating(documentToView)
 
         for element in document.visibleTextElements() {
-            var transform = printToView
+            let printTransform = document.effectivePrintTransform(for: element.id)
+            var transform = PrintLayoutCoordinateSpace
+                .textPrintTransform(for: element, transform: printTransform)
+                .concatenating(documentToView)
             let viewPath = TextOutline.path(for: element).copy(using: &transform)
+
+            let isSelected = element.id == document.printSelectedTextID
+            let opacity = isSelected ? 1 : textOpacity(for: element, transform: printTransform)
 
             if let layer = textLayers[element.id] {
                 layer.path = viewPath
                 layer.fillColor = element.cgColor
+                layer.opacity = Float(opacity)
             } else {
                 let layer = CAShapeLayer()
                 layer.fillRule = .nonZero
                 layer.strokeColor = nil
                 layer.path = viewPath
                 layer.fillColor = element.cgColor
+                layer.opacity = Float(opacity)
                 artworkLayer.addSublayer(layer)
                 textLayers[element.id] = layer
             }
         }
+    }
+
+    /// Mirrors `PrintBorderRenderer.strokeOpacity`: dims text whose transformed
+    /// corners fall outside every printable area.
+    private func textOpacity(for element: TextElement, transform: PrintStrokeTransform) -> CGFloat {
+        guard document.printLayout.isPrintBorderVisible else { return 1 }
+        let corners = PrintLayoutCoordinateSpace.transformedTextCorners(element, transform: transform)
+        let hasUnprintablePoint = corners.contains {
+            !PrintBorderRenderer.isPointInsideAnyPrintableArea($0, settings: document.printLayout)
+        }
+        return hasUnprintablePoint ? 0.3 : 1
     }
 
     private func reloadBorders() {

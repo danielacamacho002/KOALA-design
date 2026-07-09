@@ -394,6 +394,7 @@ struct EditorView: View {
         savedDesignViewport = store.document.viewport
         editorMode = .printLayout
         store.document.printSelectedStrokeID = nil
+        store.document.printSelectedTextID = nil
         store.document.autoPositionDesignOnPrintGrid()
         store.document.refreshRegistrationMarkSuggestions()
         centerPrintLayoutWithoutRescaling(in: canvasSize)

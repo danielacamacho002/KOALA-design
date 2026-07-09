@@ -88,7 +88,7 @@ struct PrintLayoutView: View {
         switch document.printLayout.activeTool {
         case .select:
             let threshold = document.viewport.viewToDocument(distance: 16)
-            _ = document.selectPrintStroke(near: documentPoint, threshold: threshold)
+            _ = document.selectPrintElement(near: documentPoint, threshold: threshold)
             onChanged()
         case .registrationMark:
             let threshold = document.viewport.viewToDocument(distance: 20)
@@ -105,7 +105,7 @@ struct PrintLayoutView: View {
                 onChanged()
             } else {
                 let selectThreshold = document.viewport.viewToDocument(distance: 16)
-                _ = document.selectPrintStroke(near: documentPoint, threshold: selectThreshold)
+                _ = document.selectPrintElement(near: documentPoint, threshold: selectThreshold)
                 onChanged()
             }
         case .printBorder:
