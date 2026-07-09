@@ -6,19 +6,24 @@
 import SwiftUI
 import UIKit
 
-private final class FingerOnlyUITextField: UITextField {
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard bounds.contains(point) else { return nil }
-        if let touches = event?.allTouches {
-            for touch in touches where touch.type == .pencil || touch.type == .stylus {
-                return nil
-            }
-        }
-        return super.hitTest(point, with: event)
+private final class FingerOnlyUITextField: UITextField, UIScribbleInteractionDelegate {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        // Consume Pencil touches as plain taps but never accept handwriting.
+        addInteraction(UIScribbleInteraction(delegate: self))
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func scribbleInteraction(_ interaction: UIScribbleInteraction, shouldBeginAt location: CGPoint) -> Bool {
+        false
     }
 }
 
-/// Text field that accepts finger/keyboard input only — Apple Pencil taps pass through.
+/// Text field that accepts keyboard input only. Apple Pencil can tap to focus,
+/// but Scribble handwriting is disabled and Pencil strokes never pass through to the canvas.
 struct FingerOnlyTextField: UIViewRepresentable {
     var placeholder: String
     @Binding var text: String
