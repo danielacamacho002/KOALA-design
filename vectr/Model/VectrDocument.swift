@@ -680,7 +680,7 @@ final class VectrDocument {
         moveRotationPivotAnchorIndex = index
     }
 
-    /// Long press: multi-select toggle that leaves the other selected anchors untouched.
+    /// Double-tap: multi-select toggle that leaves the other selected anchors untouched.
     func toggleAnchorSelection(at index: Int) {
         if selectedAnchorIndices.contains(index) {
             selectedAnchorIndices.remove(index)
@@ -698,6 +698,12 @@ final class VectrDocument {
         moveRotationPivotAnchorIndex = nil
     }
 
+    /// Single tap: reset the fillet selection to only this corner.
+    func selectSingleFilletCorner(at index: Int) {
+        selectedFilletCornerIndices = [index]
+    }
+
+    /// Double-tap: multi-select toggle that leaves the other selected corners untouched.
     func toggleFilletCornerSelection(at index: Int) {
         if selectedFilletCornerIndices.contains(index) {
             selectedFilletCornerIndices.remove(index)
@@ -778,6 +784,7 @@ final class VectrDocument {
         pushUndo()
         strokes.removeAll { $0.id == id }
         if selectedStrokeID == id {
+            clearToolSelections()
             selectedStrokeID = nil
         }
     }
@@ -785,7 +792,7 @@ final class VectrDocument {
     func selectStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
         let candidates = selectableStrokes()
         if let fillHit = candidates.reversed().first(where: { $0.contains(documentPoint) }) {
-            selectedStrokeID = fillHit.id
+            setSelectedStrokeID(fillHit.id)
             return fillHit
         }
 
@@ -798,8 +805,16 @@ final class VectrDocument {
                 best = stroke
             }
         }
-        selectedStrokeID = best?.id
+        setSelectedStrokeID(best?.id)
         return best
+    }
+
+    /// Updates `selectedStrokeID`, clearing anchor/fillet selections whenever the stroke changes.
+    private func setSelectedStrokeID(_ id: UUID?) {
+        if selectedStrokeID != id {
+            clearToolSelections()
+        }
+        selectedStrokeID = id
     }
 
     // MARK: - Print Layout
