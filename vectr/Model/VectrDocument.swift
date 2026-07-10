@@ -147,6 +147,12 @@ final class VectrDocument {
         return strokes.filter { visibleLayerIDs.contains($0.layerID) }
     }
 
+    /// Strokes eligible for selection/hit-testing: on layers that are visible and unlocked.
+    func selectableStrokes() -> [VectorStroke] {
+        let selectableLayerIDs = Set(layers.filter { $0.isVisible && !$0.isLocked }.map(\.id))
+        return strokes.filter { selectableLayerIDs.contains($0.layerID) }
+    }
+
     func stroke(with id: UUID) -> VectorStroke? {
         strokes.first { $0.id == id }
     }
@@ -156,6 +162,12 @@ final class VectrDocument {
     func visibleTextElements() -> [TextElement] {
         let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
         return textElements.filter { visibleLayerIDs.contains($0.layerID) }
+    }
+
+    /// Text elements eligible for selection/hit-testing: on layers that are visible and unlocked.
+    func selectableTextElements() -> [TextElement] {
+        let selectableLayerIDs = Set(layers.filter { $0.isVisible && !$0.isLocked }.map(\.id))
+        return textElements.filter { selectableLayerIDs.contains($0.layerID) }
     }
 
     func textElement(with id: UUID) -> TextElement? {
