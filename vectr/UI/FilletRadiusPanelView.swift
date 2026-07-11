@@ -15,31 +15,22 @@ struct FilletRadiusPanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Fillet")
-                .font(.caption.weight(.semibold))
+            ToolPanelHeader("Fillet")
 
             Text("Select corner anchors, enter radius, or drag a corner handle:")
-                .font(.caption2)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 6) {
-                FingerOnlyTextField(
-                    placeholder: "Radius",
-                    text: $radiusText,
-                    keyboardType: .decimalPad,
-                    onSubmit: apply
-                )
-                .frame(height: 36)
-                .padding(.horizontal, 10)
-
-                Button(action: apply) {
-                    Image(systemName: "return")
-                        .font(.caption.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
+            FingerOnlyTextField(
+                placeholder: "Radius",
+                text: $radiusText,
+                keyboardType: .decimalPad,
+                fontSize: 13,
+                cornerRadius: 0,
+                onSubmit: apply
+            )
+            .frame(height: 30)
 
             Text("Selected corners: \(document.selectedFilletCornerIndices.count)")
                 .font(.caption2.monospacedDigit())
@@ -54,27 +45,19 @@ struct FilletRadiusPanelView: View {
             .font(.caption2)
             .foregroundStyle(.secondary)
 
-            HStack(spacing: 8) {
-                Button("Cancel", role: .cancel) { onCancel() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+            HStack(spacing: 4) {
+                ToolPanelLabelButton(title: "Cancel") { onCancel() }
 
-                Button("Apply") { apply() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(document.selectedFilletCornerIndices.isEmpty)
+                ToolPanelLabelButton(
+                    title: "Apply",
+                    prominent: true,
+                    isDisabled: document.selectedFilletCornerIndices.isEmpty
+                ) {
+                    apply()
+                }
             }
         }
-        .padding(10)
-        .frame(width: 172)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(.systemBackground).opacity(0.92))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
+        .toolPanelChrome(width: 172)
         .onAppear {
             let display = units.fromDocumentUnits(document.settings.defaultCornerRadius)
             radiusText = String(format: "%.3f", display)

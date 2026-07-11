@@ -31,52 +31,37 @@ struct AddAnchorPanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Add Anchor")
-                .font(.caption.weight(.semibold))
+            ToolPanelHeader("Add Anchor")
 
             Text("Tap an edge to add one anchor, or enter total anchor count.")
-                .font(.caption2)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 6) {
-                FingerOnlyTextField(
-                    placeholder: "Total anchors",
-                    text: $totalText,
-                    keyboardType: .numberPad,
-                    onSubmit: apply
-                )
-                .frame(height: 36)
-                .padding(.horizontal, 10)
-
-                Button(action: apply) {
-                    Image(systemName: "return")
-                        .font(.caption.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(!canApply)
-            }
+            FingerOnlyTextField(
+                placeholder: "Total anchors",
+                text: $totalText,
+                keyboardType: .numberPad,
+                fontSize: 13,
+                cornerRadius: 0,
+                onSubmit: apply
+            )
+            .frame(height: 30)
 
             Text("Current anchors: \(currentCount)")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
 
-            Button("Apply") { apply() }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(!canApply)
+            ToolPanelLabelButton(
+                title: "Apply",
+                prominent: true,
+                isDisabled: !canApply,
+                fullWidth: true
+            ) {
+                apply()
+            }
         }
-        .padding(10)
-        .frame(width: 172)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(.systemBackground).opacity(0.92))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
+        .toolPanelChrome(width: 172)
     }
 
     private func apply() {
