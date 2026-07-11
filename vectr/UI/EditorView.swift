@@ -781,7 +781,7 @@ struct EditorView: View {
             if store.document.selectedStrokeID == nil {
                 statusMessage = "Select a shape, then choose corners to fillet"
             } else {
-                statusMessage = "Tap corners to select, or drag a corner handle to set fillet radius"
+                statusMessage = "Tap a corner to select it; double-tap to multi-select; drag to set radius"
             }
         case .addAnchor:
             commandSession.cancel()
@@ -810,8 +810,7 @@ struct EditorView: View {
         case .move, .scale, .dimensions:
             commandSession.cancel()
             if category == .move {
-                store.document.selectedAnchorIndices.removeAll()
-                store.document.moveRotationPivotAnchorIndex = nil
+                store.document.clearToolSelections()
                 if store.document.selectedTextID != nil {
                     statusMessage = "Drag to move the text, or use the handle to rotate"
                 } else if store.document.selectedStrokeID == nil {

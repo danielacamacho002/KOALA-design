@@ -184,7 +184,10 @@ extension VectrDocument {
     func selectElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
         if let text = textElement(at: documentPoint) {
             selectedTextID = text.id
-            selectedStrokeID = nil
+            if selectedStrokeID != nil {
+                clearToolSelections()
+                selectedStrokeID = nil
+            }
             return .text(text.id)
         }
         if let stroke = selectStroke(near: documentPoint, threshold: threshold) {
