@@ -1,0 +1,86 @@
+//
+//  LayerThumbnailRenderer.swift
+//  vectr
+//
+
+import CoreGraphics
+import UIKit
+
+/// Renders small per-layer previews for the layers panel, zoomed to fit the
+/// layer's own content rather than the whole canvas extent.
+enum LayerThumbnailRenderer {
+    static func render(
+        document: VectrDocument,
+        layerID: UUID,
+        size: CGSize
+    ) -> UIImage? {
+        let strokes = document.strokes(for: layerID)
+        let texts = document.textElements.filter { $0.layerID == layerID }
+
+        var points = strokes.flatMap { ShapeGeometry.renderPoints(for: $0) }
+        for element in texts {
+            points.append(contentsOf: element.corners())
+        }
+        guard !points.isEmpty, size.width > 0, size.height > 0 else { return nil }
+
+        var bounds = CGRect.null
+        for point in points {
+            bounds = bounds.union(CGRect(origin: point, size: .zero))
+        }
+        // Proportional padding so content doesn't touch the thumbnail edges.
+        let pad = max(bounds.width, bounds.height, 1) * 0.1
+        bounds = bounds.insetBy(dx: -pad, dy: -pad)
+
+        var viewport = ViewportTransform()
+        viewport.scale = min(size.width / bounds.width, size.height / bounds.height)
+        viewport.translation = CGPoint(
+            x: size.width / 2 - bounds.midX * viewport.scale,
+            y: size.height / 2 - bounds.midY * viewport.scale
+        )
+
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { ctx in
+            let context = ctx.cgContext
+
+            for stroke in strokes {
+                let path = StrokeRenderer.path(for: stroke, viewport: viewport).cgPath
+                context.addPath(path)
+                context.setStrokeColor(thumbnailStrokeColor(for: stroke))
+                // Clamp so hairlines stay visible at thumbnail scale.
+                context.setLineWidth(max(0.75, viewport.documentToView(distance: stroke.strokeWidth)))
+                context.setLineCap(.round)
+                context.setLineJoin(.round)
+                if stroke.isConstruction {
+                    context.setLineDash(phase: 0, lengths: [3, 2])
+                }
+                if stroke.isClosed, !stroke.isConstruction {
+                    context.setFillColor(UIColor.systemGray.withAlphaComponent(0.25).cgColor)
+                    let fillMode: CGPathDrawingMode = stroke.cutoutPoints.isEmpty ? .fillStroke : .eoFillStroke
+                    context.drawPath(using: fillMode)
+                } else {
+                    context.strokePath()
+                }
+                context.setLineDash(phase: 0, lengths: [])
+            }
+
+            let documentToView = CGAffineTransform(
+                a: viewport.scale, b: 0, c: 0, d: viewport.scale,
+                tx: viewport.translation.x, ty: viewport.translation.y
+            )
+            for element in texts {
+                var transform = documentToView
+                guard let viewPath = TextOutline.path(for: element).copy(using: &transform) else { continue }
+                context.addPath(viewPath)
+                context.setFillColor(element.cgColor)
+                context.fillPath()
+            }
+        }
+    }
+
+    private static func thumbnailStrokeColor(for stroke: VectorStroke) -> CGColor {
+        if stroke.isConstruction {
+            return UIColor.systemBlue.withAlphaComponent(0.6).cgColor
+        }
+        return stroke.cgColor
+    }
+}

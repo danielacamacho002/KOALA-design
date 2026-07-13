@@ -20,10 +20,14 @@ struct PrintLayoutOverlayView: View {
     var body: some View {
         GeometryReader { _ in
             ZStack {
-                if document.printLayout.activeTool == .select,
-                   let strokeID = document.printSelectedStrokeID,
-                   let stroke = document.stroke(with: strokeID) {
-                    selectionOverlay(strokeID: strokeID, stroke: stroke)
+                if document.printLayout.activeTool == .select {
+                    if let strokeID = document.printSelectedStrokeID,
+                       let stroke = document.stroke(with: strokeID) {
+                        strokeSelectionOverlay(strokeID: strokeID, stroke: stroke)
+                    } else if let textID = document.printSelectedTextID,
+                              let element = document.textElement(with: textID) {
+                        textSelectionOverlay(element: element)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -32,10 +36,29 @@ struct PrintLayoutOverlayView: View {
     }
 
     @ViewBuilder
-    private func selectionOverlay(strokeID: UUID, stroke: VectorStroke) -> some View {
+    private func strokeSelectionOverlay(strokeID: UUID, stroke: VectorStroke) -> some View {
         let transformed = document.transformedPrintStroke(stroke)
         let points = ShapeGeometry.renderPoints(for: transformed)
-        let bbox = PrintLayoutCoordinateSpace.boundingRect(for: points)
+        selectionOverlay(
+            elementID: strokeID,
+            bbox: PrintLayoutCoordinateSpace.boundingRect(for: points)
+        )
+    }
+
+    @ViewBuilder
+    private func textSelectionOverlay(element: TextElement) -> some View {
+        let corners = PrintLayoutCoordinateSpace.transformedTextCorners(
+            element,
+            transform: document.effectivePrintTransform(for: element.id)
+        )
+        selectionOverlay(
+            elementID: element.id,
+            bbox: PrintLayoutCoordinateSpace.boundingRect(for: corners)
+        )
+    }
+
+    @ViewBuilder
+    private func selectionOverlay(elementID: UUID, bbox: CGRect) -> some View {
         let center = CGPoint(x: bbox.midX, y: bbox.midY)
         let viewCenter = document.viewport.documentToView(center)
 
@@ -55,7 +78,7 @@ struct PrintLayoutOverlayView: View {
             .frame(width: centerHandleSize, height: centerHandleSize)
             .overlay(Circle().stroke(Color.white, lineWidth: 2))
             .position(viewCenter)
-            .gesture(moveDrag(strokeID: strokeID))
+            .gesture(moveDrag(elementID: elementID))
 
         // Rotation handle
         Image(systemName: "arrow.triangle.2.circlepath")
@@ -67,16 +90,16 @@ struct PrintLayoutOverlayView: View {
                 x: viewCenter.x,
                 y: viewCenter.y - document.viewport.documentToView(distance: rotateHandleOffset)
             )
-            .gesture(rotateDrag(strokeID: strokeID, center: center))
+            .gesture(rotateDrag(elementID: elementID, center: center))
     }
 
     private var centerHandleSize: CGFloat { 18 }
 
-    private func moveDrag(strokeID: UUID) -> some Gesture {
+    private func moveDrag(elementID: UUID) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
             .onChanged { value in
                 if moveDragOriginTransform == .identity {
-                    moveDragOriginTransform = document.printTransform(for: strokeID)
+                    moveDragOriginTransform = document.printTransform(for: elementID)
                     document.beginInteractiveEdit()
                 }
                 let startDoc = document.viewport.viewToDocument(value.startLocation)
@@ -90,7 +113,7 @@ struct PrintLayoutOverlayView: View {
                     x: moveDragOriginTransform.translation.x + delta.x,
                     y: moveDragOriginTransform.translation.y + delta.y
                 )
-                document.setPrintTransform(transform, for: strokeID, recordUndo: false)
+                document.setPrintTransform(transform, for: elementID, recordUndo: false)
                 onChanged()
             }
             .onEnded { _ in
@@ -98,19 +121,19 @@ struct PrintLayoutOverlayView: View {
             }
     }
 
-    private func rotateDrag(strokeID: UUID, center: CGPoint) -> some Gesture {
+    private func rotateDrag(elementID: UUID, center: CGPoint) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
             .onChanged { value in
                 let currentDoc = document.viewport.viewToDocument(value.location)
                 if rotateDragOriginRotation == 0, rotateDragOriginAngle == 0 {
-                    rotateDragOriginRotation = document.printTransform(for: strokeID).rotation
+                    rotateDragOriginRotation = document.printTransform(for: elementID).rotation
                     rotateDragOriginAngle = atan2(currentDoc.y - center.y, currentDoc.x - center.x)
                     document.beginInteractiveEdit()
                 }
                 let angle = atan2(currentDoc.y - center.y, currentDoc.x - center.x)
-                var transform = document.printTransform(for: strokeID)
+                var transform = document.printTransform(for: elementID)
                 transform.rotation = rotateDragOriginRotation + (angle - rotateDragOriginAngle)
-                document.setPrintTransform(transform, for: strokeID, recordUndo: false)
+                document.setPrintTransform(transform, for: elementID, recordUndo: false)
                 onChanged()
             }
             .onEnded { _ in

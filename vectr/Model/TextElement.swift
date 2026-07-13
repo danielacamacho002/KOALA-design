@@ -164,17 +164,17 @@ extension VectrDocument {
         case none
     }
 
-    /// Selects the top-most visible text element hit by `documentPoint`.
+    /// Selects the top-most selectable (visible, unlocked layer) text element hit by `documentPoint`.
     @discardableResult
     func selectTextElement(at documentPoint: CGPoint) -> TextElement? {
-        let hit = visibleTextElements().reversed().first { $0.contains(documentPoint) }
+        let hit = selectableTextElements().reversed().first { $0.contains(documentPoint) }
         selectedTextID = hit?.id
         return hit
     }
 
-    /// The top-most visible text element hit by `documentPoint`, without changing selection.
+    /// The top-most selectable text element hit by `documentPoint`, without changing selection.
     func textElement(at documentPoint: CGPoint) -> TextElement? {
-        visibleTextElements().reversed().first { $0.contains(documentPoint) }
+        selectableTextElements().reversed().first { $0.contains(documentPoint) }
     }
 
     /// Unified selection: prefers a hit text element, otherwise falls back to
@@ -184,7 +184,10 @@ extension VectrDocument {
     func selectElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
         if let text = textElement(at: documentPoint) {
             selectedTextID = text.id
-            selectedStrokeID = nil
+            if selectedStrokeID != nil {
+                clearToolSelections()
+                selectedStrokeID = nil
+            }
             return .text(text.id)
         }
         if let stroke = selectStroke(near: documentPoint, threshold: threshold) {

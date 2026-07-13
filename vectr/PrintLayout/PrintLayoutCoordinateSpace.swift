@@ -69,4 +69,37 @@ enum PrintLayoutCoordinateSpace {
         }
         return copy
     }
+
+    #if canImport(UIKit)
+    // MARK: - Text elements
+
+    /// Affine transform placing a text element on the print grid: rotates around
+    /// the element's bounding-box center, then translates. Matches the pivot
+    /// convention `transformedPoints` uses for strokes. `transform.translation`
+    /// should already include the global `contentOffset` when built from
+    /// `effectivePrintTransform`.
+    static func textPrintTransform(
+        for element: TextElement,
+        transform: PrintStrokeTransform
+    ) -> CGAffineTransform {
+        let bbox = element.boundingBox()
+        let pivot = CGPoint(x: bbox.midX, y: bbox.midY)
+        return CGAffineTransform(translationX: -pivot.x, y: -pivot.y)
+            .concatenating(CGAffineTransform(rotationAngle: transform.rotation))
+            .concatenating(CGAffineTransform(
+                translationX: pivot.x + transform.translation.x,
+                y: pivot.y + transform.translation.y
+            ))
+    }
+
+    /// The element's four corners after applying its print transform, in
+    /// document space. Used for selection bounds and printable-area checks.
+    static func transformedTextCorners(
+        _ element: TextElement,
+        transform: PrintStrokeTransform
+    ) -> [CGPoint] {
+        let affine = textPrintTransform(for: element, transform: transform)
+        return element.corners().map { $0.applying(affine) }
+    }
+    #endif
 }

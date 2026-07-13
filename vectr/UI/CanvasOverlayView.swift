@@ -9,6 +9,7 @@ import SwiftUI
 struct CanvasOverlayView: View {
     @Bindable var document: VectrDocument
     @Bindable var commandSession: ShapeCommandSession
+    var patternPreviewStrokes: [VectorStroke] = []
     var onChanged: () -> Void
     var onEditText: (UUID) -> Void = { _ in }
 
@@ -85,6 +86,8 @@ struct CanvasOverlayView: View {
                     filletOverlay
                 } else if document.activeCategory == .addAnchor {
                     addAnchorOverlay
+                } else if document.activeCategory == .pattern {
+                    patternPreviewOverlay
                 } else if document.selectedStrokeID != nil,
                           !document.dimensionsVisible,
                           document.activeCategory != .delete {
@@ -876,6 +879,43 @@ struct CanvasOverlayView: View {
         }
     }
 
+    // MARK: - Pattern preview
+
+    @ViewBuilder
+    private var patternPreviewOverlay: some View {
+        ZStack {
+            ForEach(patternPreviewStrokes) { stroke in
+                patternPreviewPath(for: stroke)
+                    .stroke(
+                        Color.accentColor.opacity(0.45),
+                        style: StrokeStyle(
+                            lineWidth: max(stroke.strokeWidth * document.viewport.scale, 1),
+                            dash: [6, 4]
+                        )
+                    )
+            }
+
+            if let strokeID = document.selectedStrokeID,
+               let stroke = document.stroke(with: strokeID) {
+                centerHandle(strokeID: strokeID, stroke: stroke)
+            }
+        }
+    }
+
+    private func patternPreviewPath(for stroke: VectorStroke) -> Path {
+        let points = ShapeGeometry.renderPoints(for: stroke)
+        var path = Path()
+        guard let first = points.first else { return path }
+        path.move(to: document.viewport.documentToView(first))
+        for point in points.dropFirst() {
+            path.addLine(to: document.viewport.documentToView(point))
+        }
+        if stroke.isClosed {
+            path.closeSubpath()
+        }
+        return path
+    }
+
     // MARK: - Add Anchor
 
     @ViewBuilder
@@ -906,22 +946,32 @@ struct CanvasOverlayView: View {
                 let point = handles[index]
                 let selected = document.selectedFilletCornerIndices.contains(index)
                 handleView(style: selected ? .selectedAnchor : .fillet)
+                    .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
+                    .contentShape(Rectangle())
                     .position(document.viewport.documentToView(point))
                     .highPriorityGesture(
-                        filletCornerGesture(
+                        filletCornerDrag(
                             strokeID: strokeID,
                             cornerIndex: index,
                             cornerPoint: point
                         )
                     )
+                    .onTapGesture(count: 2) {
+                        document.toggleFilletCornerSelection(at: index)
+                        onChanged()
+                    }
+                    .onTapGesture {
+                        document.selectSingleFilletCorner(at: index)
+                        onChanged()
+                    }
             }
 
             centerHandle(strokeID: strokeID, stroke: stroke)
         }
     }
 
-    private func filletCornerGesture(strokeID: UUID, cornerIndex: Int, cornerPoint: CGPoint) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+    private func filletCornerDrag(strokeID: UUID, cornerIndex: Int, cornerPoint: CGPoint) -> some Gesture {
+        DragGesture(minimumDistance: filletDragThreshold, coordinateSpace: .named(coordinateSpaceName))
             .onChanged { value in
                 if filletDragCornerIndex == nil {
                     filletDragStrokeID = strokeID
@@ -933,19 +983,13 @@ struct CanvasOverlayView: View {
                     } else {
                         filletDragTargetCornerIndices = [cornerIndex]
                     }
-                }
-
-                guard filletDragStrokeID == strokeID,
-                      filletDragCornerIndex == cornerIndex else { return }
-
-                let moved = hypot(value.translation.width, value.translation.height)
-                guard moved >= filletDragThreshold else { return }
-
-                if !filletDragDidMove {
                     filletDragDidMove = true
                     document.beginInteractiveEdit()
                     document.selectedFilletCornerIndices = filletDragTargetCornerIndices
                 }
+
+                guard filletDragStrokeID == strokeID,
+                      filletDragCornerIndex == cornerIndex else { return }
 
                 let docPoint = document.viewport.viewToDocument(value.location)
                 let radius = hypot(
@@ -968,10 +1012,8 @@ struct CanvasOverlayView: View {
 
                 if filletDragDidMove {
                     document.selectedFilletCornerIndices = filletDragTargetCornerIndices
-                } else {
-                    document.toggleFilletCornerSelection(at: cornerIndex)
+                    onChanged()
                 }
-                onChanged()
                 resetFilletDragState()
             }
     }

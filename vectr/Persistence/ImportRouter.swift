@@ -40,7 +40,7 @@ enum ImportRouter {
             var document = VectrDocument()
             let strokes = try SVGImporter.importStrokes(from: sourceURL, layerID: document.activeLayerID)
             guard !strokes.isEmpty else { throw ImportError.noVectorContent }
-            document.strokes = strokes
+            document.strokes = SVGImporter.centeredStrokes(strokes)
             let dest = library.projectsDirectory.appendingPathComponent(
                 libraryUniqueName(base: baseName, in: library.projectsDirectory, ext: DocumentCodec.fileExtension)
             )

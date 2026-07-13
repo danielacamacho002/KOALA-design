@@ -82,6 +82,7 @@ final class VectrDocument {
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
     var registrationMarks: [RegistrationMark] = []
     var printSelectedStrokeID: UUID?
+    var printSelectedTextID: UUID?
     var printLayoutRevision = 0
 
     private var undoStack: [DocumentSnapshot] = []
@@ -142,32 +143,136 @@ final class VectrDocument {
         strokes.filter { $0.layerID == layerID }
     }
 
+    /// Strokes on visible layers, ordered back-to-front by layer (index 0 = backmost layer),
+    /// stable within a layer by insertion order.
     func visibleStrokes() -> [VectorStroke] {
+        let order = layerIndexByID()
         let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
-        return strokes.filter { visibleLayerIDs.contains($0.layerID) }
+        return strokes
+            .enumerated()
+            .filter { visibleLayerIDs.contains($0.element.layerID) }
+            .sorted { lhs, rhs in
+                let l = order[lhs.element.layerID] ?? 0
+                let r = order[rhs.element.layerID] ?? 0
+                return l == r ? lhs.offset < rhs.offset : l < r
+            }
+            .map(\.element)
     }
 
-    /// Strokes eligible for selection/hit-testing: on layers that are visible and unlocked.
+    /// Visible strokes excluding those on locked layers, for hit-testing/selection.
     func selectableStrokes() -> [VectorStroke] {
-        let selectableLayerIDs = Set(layers.filter { $0.isVisible && !$0.isLocked }.map(\.id))
-        return strokes.filter { selectableLayerIDs.contains($0.layerID) }
+        let lockedLayerIDs = Set(layers.filter(\.isLocked).map(\.id))
+        guard !lockedLayerIDs.isEmpty else { return visibleStrokes() }
+        return visibleStrokes().filter { !lockedLayerIDs.contains($0.layerID) }
     }
 
     func stroke(with id: UUID) -> VectorStroke? {
         strokes.first { $0.id == id }
     }
 
-    // MARK: - Text Elements
+    // MARK: - Layers
 
-    func visibleTextElements() -> [TextElement] {
-        let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
-        return textElements.filter { visibleLayerIDs.contains($0.layerID) }
+    private func layerIndexByID() -> [UUID: Int] {
+        Dictionary(uniqueKeysWithValues: layers.enumerated().map { ($1.id, $0) })
     }
 
-    /// Text elements eligible for selection/hit-testing: on layers that are visible and unlocked.
+    @discardableResult
+    func addLayer() -> Layer {
+        pushUndo()
+        let layer = Layer(name: nextLayerName())
+        layers.append(layer)
+        activeLayerID = layer.id
+        geometryRevision += 1
+        return layer
+    }
+
+    private func nextLayerName() -> String {
+        let existing = Set(layers.map(\.name))
+        var n = layers.count + 1
+        while existing.contains("Layer \(n)") { n += 1 }
+        return "Layer \(n)"
+    }
+
+    /// Deletes a layer along with its strokes and text. The last remaining layer cannot be deleted.
+    func deleteLayer(id: UUID) {
+        guard layers.count > 1,
+              let index = layers.firstIndex(where: { $0.id == id }) else { return }
+        pushUndo()
+        layers.remove(at: index)
+        strokes.removeAll { $0.layerID == id }
+        textElements.removeAll { $0.layerID == id }
+        if let selected = selectedStrokeID, stroke(with: selected) == nil {
+            selectedStrokeID = nil
+        }
+        if let selectedText = selectedTextID, textElement(with: selectedText) == nil {
+            selectedTextID = nil
+        }
+        if activeLayerID == id {
+            activeLayerID = layers[min(index, layers.count - 1)].id
+        }
+        geometryRevision += 1
+    }
+
+    func renameLayer(id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let index = layers.firstIndex(where: { $0.id == id }),
+              layers[index].name != trimmed else { return }
+        pushUndo()
+        layers[index].name = trimmed
+    }
+
+    func toggleLayerVisibility(id: UUID) {
+        guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
+        pushUndo()
+        layers[index].isVisible.toggle()
+        geometryRevision += 1
+    }
+
+    func toggleLayerLock(id: UUID) {
+        guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
+        pushUndo()
+        layers[index].isLocked.toggle()
+        geometryRevision += 1
+    }
+
+    func setActiveLayer(id: UUID) {
+        guard activeLayerID != id, layers.contains(where: { $0.id == id }) else { return }
+        activeLayerID = id
+    }
+
+    /// Replaces the layer stack with a reordered copy of the same layers (index 0 = backmost).
+    func reorderLayers(_ newOrder: [Layer]) {
+        guard newOrder.map(\.id) != layers.map(\.id),
+              Set(newOrder.map(\.id)) == Set(layers.map(\.id)),
+              newOrder.count == layers.count else { return }
+        pushUndo()
+        layers = newOrder
+        geometryRevision += 1
+    }
+
+    // MARK: - Text Elements
+
+    /// Text elements on visible layers, ordered back-to-front by layer like `visibleStrokes()`.
+    func visibleTextElements() -> [TextElement] {
+        let order = layerIndexByID()
+        let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
+        return textElements
+            .enumerated()
+            .filter { visibleLayerIDs.contains($0.element.layerID) }
+            .sorted { lhs, rhs in
+                let l = order[lhs.element.layerID] ?? 0
+                let r = order[rhs.element.layerID] ?? 0
+                return l == r ? lhs.offset < rhs.offset : l < r
+            }
+            .map(\.element)
+    }
+
+    /// Visible text elements excluding those on locked layers, for hit-testing/selection.
     func selectableTextElements() -> [TextElement] {
-        let selectableLayerIDs = Set(layers.filter { $0.isVisible && !$0.isLocked }.map(\.id))
-        return textElements.filter { selectableLayerIDs.contains($0.layerID) }
+        let lockedLayerIDs = Set(layers.filter(\.isLocked).map(\.id))
+        guard !lockedLayerIDs.isEmpty else { return visibleTextElements() }
+        return visibleTextElements().filter { !lockedLayerIDs.contains($0.layerID) }
     }
 
     func textElement(with id: UUID) -> TextElement? {
@@ -549,13 +654,71 @@ final class VectrDocument {
         return .success
     }
 
+    @discardableResult
+    func applyPattern(to strokeID: UUID, settings: PatternSettings) -> PatternApplyResult {
+        guard let source = stroke(with: strokeID) else {
+            return .noSelection
+        }
+        if let layer = layers.first(where: { $0.id == source.layerID }), layer.isLocked {
+            return .layerLocked
+        }
+
+        let application = PatternEngine.application(
+            from: source,
+            sourceID: strokeID,
+            settings: settings
+        )
+        guard application.repositionedSource != nil || !application.newStrokes.isEmpty else {
+            return .nothingToCreate
+        }
+
+        pushUndo()
+
+        if let repositioned = application.repositionedSource,
+           let index = strokes.firstIndex(where: { $0.id == strokeID }) {
+            strokes[index] = repositioned
+        }
+
+        if application.removeSource {
+            strokes.removeAll { $0.id == strokeID }
+        }
+
+        strokes.append(contentsOf: application.newStrokes)
+
+        if application.removeSource {
+            selectedStrokeID = application.newStrokes.last?.id
+        } else {
+            selectedStrokeID = strokeID
+        }
+
+        var affectedIDs = Set(application.newStrokes.map(\.id))
+        if application.repositionedSource != nil || !application.removeSource {
+            affectedIDs.insert(strokeID)
+        }
+        reconcileIntersectionAnchors(around: affectedIDs)
+        ClosedShapeDetector.reconcile(document: self)
+        DonutDetector.reconcile(document: self)
+        geometryRevision += 1
+
+        let createdCount: Int
+        switch settings.mode {
+        case .radial, .spiral where settings.keepOriginal:
+            createdCount = application.newStrokes.count
+        case .radial, .spiral:
+            createdCount = application.newStrokes.count + (application.repositionedSource != nil ? 1 : 0)
+        default:
+            createdCount = application.newStrokes.count
+        }
+        return .success(created: createdCount)
+    }
+
     /// Single tap: reset the selection to only this anchor and adopt it as the rotation pivot.
     func selectSingleAnchor(at index: Int) {
         selectedAnchorIndices = [index]
         moveRotationPivotAnchorIndex = index
     }
 
-    /// Long press: multi-select toggle that leaves the other selected anchors untouched.
+    /// Double-tap: multi-select toggle that leaves the other selected anchors untouched.
     func toggleAnchorSelection(at index: Int) {
         if selectedAnchorIndices.contains(index) {
             selectedAnchorIndices.remove(index)
@@ -832,6 +995,12 @@ final class VectrDocument {
         geometryRevision += 1
     }
 
+    /// Single tap: reset the fillet selection to only this corner.
+    func selectSingleFilletCorner(at index: Int) {
+        selectedFilletCornerIndices = [index]
+    }
+
+    /// Double-tap: multi-select toggle that leaves the other selected corners untouched.
     func toggleFilletCornerSelection(at index: Int) {
         if selectedFilletCornerIndices.contains(index) {
             selectedFilletCornerIndices.remove(index)
@@ -912,27 +1081,37 @@ final class VectrDocument {
         pushUndo()
         strokes.removeAll { $0.id == id }
         if selectedStrokeID == id {
+            clearToolSelections()
             selectedStrokeID = nil
         }
     }
 
     func selectStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
-        if let fillHit = visibleStrokes().reversed().first(where: { $0.contains(documentPoint) }) {
-            selectedStrokeID = fillHit.id
+        let candidates = selectableStrokes()
+        if let fillHit = candidates.reversed().first(where: { $0.contains(documentPoint) }) {
+            setSelectedStrokeID(fillHit.id)
             return fillHit
         }
 
         var best: VectorStroke?
         var bestDistance = threshold
-        for stroke in visibleStrokes().reversed() {
+        for stroke in candidates.reversed() {
             let distance = stroke.distance(to: documentPoint)
             if distance < bestDistance {
                 bestDistance = distance
                 best = stroke
             }
         }
-        selectedStrokeID = best?.id
+        setSelectedStrokeID(best?.id)
         return best
+    }
+
+    /// Updates `selectedStrokeID`, clearing anchor/fillet selections whenever the stroke changes.
+    private func setSelectedStrokeID(_ id: UUID?) {
+        if selectedStrokeID != id {
+            clearToolSelections()
+        }
+        selectedStrokeID = id
     }
 
     // MARK: - Print Layout
@@ -992,6 +1171,31 @@ final class VectrDocument {
         printLayout = settings
         printLayoutRevision += 1
     }
+
+    #if canImport(UIKit)
+    /// Unified print-layout selection: prefers a hit text element, otherwise
+    /// falls back to stroke hit testing. Text and strokes each keep their own
+    /// print selection slot; selecting one kind clears the other.
+    @discardableResult
+    func selectPrintElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
+        for element in visibleTextElements().reversed() {
+            let transform = effectivePrintTransform(for: element.id)
+            let affine = PrintLayoutCoordinateSpace.textPrintTransform(for: element, transform: transform)
+            let local = documentPoint.applying(affine.inverted())
+            if element.contains(local) {
+                printSelectedTextID = element.id
+                printSelectedStrokeID = nil
+                return .text(element.id)
+            }
+        }
+        if let stroke = selectPrintStroke(near: documentPoint, threshold: threshold) {
+            printSelectedTextID = nil
+            return .stroke(stroke.id)
+        }
+        printSelectedTextID = nil
+        return .none
+    }
+    #endif
 
     func selectPrintStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
         for stroke in visibleStrokes().reversed() {
@@ -1056,11 +1260,11 @@ final class VectrDocument {
         for stroke in visibleStrokes() {
             points.append(contentsOf: ShapeGeometry.renderPoints(for: transformedPrintStroke(stroke)))
         }
-        let offset = printLayout.contentOffset
         for element in visibleTextElements() {
-            points.append(contentsOf: element.corners().map {
-                CGPoint(x: $0.x + offset.x, y: $0.y + offset.y)
-            })
+            points.append(contentsOf: PrintLayoutCoordinateSpace.transformedTextCorners(
+                element,
+                transform: effectivePrintTransform(for: element.id)
+            ))
         }
         let gridBounds = PrintPageGridEngine.gridBounds(for: printLayout)
         points.append(contentsOf: [

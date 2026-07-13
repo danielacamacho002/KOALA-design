@@ -51,16 +51,7 @@ struct MoveRotatePanelView: View {
 
             arrangeSection
         }
-        .padding(10)
-        .frame(width: 172)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(.systemBackground).opacity(0.92))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
+        .toolPanelChrome(width: 172)
         .onChange(of: document.selectedStrokeID) { _, _ in
             syncDegreesField()
         }
@@ -77,11 +68,10 @@ struct MoveRotatePanelView: View {
 
     @ViewBuilder
     private var rotateSection: some View {
-        Text("Rotate")
-            .font(.caption.weight(.semibold))
+        ToolPanelHeader("Rotate")
 
         Text("0° is the original drawn angle. Drag the handle or enter an absolute degree.")
-            .font(.caption2)
+            .font(.system(size: 10))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
@@ -89,23 +79,15 @@ struct MoveRotatePanelView: View {
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
 
-        HStack(spacing: 6) {
-            FingerOnlyTextField(
-                placeholder: "Degrees",
-                text: $degreesText,
-                keyboardType: .numbersAndPunctuation,
-                onSubmit: apply
-            )
-            .frame(height: 36)
-            .padding(.horizontal, 10)
-
-            Button(action: apply) {
-                Image(systemName: "return")
-                    .font(.caption.weight(.semibold))
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-        }
+        FingerOnlyTextField(
+            placeholder: "Degrees",
+            text: $degreesText,
+            keyboardType: .numbersAndPunctuation,
+            fontSize: 13,
+            cornerRadius: 0,
+            onSubmit: apply
+        )
+        .frame(height: 30)
 
         if !isTextSelected {
             Text("Pivot: \(pivotLabel)")
@@ -113,96 +95,63 @@ struct MoveRotatePanelView: View {
                 .foregroundStyle(.secondary)
         }
 
-        HStack(spacing: 8) {
-            Button("Reset to 0°") {
+        HStack(spacing: 4) {
+            ToolPanelLabelButton(title: "Reset to 0°") {
                 resetToOriginal()
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
 
             if !isTextSelected {
-                Button("Center pivot") {
+                ToolPanelLabelButton(
+                    title: "Center pivot",
+                    isDisabled: document.moveRotationPivotAnchorIndex == nil
+                ) {
                     document.moveRotationPivotAnchorIndex = nil
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(document.moveRotationPivotAnchorIndex == nil)
             }
         }
     }
 
     @ViewBuilder
     private var multiSelectionSection: some View {
-        Text("\(document.selectionCount) selected")
-            .font(.caption.weight(.semibold))
+        ToolPanelHeader("\(document.selectionCount) selected")
 
         Text("Drag to move the group; use the handle to rotate. Tap a shape to add or remove it.")
-            .font(.caption2)
+            .font(.system(size: 10))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
         if document.canJoinSelection {
-            Button {
+            ToolPanelLabelButton(title: "Join paths", prominent: true, fullWidth: true) {
                 if document.joinSelectedPaths() { onApply() }
-            } label: {
-                Label("Join paths", systemImage: "link")
-                    .font(.caption.weight(.semibold))
-                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
         }
     }
 
     @ViewBuilder
     private var arrangeSection: some View {
-        HStack(spacing: 8) {
-            Button {
+        HStack(spacing: 4) {
+            ToolPanelLabelButton(title: "Duplicate", fullWidth: true) {
                 let offset = max(document.grid.spacing, 1)
                 document.duplicateSelectedElements(offset: CGPoint(x: offset, y: offset))
                 onApply()
-            } label: {
-                Label("Duplicate", systemImage: "plus.square.on.square")
-                    .font(.caption2)
-                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
 
-            Button(role: .destructive) {
+            ToolPanelLabelButton(title: "Delete", fullWidth: true) {
                 document.deleteSelectedElements()
                 onApply()
-            } label: {
-                Label("Delete", systemImage: "trash")
-                    .font(.caption2)
-                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
         }
 
-        HStack(spacing: 8) {
-            Button {
+        HStack(spacing: 4) {
+            ToolPanelLabelButton(title: "Flip H", fullWidth: true) {
                 document.flipSelection(horizontal: true)
                 onApply()
-            } label: {
-                Label("Flip H", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right")
-                    .font(.caption2)
-                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
 
-            Button {
+            ToolPanelLabelButton(title: "Flip V", fullWidth: true) {
                 document.flipSelection(horizontal: false)
                 onApply()
-            } label: {
-                Label("Flip V", systemImage: "arrow.up.and.down.righttriangle.up.righttriangle.down")
-                    .font(.caption2)
-                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
         }
     }
 

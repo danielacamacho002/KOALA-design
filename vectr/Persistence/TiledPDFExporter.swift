@@ -78,12 +78,15 @@ enum TiledPDFExporter {
         }
     }
 
-    /// Draws text as filled vector glyph outlines, shifted by the global print
-    /// `contentOffset` so it lands on the same grid position as the strokes.
+    /// Draws text as filled vector glyph outlines, positioned by each element's
+    /// print transform (which includes the global `contentOffset`) so exports
+    /// match the on-screen print layout.
     private static func drawPrintText(document: VectrDocument, in context: CGContext) {
-        let offset = document.printLayout.contentOffset
         for element in document.visibleTextElements() {
-            var transform = CGAffineTransform(translationX: offset.x, y: offset.y)
+            var transform = PrintLayoutCoordinateSpace.textPrintTransform(
+                for: element,
+                transform: document.effectivePrintTransform(for: element.id)
+            )
             guard let path = TextOutline.path(for: element).copy(using: &transform) else { continue }
             context.addPath(path)
             context.setFillColor(element.cgColor)
