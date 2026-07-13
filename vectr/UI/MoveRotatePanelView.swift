@@ -41,11 +41,10 @@ struct MoveRotatePanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Rotate")
-                .font(.caption.weight(.semibold))
+            ToolPanelHeader("Rotate")
 
             Text("0° is the original drawn angle. Drag the handle or enter an absolute degree.")
-                .font(.caption2)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -53,23 +52,15 @@ struct MoveRotatePanelView: View {
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
 
-            HStack(spacing: 6) {
-                FingerOnlyTextField(
-                    placeholder: "Degrees",
-                    text: $degreesText,
-                    keyboardType: .numbersAndPunctuation,
-                    onSubmit: apply
-                )
-                .frame(height: 36)
-                .padding(.horizontal, 10)
-
-                Button(action: apply) {
-                    Image(systemName: "return")
-                        .font(.caption.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
+            FingerOnlyTextField(
+                placeholder: "Degrees",
+                text: $degreesText,
+                keyboardType: .numbersAndPunctuation,
+                fontSize: 13,
+                cornerRadius: 0,
+                onSubmit: apply
+            )
+            .frame(height: 30)
 
             if !isTextSelected {
                 Text("Pivot: \(pivotLabel)")
@@ -77,33 +68,22 @@ struct MoveRotatePanelView: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 8) {
-                Button("Reset to 0°") {
+            HStack(spacing: 4) {
+                ToolPanelLabelButton(title: "Reset to 0°") {
                     resetToOriginal()
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
 
                 if !isTextSelected {
-                    Button("Center pivot") {
+                    ToolPanelLabelButton(
+                        title: "Center pivot",
+                        isDisabled: document.moveRotationPivotAnchorIndex == nil
+                    ) {
                         document.moveRotationPivotAnchorIndex = nil
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(document.moveRotationPivotAnchorIndex == nil)
                 }
             }
         }
-        .padding(10)
-        .frame(width: 172)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(.systemBackground).opacity(0.92))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
+        .toolPanelChrome(width: 172)
         .onChange(of: document.selectedStrokeID) { _, _ in
             syncDegreesField()
         }

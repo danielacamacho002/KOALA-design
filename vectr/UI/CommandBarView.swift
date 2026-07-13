@@ -11,10 +11,8 @@ struct CommandBarView: View {
     var onCommit: ([CGPoint], Bool) -> Void
     var onCancel: () -> Void
 
-    @FocusState private var fieldFocused: Bool
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 8) {
             header
 
             ScrollViewReader { proxy in
@@ -28,8 +26,10 @@ struct CommandBarView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
+                    .padding(8)
                 }
+                .frame(maxHeight: 160)
+                .background(Color(.secondarySystemBackground))
                 .onChange(of: session.commandLog.count) { _, count in
                     if count > 0 {
                         withAnimation { proxy.scrollTo(count - 1, anchor: .bottom) }
@@ -39,32 +39,22 @@ struct CommandBarView: View {
 
             if !history.recentSequences.isEmpty {
                 recentSequencesSection
-                Divider()
             }
 
             promptArea
         }
-        .frame(width: 260)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
-        .onAppear { fieldFocused = true }
+        .toolPanelChrome(width: 260)
     }
 
     private var header: some View {
         HStack {
-            Text("Command")
-                .font(.subheadline.weight(.semibold))
+            ToolPanelHeader("Command")
             Spacer()
-            Button("Cancel", role: .cancel) {
+            ToolPanelCancelButton {
                 session.cancel()
                 onCancel()
             }
-            .font(.caption)
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
     }
 
     private var promptArea: some View {
@@ -98,38 +88,44 @@ struct CommandBarView: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 8) {
-                TextField("Type point…", text: $session.inputText)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-                    .focused($fieldFocused)
-                    .submitLabel(.next)
-                    .onSubmit { submitInput() }
+            HStack(spacing: 4) {
+                FingerOnlyTextField(
+                    placeholder: "Type point…",
+                    text: $session.inputText,
+                    keyboardType: .numbersAndPunctuation,
+                    fontSize: 12,
+                    cornerRadius: 0,
+                    onSubmit: submitInput
+                )
+                .frame(height: 26)
 
-                Button(action: submitInput) {
-                    Image(systemName: "return")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                ToolPanelIconButton(systemImage: "return", prominent: true, action: submitInput)
             }
 
             if !history.recentInputs.isEmpty {
                 recentInputsRow
             }
 
-            HStack(spacing: 8) {
-                Button("Close") { commit(closed: true) }
-                    .disabled(session.points.count < 2)
-                Button("Done") { commit(closed: false) }
-                    .disabled(session.points.count < 2)
+            HStack(spacing: 4) {
+                ToolPanelLabelButton(
+                    title: "Close",
+                    isDisabled: session.points.count < 2
+                ) {
+                    commit(closed: true)
+                }
+                ToolPanelLabelButton(
+                    title: "Done",
+                    prominent: true,
+                    isDisabled: session.points.count < 2
+                ) {
+                    commit(closed: false)
+                }
                 Spacer()
                 Text("\(session.points.count) pts")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
-            .font(.caption)
         }
-        .padding(12)
     }
 
     private func submitInput() {
@@ -147,20 +143,22 @@ struct CommandBarView: View {
 
     private var recentInputsRow: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Recent")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.tertiary)
+            ToolPanelSectionLabel("Recent")
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(spacing: 4) {
                     ForEach(history.recentInputs.prefix(12), id: \.self) { entry in
-                        Button(entry) {
+                        Button {
                             session.inputText = entry
-                            fieldFocused = true
+                        } label: {
+                            Text(entry)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.primary)
+                                .padding(.horizontal, 8)
+                                .frame(height: 24)
+                                .background(Color(.secondarySystemBackground))
                         }
-                        .font(.system(size: 11, design: .monospaced))
-                        .buttonStyle(.bordered)
-                        .controlSize(.mini)
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -168,15 +166,11 @@ struct CommandBarView: View {
     }
 
     private var recentSequencesSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Recent shapes")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Recent shapes")
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+                HStack(spacing: 4) {
                     ForEach(history.recentSequences) { sequence in
                         Button {
                             session.replay(sequence: sequence)
@@ -191,7 +185,7 @@ struct CommandBarView: View {
                             }
                             .frame(width: 140, alignment: .leading)
                             .padding(8)
-                            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                            .background(Color(.secondarySystemBackground))
                         }
                         .buttonStyle(.plain)
                         .contextMenu {
@@ -201,8 +195,6 @@ struct CommandBarView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
             }
         }
     }

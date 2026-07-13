@@ -16,19 +16,20 @@ struct TextToolPanelView: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Text")
-                    .font(.subheadline.weight(.semibold))
+                ToolPanelHeader("Text")
                 Spacer()
-                Button("Done", action: onDone)
-                    .font(.subheadline.weight(.semibold))
+                ToolPanelApplyButton(action: onDone)
             }
 
             TextField("Type here", text: $text, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 13))
                 .lineLimit(1...6)
                 .focused($focused)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color(.secondarySystemBackground))
                 .onChange(of: text) { _, newValue in
                     applyText(newValue)
                 }
@@ -42,9 +43,7 @@ struct TextToolPanelView: View {
                     .frame(width: 32, alignment: .trailing)
             }
         }
-        .padding(12)
-        .frame(width: 264)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .toolPanelChrome(width: 264)
         .onAppear {
             text = document.textElement(with: elementID)?.text ?? ""
             DispatchQueue.main.async { focused = true }
