@@ -15,47 +15,40 @@ struct FontPickerView: View {
     @State private var importError: String?
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
+            ToolPanelHeader("Font")
+
             ScrollView {
-                VStack(spacing: 0) {
+                VStack(spacing: 2) {
                     ForEach(library.builtInFonts) { font in
                         fontRow(
                             name: font.displayName,
                             ref: .builtin(font.displayName),
                             previewFont: Font(font.uiFont(size: 17))
                         )
-                        Divider().padding(.leading, 14)
                     }
 
                     if !library.importedFonts.isEmpty {
-                        sectionHeader("Imported")
+                        ToolPanelSectionLabel("Imported")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 4)
                         ForEach(library.importedFonts) { font in
                             fontRow(
                                 name: font.displayName,
                                 ref: font.fontRef,
                                 previewFont: previewFont(for: font)
                             )
-                            Divider().padding(.leading, 14)
                         }
                     }
                 }
             }
-            .frame(maxHeight: 320)
+            .frame(maxHeight: 300)
 
-            Divider()
-
-            Button {
+            ToolPanelLabelButton(title: "Import Font", fullWidth: true) {
                 showImporter = true
-            } label: {
-                Label("Import Font", systemImage: "plus")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
         }
-        .frame(width: 248)
+        .toolPanelChrome(width: 200)
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: Self.fontContentTypes,
@@ -74,37 +67,27 @@ struct FontPickerView: View {
     }
 
     @ViewBuilder
-    private func sectionHeader(_ title: String) -> some View {
-        HStack {
-            Text(title.uppercased())
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding(.horizontal, 14)
-        .padding(.top, 10)
-        .padding(.bottom, 4)
-    }
-
-    @ViewBuilder
     private func fontRow(name: String, ref: FontRef, previewFont: Font) -> some View {
+        let selected = isSelected(ref)
         Button {
             select(ref)
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Text(name)
                     .font(previewFont)
                     .lineLimit(1)
-                    .foregroundStyle(isSelected(ref) ? Color.accentColor : Color.primary)
-                Spacer(minLength: 12)
-                if isSelected(ref) {
+                    .foregroundStyle(selected ? Color.black : Color.white)
+                Spacer(minLength: 8)
+                if selected {
                     Image(systemName: "checkmark")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(Color.black)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 8)
+            .frame(height: 32)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Color.accentColor : Color(.systemGray))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

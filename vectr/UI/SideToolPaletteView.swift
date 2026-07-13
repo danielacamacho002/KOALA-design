@@ -57,6 +57,7 @@ struct SideToolPaletteView: View {
                         openVariantMenu = nil
                     }
                     .presentationCompactAdaptation(.popover)
+                    .presentationBackground(.clear)
                 } else {
                     ToolVariantDropdown(
                         options: variantOptions(for: category),
@@ -67,6 +68,7 @@ struct SideToolPaletteView: View {
                         }
                     )
                     .presentationCompactAdaptation(.popover)
+                    .presentationBackground(.clear)
                 }
             }
         } else {
@@ -165,36 +167,19 @@ private struct ToolVariantDropdown: View {
     let onSelect: (Int) -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 2) {
             ForEach(Array(options.enumerated()), id: \.offset) { index, label in
-                Button {
+                ToolPanelLabelButton(
+                    title: label,
+                    prominent: index == selectedIndex,
+                    fullWidth: true,
+                    alignment: .leading
+                ) {
                     onSelect(index)
-                } label: {
-                    HStack(spacing: 10) {
-                        Text(label)
-                            .font(.subheadline)
-                            .foregroundStyle(index == selectedIndex ? Color.accentColor : Color.primary)
-                        Spacer(minLength: 16)
-                        if index == selectedIndex {
-                            Image(systemName: "checkmark")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(Color.accentColor)
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                if index < options.count - 1 {
-                    Divider()
-                        .padding(.leading, 14)
                 }
             }
         }
-        .frame(minWidth: 148)
-        .padding(.vertical, 4)
+        .toolPanelChrome(width: 150)
     }
 }
 
