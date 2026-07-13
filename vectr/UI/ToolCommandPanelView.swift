@@ -63,33 +63,21 @@ struct ToolCommandPanelView: View {
             colorRow
 
             HStack {
-                Button {
+                ToolPanelCancelButton {
                     session.cancel()
                     onCancel()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 26, height: 26)
-                        .background(Color(.secondarySystemBackground))
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Cancel")
 
                 Spacer()
             }
         }
-        .padding(8)
-        .frame(width: panelWidth)
-        .background(Rectangle().fill(Color(hex: panelColorHex)))
-        .overlay(Rectangle().stroke(Color.primary.opacity(0.08), lineWidth: 1))
+        .toolPanelChrome(width: panelWidth, fill: Color(hex: panelColorHex))
         .onAppear { syncThicknessText() }
         .onChange(of: document.strokeWidth) { _, _ in syncThicknessText() }
     }
 
     private var panelHeader: some View {
-        Text(session.toolTitle)
-            .font(.caption.weight(.semibold))
+        ToolPanelHeader(session.toolTitle)
     }
 
     // MARK: - Tool variant
@@ -100,19 +88,14 @@ struct ToolCommandPanelView: View {
         if !options.isEmpty {
             VStack(spacing: 2) {
                 ForEach(Array(options.enumerated()), id: \.offset) { index, label in
-                    let isSelected = index == selectedVariantIndex
-                    Button {
+                    ToolPanelLabelButton(
+                        title: label,
+                        prominent: index == selectedVariantIndex,
+                        fullWidth: true,
+                        alignment: .leading
+                    ) {
                         applyVariant(index: index)
-                    } label: {
-                        Text(label)
-                            .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                            .foregroundStyle(isSelected ? Color.white : Color.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 6)
-                            .frame(height: 22)
-                            .background(isSelected ? Color.accentColor : Color(.secondarySystemBackground))
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -150,12 +133,12 @@ struct ToolCommandPanelView: View {
 
     private var thicknessRow: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Thickness")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+            ToolPanelSectionLabel("Thickness")
 
             HStack(spacing: 4) {
-                thicknessStepButton(systemImage: "minus", delta: -Self.thicknessStep)
+                ToolPanelIconButton(systemImage: "minus") {
+                    setThickness(document.strokeWidth - Self.thicknessStep)
+                }
 
                 FingerOnlyTextField(
                     placeholder: "pt",
@@ -167,22 +150,11 @@ struct ToolCommandPanelView: View {
                 )
                 .frame(height: 26)
 
-                thicknessStepButton(systemImage: "plus", delta: Self.thicknessStep)
+                ToolPanelIconButton(systemImage: "plus") {
+                    setThickness(document.strokeWidth + Self.thicknessStep)
+                }
             }
         }
-    }
-
-    private func thicknessStepButton(systemImage: String, delta: CGFloat) -> some View {
-        Button {
-            setThickness(document.strokeWidth + delta)
-        } label: {
-            Image(systemName: systemImage)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.primary)
-                .frame(width: 26, height: 26)
-                .background(Color(.secondarySystemBackground))
-        }
-        .buttonStyle(.plain)
     }
 
     private func commitThicknessText() {
@@ -215,9 +187,7 @@ struct ToolCommandPanelView: View {
 
     private var colorRow: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Color")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+            ToolPanelSectionLabel("Color")
 
             HStack(spacing: 8) {
                 Rectangle()
