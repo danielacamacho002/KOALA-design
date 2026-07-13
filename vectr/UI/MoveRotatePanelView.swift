@@ -41,47 +41,15 @@ struct MoveRotatePanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ToolPanelHeader("Rotate")
-
-            Text("0° is the original drawn angle. Drag the handle or enter an absolute degree.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("Current: \(String(format: "%.1f°", currentDegrees))")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-
-            FingerOnlyTextField(
-                placeholder: "Degrees",
-                text: $degreesText,
-                keyboardType: .numbersAndPunctuation,
-                fontSize: 13,
-                cornerRadius: 0,
-                onSubmit: apply
-            )
-            .frame(height: 30)
-
-            if !isTextSelected {
-                Text("Pivot: \(pivotLabel)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
+            if document.hasMultiSelection {
+                multiSelectionSection
+            } else {
+                rotateSection
             }
 
-            HStack(spacing: 4) {
-                ToolPanelLabelButton(title: "Reset to 0°") {
-                    resetToOriginal()
-                }
+            Divider()
 
-                if !isTextSelected {
-                    ToolPanelLabelButton(
-                        title: "Center pivot",
-                        isDisabled: document.moveRotationPivotAnchorIndex == nil
-                    ) {
-                        document.moveRotationPivotAnchorIndex = nil
-                    }
-                }
-            }
+            arrangeSection
         }
         .toolPanelChrome(width: 172)
         .onChange(of: document.selectedStrokeID) { _, _ in
@@ -95,6 +63,95 @@ struct MoveRotatePanelView: View {
         }
         .onAppear {
             syncDegreesField()
+        }
+    }
+
+    @ViewBuilder
+    private var rotateSection: some View {
+        ToolPanelHeader("Rotate")
+
+        Text("0° is the original drawn angle. Drag the handle or enter an absolute degree.")
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+        Text("Current: \(String(format: "%.1f°", currentDegrees))")
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.secondary)
+
+        FingerOnlyTextField(
+            placeholder: "Degrees",
+            text: $degreesText,
+            keyboardType: .numbersAndPunctuation,
+            fontSize: 13,
+            cornerRadius: 0,
+            onSubmit: apply
+        )
+        .frame(height: 30)
+
+        if !isTextSelected {
+            Text("Pivot: \(pivotLabel)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+
+        HStack(spacing: 4) {
+            ToolPanelLabelButton(title: "Reset to 0°") {
+                resetToOriginal()
+            }
+
+            if !isTextSelected {
+                ToolPanelLabelButton(
+                    title: "Center pivot",
+                    isDisabled: document.moveRotationPivotAnchorIndex == nil
+                ) {
+                    document.moveRotationPivotAnchorIndex = nil
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var multiSelectionSection: some View {
+        ToolPanelHeader("\(document.selectionCount) selected")
+
+        Text("Drag to move the group; use the handle to rotate. Tap a shape to add or remove it.")
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+        if document.canJoinSelection {
+            ToolPanelLabelButton(title: "Join paths", prominent: true, fullWidth: true) {
+                if document.joinSelectedPaths() { onApply() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var arrangeSection: some View {
+        HStack(spacing: 4) {
+            ToolPanelLabelButton(title: "Duplicate", fullWidth: true) {
+                let offset = max(document.grid.spacing, 1)
+                document.duplicateSelectedElements(offset: CGPoint(x: offset, y: offset))
+                onApply()
+            }
+
+            ToolPanelLabelButton(title: "Delete", fullWidth: true) {
+                document.deleteSelectedElements()
+                onApply()
+            }
+        }
+
+        HStack(spacing: 4) {
+            ToolPanelLabelButton(title: "Flip H", fullWidth: true) {
+                document.flipSelection(horizontal: true)
+                onApply()
+            }
+
+            ToolPanelLabelButton(title: "Flip V", fullWidth: true) {
+                document.flipSelection(horizontal: false)
+                onApply()
+            }
         }
     }
 

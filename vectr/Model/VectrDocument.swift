@@ -20,7 +20,31 @@ final class VectrDocument {
 
     var strokeWidth: CGFloat = 1.5
     var strokeColor: CodableColor = CodableColor(.primary)
-    var selectedStrokeID: UUID?
+    var selectedStrokeID: UUID? {
+        didSet {
+            guard !isSyncingSelection else { return }
+            isSyncingSelection = true
+            defer { isSyncingSelection = false }
+            if let id = selectedStrokeID {
+                lastSelectedStrokeID = id
+                selectedStrokeIDs = [id]
+                selectedTextID = nil
+                selectedTextIDs = []
+            } else {
+                selectedStrokeIDs = []
+            }
+        }
+    }
+    /// Full set of selected strokes for multi-object move/rotate. Always includes
+    /// the primary `selectedStrokeID` when a stroke is selected.
+    var selectedStrokeIDs: Set<UUID> = []
+    /// Full set of selected text elements, kept in sync with `selectedTextID`.
+    var selectedTextIDs: Set<UUID> = []
+    /// Remembers the most recent stroke selection so the move tool can restore its
+    /// edit handles after switching to another tool and back.
+    var lastSelectedStrokeID: UUID?
+    /// Guards the selection property observers against re-entrant updates.
+    private var isSyncingSelection = false
     var snapEnabled: Bool = true
     var dimensionsVisible: Bool = false
     // Document-space offsets of dragged dimension labels, keyed by "<strokeID>:<dimensionID>".
@@ -35,7 +59,20 @@ final class VectrDocument {
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
-    var selectedTextID: UUID?
+    var selectedTextID: UUID? {
+        didSet {
+            guard !isSyncingSelection else { return }
+            isSyncingSelection = true
+            defer { isSyncingSelection = false }
+            if let id = selectedTextID {
+                selectedTextIDs = [id]
+                selectedStrokeID = nil
+                selectedStrokeIDs = []
+            } else {
+                selectedTextIDs = []
+            }
+        }
+    }
     var activeFontRef: FontRef = .default
     var activeFontSize: CGFloat = 24
     var referenceImageData: Data?
@@ -697,6 +734,265 @@ final class VectrDocument {
     func clearAnchorSelection() {
         selectedAnchorIndices.removeAll()
         moveRotationPivotAnchorIndex = nil
+    }
+
+    // MARK: - Multi-element selection
+
+    /// Number of selected elements across strokes and text.
+    var selectionCount: Int {
+        selectedStrokeIDs.count + selectedTextIDs.count
+    }
+
+    /// True when more than one element (stroke and/or text) is selected.
+    var hasMultiSelection: Bool {
+        selectionCount > 1
+    }
+
+    var selectionIsEmpty: Bool {
+        selectedStrokeIDs.isEmpty && selectedTextIDs.isEmpty
+    }
+
+    /// Replaces the entire element selection, picking a stable primary so the
+    /// single-object tools (fillet/trim/scale/rotate panel) keep working.
+    func setElementSelection(strokeIDs: Set<UUID>, textIDs: Set<UUID>) {
+        isSyncingSelection = true
+        selectedStrokeIDs = strokeIDs
+        selectedTextIDs = textIDs
+        if let primary = strokeIDs.first {
+            selectedStrokeID = primary
+            selectedTextID = nil
+            lastSelectedStrokeID = primary
+        } else if let primaryText = textIDs.first {
+            selectedTextID = primaryText
+            selectedStrokeID = nil
+        } else {
+            selectedStrokeID = nil
+            selectedTextID = nil
+        }
+        isSyncingSelection = false
+        clearAnchorSelection()
+    }
+
+    func toggleStrokeSelection(_ id: UUID) {
+        var next = selectedStrokeIDs
+        if next.contains(id) { next.remove(id) } else { next.insert(id) }
+        setElementSelection(strokeIDs: next, textIDs: selectedTextIDs)
+    }
+
+    func toggleTextSelection(_ id: UUID) {
+        var next = selectedTextIDs
+        if next.contains(id) { next.remove(id) } else { next.insert(id) }
+        setElementSelection(strokeIDs: selectedStrokeIDs, textIDs: next)
+    }
+
+    func clearElementSelection() {
+        setElementSelection(strokeIDs: [], textIDs: [])
+    }
+
+    /// Non-mutating topmost stroke hit, mirroring `selectStroke` without changing selection.
+    func strokeHit(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
+        let candidates = selectableStrokes()
+        if let fillHit = candidates.reversed().first(where: { $0.contains(documentPoint) }) {
+            return fillHit
+        }
+        var best: VectorStroke?
+        var bestDistance = threshold
+        for stroke in candidates.reversed() {
+            let distance = stroke.distance(to: documentPoint)
+            if distance < bestDistance {
+                bestDistance = distance
+                best = stroke
+            }
+        }
+        return best
+    }
+
+    /// Non-mutating topmost element hit (text preferred over strokes).
+    func elementHit(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
+        if let text = textElement(at: documentPoint) { return .text(text.id) }
+        if let stroke = strokeHit(near: documentPoint, threshold: threshold) { return .stroke(stroke.id) }
+        return .none
+    }
+
+    /// True when `point` lies on/near any currently selected element.
+    func selectionContains(point: CGPoint, threshold: CGFloat) -> Bool {
+        for id in selectedStrokeIDs {
+            guard let stroke = stroke(with: id) else { continue }
+            if stroke.contains(point) || stroke.distance(to: point) <= threshold {
+                return true
+            }
+        }
+        for id in selectedTextIDs {
+            if let text = textElement(with: id), text.contains(point) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Marquee selection: selects every element whose bounds overlap `rect`.
+    func selectElements(in rect: CGRect, additive: Bool = false) {
+        var strokeIDs = additive ? selectedStrokeIDs : []
+        var textIDs = additive ? selectedTextIDs : []
+        for stroke in selectableStrokes() {
+            if let bbox = stroke.boundingBox(), Self.rectsOverlap(bbox, rect) {
+                strokeIDs.insert(stroke.id)
+            }
+        }
+        for text in selectableTextElements() {
+            if Self.rectsOverlap(text.boundingBox(), rect) {
+                textIDs.insert(text.id)
+            }
+        }
+        setElementSelection(strokeIDs: strokeIDs, textIDs: textIDs)
+    }
+
+    /// Combined bounding box of the current selection, in document space.
+    func selectionBoundingBox() -> CGRect? {
+        var rect: CGRect?
+        for id in selectedStrokeIDs {
+            if let stroke = stroke(with: id), let bbox = stroke.boundingBox() {
+                rect = rect.map { $0.union(bbox) } ?? bbox
+            }
+        }
+        for id in selectedTextIDs {
+            if let text = textElement(with: id) {
+                let bbox = text.boundingBox()
+                rect = rect.map { $0.union(bbox) } ?? bbox
+            }
+        }
+        return rect
+    }
+
+    /// Rect overlap test that (unlike `CGRect.intersects`) treats degenerate
+    /// zero-area rects (e.g. an axis-aligned line) as overlapping.
+    private static func rectsOverlap(_ a: CGRect, _ b: CGRect) -> Bool {
+        a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY
+    }
+
+    // MARK: - Multi-element operations
+
+    private func isJoinable(_ stroke: VectorStroke) -> Bool {
+        !stroke.isClosed
+            && !stroke.isConstruction
+            && stroke.points.count >= 2
+            && (stroke.shapeType == .polyline || stroke.shapeType == .curve || stroke.shapeType == .arc)
+    }
+
+    /// True when the current selection has at least two joinable open paths.
+    var canJoinSelection: Bool {
+        strokes.filter { selectedStrokeIDs.contains($0.id) && isJoinable($0) }.count >= 2
+    }
+
+    /// Welds the selected open paths into a single continuous path.
+    @discardableResult
+    func joinSelectedPaths() -> Bool {
+        let selected = strokes.filter { selectedStrokeIDs.contains($0.id) && isJoinable($0) }
+        guard selected.count >= 2 else { return false }
+        let tolerance = grid.spacing * 0.5
+        guard let joined = PathJoinEngine.join(selected, tolerance: tolerance) else { return false }
+        pushUndo()
+        let removeIDs = Set(selected.map(\.id))
+        strokes.removeAll { removeIDs.contains($0.id) }
+        strokes.append(joined)
+        ClosedShapeDetector.reconcile(document: self)
+        reconcileIntersectionAnchors(around: [joined.id])
+        geometryRevision += 1
+        setElementSelection(strokeIDs: [joined.id], textIDs: [])
+        return true
+    }
+
+    /// Deletes every selected stroke and text element in one undoable step.
+    func deleteSelectedElements() {
+        guard !selectionIsEmpty else { return }
+        pushUndo()
+        let strokeIDs = selectedStrokeIDs
+        let textIDs = selectedTextIDs
+        strokes.removeAll { strokeIDs.contains($0.id) }
+        textElements.removeAll { textIDs.contains($0.id) }
+        isSyncingSelection = true
+        selectedStrokeIDs = []
+        selectedTextIDs = []
+        selectedStrokeID = nil
+        selectedTextID = nil
+        isSyncingSelection = false
+        clearAnchorSelection()
+        geometryRevision += 1
+    }
+
+    /// Duplicates the selection, offsetting the copies and selecting them.
+    func duplicateSelectedElements(offset: CGPoint) {
+        guard !selectionIsEmpty else { return }
+        pushUndo()
+        var newStrokeIDs: Set<UUID> = []
+        var newTextIDs: Set<UUID> = []
+        for id in selectedStrokeIDs {
+            guard var copy = stroke(with: id) else { continue }
+            copy.id = UUID()
+            copy.points = copy.points.map { CGPoint(x: $0.x + offset.x, y: $0.y + offset.y) }
+            copy.cutoutPoints = copy.cutoutPoints.map { contour in
+                contour.map { CGPoint(x: $0.x + offset.x, y: $0.y + offset.y) }
+            }
+            copy.rotationBasePoints = nil
+            copy.rotationBaseCenter = nil
+            strokes.append(copy)
+            newStrokeIDs.insert(copy.id)
+        }
+        for id in selectedTextIDs {
+            guard var copy = textElement(with: id) else { continue }
+            copy.id = UUID()
+            copy.position = CGPoint(x: copy.position.x + offset.x, y: copy.position.y + offset.y)
+            textElements.append(copy)
+            newTextIDs.insert(copy.id)
+        }
+        geometryRevision += 1
+        setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs)
+    }
+
+    /// Mirrors the selection about its combined bounding-box center.
+    func flipSelection(horizontal: Bool) {
+        guard let bbox = selectionBoundingBox() else { return }
+        pushUndo()
+        let cx = bbox.midX
+        let cy = bbox.midY
+        func flip(_ point: CGPoint) -> CGPoint {
+            CGPoint(
+                x: horizontal ? 2 * cx - point.x : point.x,
+                y: horizontal ? point.y : 2 * cy - point.y
+            )
+        }
+        for id in selectedStrokeIDs {
+            guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
+            strokes[index].points = strokes[index].points.map(flip)
+            strokes[index].cutoutPoints = strokes[index].cutoutPoints.map { $0.map(flip) }
+            if let handles = strokes[index].curveHandles {
+                strokes[index].curveHandles = handles.map { handle in
+                    CurveHandle(
+                        inOffset: CGPoint(
+                            x: horizontal ? -handle.inOffset.x : handle.inOffset.x,
+                            y: horizontal ? handle.inOffset.y : -handle.inOffset.y
+                        ),
+                        outOffset: CGPoint(
+                            x: horizontal ? -handle.outOffset.x : handle.outOffset.x,
+                            y: horizontal ? handle.outOffset.y : -handle.outOffset.y
+                        )
+                    )
+                }
+            }
+            strokes[index].rotationBasePoints = nil
+            strokes[index].rotationBaseCenter = nil
+        }
+        for id in selectedTextIDs {
+            guard let index = textElements.firstIndex(where: { $0.id == id }) else { continue }
+            let newCenter = flip(textElements[index].center)
+            let size = textElements[index].textSize()
+            textElements[index].position = CGPoint(
+                x: newCenter.x - size.width / 2,
+                y: newCenter.y - size.height / 2
+            )
+        }
+        reconcileIntersectionAnchors(around: selectedStrokeIDs)
+        geometryRevision += 1
     }
 
     /// Single tap: reset the fillet selection to only this corner.

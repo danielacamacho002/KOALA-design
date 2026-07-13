@@ -247,7 +247,7 @@ struct EditorView: View {
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .move,
-                          store.document.selectedStrokeID != nil || store.document.selectedTextID != nil {
+                          !store.document.selectionIsEmpty {
                     MoveRotatePanelView(document: store.document) {
                         refreshCanvas()
                     }
@@ -810,12 +810,21 @@ struct EditorView: View {
             commandSession.cancel()
             if category == .move {
                 store.document.clearToolSelections()
-                if store.document.selectedTextID != nil {
+                // Restore the last stroke selection so its edit handles reappear
+                // when returning to the move tool from another tool.
+                if store.document.selectionIsEmpty,
+                   let lastID = store.document.lastSelectedStrokeID,
+                   store.document.stroke(with: lastID) != nil {
+                    store.document.selectedStrokeID = lastID
+                }
+                if store.document.hasMultiSelection {
+                    statusMessage = "Drag to move the group, or use the handle to rotate; tap to add or remove"
+                } else if store.document.selectedTextID != nil {
                     statusMessage = "Drag to move the text, or use the handle to rotate"
                 } else if store.document.selectedStrokeID == nil {
-                    statusMessage = "Select a shape or text to move or rotate"
+                    statusMessage = "Tap a shape to select; drag empty space to marquee-select"
                 } else {
-                    statusMessage = "Tap an anchor to select it; double-tap to multi-select; drag to move"
+                    statusMessage = "Drag anchors or curve handles to edit; drag empty space to marquee-select"
                 }
             }
         default:
