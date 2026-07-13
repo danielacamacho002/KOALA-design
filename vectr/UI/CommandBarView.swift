@@ -50,7 +50,7 @@ struct CommandBarView: View {
         HStack {
             ToolPanelHeader("Command")
             Spacer()
-            ToolPanelLabelButton(title: "Cancel") {
+            ToolPanelCancelButton {
                 session.cancel()
                 onCancel()
             }

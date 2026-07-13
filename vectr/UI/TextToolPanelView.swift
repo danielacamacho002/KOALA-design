@@ -20,7 +20,7 @@ struct TextToolPanelView: View {
             HStack {
                 ToolPanelHeader("Text")
                 Spacer()
-                ToolPanelLabelButton(title: "Done", prominent: true, action: onDone)
+                ToolPanelApplyButton(action: onDone)
             }
 
             TextField("Type here", text: $text, axis: .vertical)

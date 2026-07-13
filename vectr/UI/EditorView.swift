@@ -245,25 +245,23 @@ struct EditorView: View {
                             refreshCanvas()
                         }
                     )
-                    .padding(.leading, 10)
-                    .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .move,
                           store.document.selectedStrokeID != nil || store.document.selectedTextID != nil {
                     MoveRotatePanelView(document: store.document) {
                         refreshCanvas()
                     }
-                    .padding(.leading, 10)
-                    .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .addAnchor {
                     AddAnchorPanelView(
                         document: store.document,
                         onApply: { refreshCanvas() },
+                        onCancel: {
+                            store.document.clearToolSelections()
+                            refreshCanvas()
+                        },
                         onStatus: { statusMessage = $0 }
                     )
-                    .padding(.leading, 10)
-                    .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .pattern {
                     PatternPanelView(
@@ -275,10 +273,13 @@ struct EditorView: View {
                             patternPreviewStrokes = []
                             refreshCanvas()
                         },
+                        onCancel: {
+                            patternPreviewStrokes = []
+                            store.document.clearToolSelections()
+                            refreshCanvas()
+                        },
                         onStatus: { statusMessage = $0 }
                     )
-                    .padding(.leading, 10)
-                    .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
@@ -290,8 +291,6 @@ struct EditorView: View {
                         onChanged: { refreshCanvas() },
                         onDone: { endTextEditingIfNeeded() }
                     )
-                    .padding(.leading, 10)
-                    .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }

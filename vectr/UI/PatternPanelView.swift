@@ -11,6 +11,7 @@ struct PatternPanelView: View {
     @Binding var settings: PatternSettings
     var onPreviewChange: () -> Void
     var onApply: () -> Void
+    var onCancel: () -> Void
     var onStatus: (String) -> Void
 
     private var canApply: Bool {
@@ -58,13 +59,12 @@ struct PatternPanelView: View {
 
             previewSummary
 
-            ToolPanelLabelButton(
-                title: "Apply",
-                prominent: true,
-                isDisabled: !canApply,
-                fullWidth: true
-            ) {
-                apply()
+            HStack(spacing: 4) {
+                ToolPanelCancelButton { onCancel() }
+
+                Spacer()
+
+                ToolPanelApplyButton(isDisabled: !canApply) { apply() }
             }
         }
         .toolPanelChrome(width: 188)

@@ -8,6 +8,7 @@ import SwiftUI
 struct AddAnchorPanelView: View {
     @Bindable var document: VectrDocument
     var onApply: () -> Void
+    var onCancel: () -> Void
     var onStatus: (String) -> Void
 
     @State private var totalText = ""
@@ -52,13 +53,12 @@ struct AddAnchorPanelView: View {
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
 
-            ToolPanelLabelButton(
-                title: "Apply",
-                prominent: true,
-                isDisabled: !canApply,
-                fullWidth: true
-            ) {
-                apply()
+            HStack(spacing: 4) {
+                ToolPanelCancelButton { onCancel() }
+
+                Spacer()
+
+                ToolPanelApplyButton(isDisabled: !canApply) { apply() }
             }
         }
         .toolPanelChrome(width: 172)

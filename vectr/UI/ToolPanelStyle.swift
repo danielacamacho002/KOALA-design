@@ -71,6 +71,32 @@ struct ToolPanelIconButton: View {
     }
 }
 
+/// Standard "cancel / clear" control shared by every tool panel.
+struct ToolPanelCancelButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        ToolPanelIconButton(systemImage: "xmark", action: action)
+            .accessibilityLabel("Cancel")
+    }
+}
+
+/// Standard "apply / confirm" control shared by every tool panel.
+struct ToolPanelApplyButton: View {
+    var isDisabled: Bool = false
+    let action: () -> Void
+
+    var body: some View {
+        ToolPanelIconButton(
+            systemImage: "checkmark",
+            prominent: true,
+            isDisabled: isDisabled,
+            action: action
+        )
+        .accessibilityLabel("Apply")
+    }
+}
+
 /// Text button matching the shape command panel's variant/action controls.
 struct ToolPanelLabelButton: View {
     let title: String

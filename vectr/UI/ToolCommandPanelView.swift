@@ -61,11 +61,10 @@ struct ToolCommandPanelView: View {
             colorRow
 
             HStack {
-                ToolPanelIconButton(systemImage: "xmark") {
+                ToolPanelCancelButton {
                     session.cancel()
                     onCancel()
                 }
-                .accessibilityLabel("Cancel")
 
                 Spacer()
             }

@@ -46,11 +46,11 @@ struct FilletRadiusPanelView: View {
             .foregroundStyle(.secondary)
 
             HStack(spacing: 4) {
-                ToolPanelLabelButton(title: "Cancel") { onCancel() }
+                ToolPanelCancelButton { onCancel() }
 
-                ToolPanelLabelButton(
-                    title: "Apply",
-                    prominent: true,
+                Spacer()
+
+                ToolPanelApplyButton(
                     isDisabled: document.selectedFilletCornerIndices.isEmpty
                 ) {
                     apply()
