@@ -24,6 +24,8 @@ struct ToolCommandPanelView: View {
     @State private var thicknessText = ""
     @State private var showColorPicker = false
 
+    @AppStorage(AppearanceSettings.panelColorKey) private var panelColorHex = AppearanceSettings.defaultPanelHex
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             panelHeader
@@ -79,7 +81,7 @@ struct ToolCommandPanelView: View {
         }
         .padding(8)
         .frame(width: panelWidth)
-        .background(Rectangle().fill(Color(.systemBackground).opacity(0.92)))
+        .background(Rectangle().fill(Color(hex: panelColorHex)))
         .overlay(Rectangle().stroke(Color.primary.opacity(0.08), lineWidth: 1))
         .onAppear { syncThicknessText() }
         .onChange(of: document.strokeWidth) { _, _ in syncThicknessText() }
