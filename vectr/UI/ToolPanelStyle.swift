@@ -9,6 +9,14 @@
 
 import SwiftUI
 
+extension Color {
+    /// Fill for the non-prominent (secondary) tool panel buttons.
+    static let toolPanelButtonFill = Color(hex: "F2F2F7")
+
+    /// Foreground for content sitting on a non-prominent tool panel button.
+    static let toolPanelButtonForeground = Color.black
+}
+
 extension View {
     /// Applies the standard tool panel chrome: sharp rectangle fill with a hairline
     /// stroke and consistent padding. Defaults to the shared, user-configurable panel
@@ -75,9 +83,9 @@ struct ToolPanelIconButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(prominent ? Color.black : Color.white)
+                .foregroundStyle(prominent ? Color.black : Color.toolPanelButtonForeground)
                 .frame(width: 26, height: 26)
-                .background(prominent ? Color.accentColor : Color(.systemGray))
+                .background(prominent ? Color.accentColor : Color.toolPanelButtonFill)
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
@@ -124,11 +132,11 @@ struct ToolPanelLabelButton: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 11, weight: prominent ? .semibold : .regular))
-                .foregroundStyle(prominent ? Color.black : Color.white)
+                .foregroundStyle(prominent ? Color.black : Color.toolPanelButtonForeground)
                 .frame(maxWidth: fullWidth ? .infinity : nil, alignment: alignment)
                 .padding(.horizontal, 8)
                 .frame(height: 26)
-                .background(prominent ? Color.accentColor : Color(.systemGray))
+                .background(prominent ? Color.accentColor : Color.toolPanelButtonFill)
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)

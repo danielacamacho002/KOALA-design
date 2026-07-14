@@ -76,7 +76,7 @@ struct FontPickerView: View {
                 Text(name)
                     .font(previewFont)
                     .lineLimit(1)
-                    .foregroundStyle(selected ? Color.black : Color.white)
+                    .foregroundStyle(selected ? Color.black : Color.toolPanelButtonForeground)
                 Spacer(minLength: 8)
                 if selected {
                     Image(systemName: "checkmark")
@@ -87,7 +87,7 @@ struct FontPickerView: View {
             .padding(.horizontal, 8)
             .frame(height: 32)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? Color.accentColor : Color(.systemGray))
+            .background(selected ? Color.accentColor : Color.toolPanelButtonFill)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
