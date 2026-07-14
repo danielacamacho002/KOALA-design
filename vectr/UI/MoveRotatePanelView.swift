@@ -41,10 +41,11 @@ struct MoveRotatePanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            rotateSection
+
             if document.hasMultiSelection {
+                Divider()
                 multiSelectionSection
-            } else {
-                rotateSection
             }
 
             Divider()
@@ -70,42 +71,65 @@ struct MoveRotatePanelView: View {
     private var rotateSection: some View {
         ToolPanelHeader("Rotate")
 
-        Text("0° is the original drawn angle. Drag the handle or enter an absolute degree.")
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+        if document.hasMultiSelection {
+            Text("Enter degrees to rotate the selection around its center.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-        Text("Current: \(String(format: "%.1f°", currentDegrees))")
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.secondary)
+            FingerOnlyTextField(
+                placeholder: "Degrees",
+                text: $degreesText,
+                keyboardType: .numbersAndPunctuation,
+                fontSize: 13,
+                cornerRadius: 0,
+                onSubmit: apply
+            )
+            .frame(height: 30)
 
-        FingerOnlyTextField(
-            placeholder: "Degrees",
-            text: $degreesText,
-            keyboardType: .numbersAndPunctuation,
-            fontSize: 13,
-            cornerRadius: 0,
-            onSubmit: apply
-        )
-        .frame(height: 30)
+            HStack(spacing: 4) {
+                ToolPanelLabelButton(title: "Rotate", fullWidth: true) {
+                    applyGroupRotation()
+                }
+            }
+        } else {
+            Text("0° is the original drawn angle. Drag the handle or enter an absolute degree.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-        if !isTextSelected {
-            Text("Pivot: \(pivotLabel)")
+            Text("Current: \(String(format: "%.1f°", currentDegrees))")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
-        }
 
-        HStack(spacing: 4) {
-            ToolPanelLabelButton(title: "Reset to 0°") {
-                resetToOriginal()
-            }
+            FingerOnlyTextField(
+                placeholder: "Degrees",
+                text: $degreesText,
+                keyboardType: .numbersAndPunctuation,
+                fontSize: 13,
+                cornerRadius: 0,
+                onSubmit: apply
+            )
+            .frame(height: 30)
 
             if !isTextSelected {
-                ToolPanelLabelButton(
-                    title: "Center pivot",
-                    isDisabled: document.moveRotationPivotAnchorIndex == nil
-                ) {
-                    document.moveRotationPivotAnchorIndex = nil
+                Text("Pivot: \(pivotLabel)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 4) {
+                ToolPanelLabelButton(title: "Reset to 0°") {
+                    resetToOriginal()
+                }
+
+                if !isTextSelected {
+                    ToolPanelLabelButton(
+                        title: "Center pivot",
+                        isDisabled: document.moveRotationPivotAnchorIndex == nil
+                    ) {
+                        document.moveRotationPivotAnchorIndex = nil
+                    }
                 }
             }
         }
@@ -115,7 +139,7 @@ struct MoveRotatePanelView: View {
     private var multiSelectionSection: some View {
         ToolPanelHeader("\(document.selectionCount) selected")
 
-        Text("Drag to move the group; use the handle to rotate. Tap a shape to add or remove it.")
+        Text("Drag to move the group. Tap a shape to add or remove it.")
             .font(.system(size: 10))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -123,6 +147,26 @@ struct MoveRotatePanelView: View {
         if document.canJoinSelection {
             ToolPanelLabelButton(title: "Join paths", prominent: true, fullWidth: true) {
                 if document.joinSelectedPaths() { onApply() }
+            }
+        }
+
+        HStack(spacing: 4) {
+            ToolPanelLabelButton(
+                title: "Group",
+                isDisabled: !document.canGroupSelection,
+                fullWidth: true
+            ) {
+                document.groupSelectedElements()
+                onApply()
+            }
+
+            ToolPanelLabelButton(
+                title: "Ungroup",
+                isDisabled: !document.canUngroupSelection,
+                fullWidth: true
+            ) {
+                document.ungroupSelectedElements()
+                onApply()
             }
         }
     }
@@ -156,7 +200,12 @@ struct MoveRotatePanelView: View {
     }
 
     private func syncDegreesField() {
-        degreesText = String(format: "%.1f", currentDegrees)
+        // For a multi-selection the field takes a relative rotation, so start at 0.
+        if document.hasMultiSelection {
+            degreesText = "0"
+        } else {
+            degreesText = String(format: "%.1f", currentDegrees)
+        }
     }
 
     private func syncDegreesFieldFromCurrent() {
@@ -167,7 +216,19 @@ struct MoveRotatePanelView: View {
 
     private func apply() {
         guard let value = Double(degreesText.trimmingCharacters(in: .whitespaces)) else { return }
-        setRotation(toDegrees: value)
+        if document.hasMultiSelection {
+            applyGroupRotation()
+        } else {
+            setRotation(toDegrees: value)
+        }
+    }
+
+    private func applyGroupRotation() {
+        guard let value = Double(degreesText.trimmingCharacters(in: .whitespaces)),
+              abs(value) > 0 else { return }
+        document.rotateSelectedElements(byDegrees: value)
+        degreesText = "0"
+        onApply()
     }
 
     private func resetToOriginal() {

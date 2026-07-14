@@ -603,13 +603,17 @@ struct CanvasOverlayView: View {
         let threshold = document.viewport.viewToDocument(distance: 16)
         switch document.elementHit(near: documentPoint, threshold: threshold) {
         case .stroke(let id):
-            if document.selectedStrokeIDs.contains(id) {
+            if let group = document.group(containingStroke: id) {
+                document.selectGroup(group)
+            } else if document.selectedStrokeIDs.contains(id) {
                 if document.selectionCount > 1 { document.toggleStrokeSelection(id) }
             } else {
                 document.toggleStrokeSelection(id)
             }
         case .text(let id):
-            if document.selectedTextIDs.contains(id) {
+            if let group = document.group(containingText: id) {
+                document.selectGroup(group)
+            } else if document.selectedTextIDs.contains(id) {
                 if document.selectionCount > 1 { document.toggleTextSelection(id) }
             } else {
                 document.toggleTextSelection(id)
