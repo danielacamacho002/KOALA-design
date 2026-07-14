@@ -61,6 +61,8 @@ final class SnapIndicatorRenderer {
             markerLayer.path = squarePath(center: viewPoint, size: markerSize)
         case .midpoint:
             markerLayer.path = trianglePath(center: viewPoint, size: markerSize)
+        case .intersection:
+            markerLayer.path = crossPath(center: viewPoint, size: markerSize)
         }
         CATransaction.commit()
     }
@@ -105,5 +107,35 @@ final class SnapIndicatorRenderer {
         path.addLine(to: CGPoint(x: center.x - half, y: center.y + half))
         path.close()
         return path.cgPath
+    }
+
+    private func crossPath(center: CGPoint, size: CGFloat) -> CGPath {
+        let path = UIBezierPath()
+        for (index, vertex) in SnapMarkerGeometry.crossVertices(size: size).enumerated() {
+            let placed = CGPoint(x: center.x + vertex.x, y: center.y + vertex.y)
+            if index == 0 { path.move(to: placed) } else { path.addLine(to: placed) }
+        }
+        path.close()
+        return path.cgPath
+    }
+}
+
+/// Shared vertex math for the intersection "X" marker so the UIKit indicator and the SwiftUI
+/// move-tool overlay render an identical glyph.
+enum SnapMarkerGeometry {
+    /// A solid X (a plus rotated 45°) centered on the origin, sized to `size`.
+    static func crossVertices(size: CGFloat) -> [CGPoint] {
+        let h = size / 2
+        let t = size * 0.17
+        let base: [CGPoint] = [
+            CGPoint(x: -t, y: -h), CGPoint(x: t, y: -h), CGPoint(x: t, y: -t),
+            CGPoint(x: h, y: -t), CGPoint(x: h, y: t), CGPoint(x: t, y: t),
+            CGPoint(x: t, y: h), CGPoint(x: -t, y: h), CGPoint(x: -t, y: t),
+            CGPoint(x: -h, y: t), CGPoint(x: -h, y: -t), CGPoint(x: -t, y: -t)
+        ]
+        let angle = CGFloat.pi / 4
+        let c = cos(angle)
+        let s = sin(angle)
+        return base.map { CGPoint(x: $0.x * c - $0.y * s, y: $0.x * s + $0.y * c) }
     }
 }

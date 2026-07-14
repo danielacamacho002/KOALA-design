@@ -30,6 +30,7 @@ final class VectrDocument {
     /// Per-type toggles for the object snapping engine, driven by the canvas snap bar.
     var endpointSnapEnabled: Bool = true
     var midpointSnapEnabled: Bool = true
+    var intersectionSnapEnabled: Bool = true
     var dimensionsVisible: Bool = false
     // Document-space offsets of dragged dimension labels, keyed by "<strokeID>:<dimensionID>".
     var dimensionOffsets: [String: CGPoint] = [:]

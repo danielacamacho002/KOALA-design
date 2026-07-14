@@ -5,9 +5,10 @@
 
 import SwiftUI
 
-/// Bottom-left canvas control for the object snapping engine. Two independent toggles drive
-/// which snap types the engine considers: Endpoints (square) and Midpoints (triangle).
-/// These map directly to `PathSnapEngine`'s enabled kinds via the document toggles.
+/// Bottom-left canvas control for the object snapping engine. Independent toggles drive
+/// which snap types the engine considers: Endpoints (square), Midpoints (triangle) and
+/// Intersections (X). These map directly to `PathSnapEngine`'s enabled kinds via the
+/// document toggles.
 struct SnapToggleBar: View {
     @Bindable var document: VectrDocument
 
@@ -32,6 +33,15 @@ struct SnapToggleBar: View {
                 document.midpointSnapEnabled.toggle()
             }
             .accessibilityLabel("Midpoint snap")
+
+            StudioIconButton(
+                systemImage: "xmark",
+                isActive: document.intersectionSnapEnabled,
+                size: iconSize
+            ) {
+                document.intersectionSnapEnabled.toggle()
+            }
+            .accessibilityLabel("Intersection snap")
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 3)

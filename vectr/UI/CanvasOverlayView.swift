@@ -398,6 +398,11 @@ struct CanvasOverlayView: View {
                     .fill(Color.pink.opacity(0.95))
                     .overlay(SnapTriangle().stroke(Color.white, lineWidth: 1.5))
                     .frame(width: size, height: size)
+            case .intersection:
+                SnapCross()
+                    .fill(Color.pink.opacity(0.95))
+                    .overlay(SnapCross().stroke(Color.white, lineWidth: 1.5))
+                    .frame(width: size, height: size)
             }
         }
         .position(position)
@@ -1212,6 +1217,22 @@ private struct SnapTriangle: Shape {
         path.move(to: CGPoint(x: rect.midX, y: rect.minY))
         path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
         path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// Solid "X" used for the intersection snap indicator. Shares vertex math with the canvas
+/// indicator via `SnapMarkerGeometry` so both glyphs match.
+private struct SnapCross: Shape {
+    func path(in rect: CGRect) -> Path {
+        let size = min(rect.width, rect.height)
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        var path = Path()
+        for (index, vertex) in SnapMarkerGeometry.crossVertices(size: size).enumerated() {
+            let placed = CGPoint(x: center.x + vertex.x, y: center.y + vertex.y)
+            if index == 0 { path.move(to: placed) } else { path.addLine(to: placed) }
+        }
         path.closeSubpath()
         return path
     }

@@ -23,15 +23,17 @@ import QuartzCore
 enum SnapKind: Equatable {
     case endpoint
     case midpoint
-    // Future plugins: case center, case intersection, case tangent, …
+    case intersection
+    // Future plugins: case center, case tangent, …
 }
 
 /// A single resolved snap target in document space.
 struct SnapCandidate: Equatable {
     let point: CGPoint
     let kind: SnapKind
-    /// Stroke the candidate was derived from (used for exclusion / debugging).
-    let sourceStrokeID: UUID
+    /// Stroke the candidate was derived from, when it comes from a single stroke.
+    /// `nil` for relational candidates such as intersections (which come from a pair).
+    let sourceStrokeID: UUID?
 }
 
 // MARK: - Plugin interface
@@ -48,6 +50,18 @@ protocol SnapCandidateProvider {
     /// Candidate points (document space) for `stroke`. Return `[]` when the stroke has
     /// no features of this kind (e.g. a closed shape has no endpoints).
     func candidates(for stroke: VectorStroke) -> [CGPoint]
+}
+
+/// A provider that derives candidates from relationships *between* strokes (e.g. where two
+/// paths cross) rather than from a single stroke. It receives the strokes already culled to
+/// the proximity zone plus the query point, so implementations stay cheap.
+protocol RelationalSnapCandidateProvider {
+    /// The kind of snap this provider emits. Also drives the visual indicator glyph.
+    var kind: SnapKind { get }
+
+    /// Candidate points (document space) within `radius` of `point`, derived from the
+    /// relationships among `strokes`.
+    func candidates(near point: CGPoint, within radius: CGFloat, strokes: [VectorStroke]) -> [CGPoint]
 }
 
 // MARK: - Endpoint plugin
@@ -91,6 +105,54 @@ struct MidpointSnapProvider: SnapCandidateProvider {
     }
 }
 
+// MARK: - Intersection plugin
+
+/// Emits the exact coordinates where two different strokes cross. Works on the rendered
+/// geometry, so line×line, line×shape and shape×shape crossings are all detected. To stay
+/// fast, only segments that pass within the proximity radius of the query point are considered.
+struct IntersectionSnapProvider: RelationalSnapCandidateProvider {
+    let kind: SnapKind = .intersection
+
+    private struct LocalSegment {
+        let a: CGPoint
+        let b: CGPoint
+        let strokeIndex: Int
+    }
+
+    func candidates(near point: CGPoint, within radius: CGFloat, strokes: [VectorStroke]) -> [CGPoint] {
+        // Gather only the segments that pass near the cursor, tagged by their owning stroke.
+        var localSegments: [LocalSegment] = []
+        for (index, stroke) in strokes.enumerated() {
+            let points = ShapeGeometry.renderPoints(for: stroke)
+            guard points.count >= 2 else { continue }
+            let segmentCount = stroke.isClosed ? points.count : points.count - 1
+            for segment in 0..<segmentCount {
+                let a = points[segment]
+                let b = points[(segment + 1) % points.count]
+                if SnapGeometry.distance(from: point, toSegment: a, b) <= radius {
+                    localSegments.append(LocalSegment(a: a, b: b, strokeIndex: index))
+                }
+            }
+        }
+
+        guard localSegments.count >= 2 else { return [] }
+
+        // Cross every near-cursor segment against those from *other* strokes.
+        var result: [CGPoint] = []
+        for i in 0..<localSegments.count {
+            for j in (i + 1)..<localSegments.count where localSegments[i].strokeIndex != localSegments[j].strokeIndex {
+                if let crossing = SnapGeometry.segmentIntersection(
+                    localSegments[i].a, localSegments[i].b,
+                    localSegments[j].a, localSegments[j].b
+                ), hypot(crossing.x - point.x, crossing.y - point.y) <= radius {
+                    result.append(crossing)
+                }
+            }
+        }
+        return result
+    }
+}
+
 // MARK: - Shared geometry helpers
 
 enum SnapGeometry {
@@ -115,6 +177,32 @@ enum SnapGeometry {
             result.append(CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2))
         }
         return result
+    }
+
+    /// True segment×segment intersection (bounded, not infinite lines). Returns `nil` for
+    /// parallel/collinear segments or when the crossing lies outside either segment.
+    static func segmentIntersection(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint, _ d: CGPoint) -> CGPoint? {
+        let r = CGPoint(x: b.x - a.x, y: b.y - a.y)
+        let s = CGPoint(x: d.x - c.x, y: d.y - c.y)
+        let denominator = r.x * s.y - r.y * s.x
+        guard abs(denominator) > 1e-9 else { return nil }
+
+        let t = ((c.x - a.x) * s.y - (c.y - a.y) * s.x) / denominator
+        let u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / denominator
+        guard t >= 0, t <= 1, u >= 0, u <= 1 else { return nil }
+
+        return CGPoint(x: a.x + t * r.x, y: a.y + t * r.y)
+    }
+
+    /// Shortest distance from `point` to the segment `a`–`b`.
+    static func distance(from point: CGPoint, toSegment a: CGPoint, _ b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0 else { return hypot(point.x - a.x, point.y - a.y) }
+        var t = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared
+        t = max(0, min(1, t))
+        return hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy))
     }
 
     /// Removes consecutive coincident points and, for closed paths, the duplicated closing
@@ -176,14 +264,20 @@ enum SnapGeometry {
 /// zone, then (2) registered providers run only for the surviving strokes.
 struct PathSnapEngine {
     var providers: [SnapCandidateProvider]
+    var relationalProviders: [RelationalSnapCandidateProvider]
 
-    /// Default engine for this sprint: endpoints + midpoints.
+    /// Default engine: endpoints + midpoints (per-stroke) and intersections (relational).
     /// Register additional providers here (or inject them) to extend the engine.
     static func makeDefault() -> PathSnapEngine {
-        PathSnapEngine(providers: [
-            EndpointSnapProvider(),
-            MidpointSnapProvider()
-        ])
+        PathSnapEngine(
+            providers: [
+                EndpointSnapProvider(),
+                MidpointSnapProvider()
+            ],
+            relationalProviders: [
+                IntersectionSnapProvider()
+            ]
+        )
     }
 
     /// Returns the nearest candidate within `radius` (document units) of `point`,
@@ -213,25 +307,40 @@ struct PathSnapEngine {
         var best: SnapCandidate?
         var bestDistanceSquared = radius * radius
 
+        func consider(_ candidatePoint: CGPoint, kind: SnapKind, sourceStrokeID: UUID?) {
+            let dx = candidatePoint.x - point.x
+            let dy = candidatePoint.y - point.y
+            let distanceSquared = dx * dx + dy * dy
+            // `<` keeps earlier candidates winning on ties, so endpoints (considered first)
+            // take priority over midpoints and intersections at equal distance.
+            if distanceSquared < bestDistanceSquared {
+                bestDistanceSquared = distanceSquared
+                best = SnapCandidate(point: candidatePoint, kind: kind, sourceStrokeID: sourceStrokeID)
+            }
+        }
+
+        // Stage 1: bounding-box cull, done once. Skips all candidate math for far-away shapes.
+        var nearby: [VectorStroke] = []
+        nearby.reserveCapacity(strokes.count)
         for stroke in strokes {
             if let excludedStrokeID, stroke.id == excludedStrokeID { continue }
-
-            // Stage 1: bounding-box cull. Skips all candidate math for far-away shapes.
             guard let box = stroke.boundingBox(padding: radius), box.intersects(zone) else { continue }
+            nearby.append(stroke)
+        }
 
-            // Stage 2: only in-zone strokes reach the enabled providers.
+        // Stage 2a: per-stroke providers (endpoints, midpoints, …).
+        for stroke in nearby {
             for provider in providers where enabledKinds.contains(provider.kind) {
                 for candidate in provider.candidates(for: stroke) {
-                    let dx = candidate.x - point.x
-                    let dy = candidate.y - point.y
-                    let distanceSquared = dx * dx + dy * dy
-                    // `<` keeps earlier providers winning on ties, so endpoints (registered
-                    // first) take priority over midpoints at equal distance.
-                    if distanceSquared < bestDistanceSquared {
-                        bestDistanceSquared = distanceSquared
-                        best = SnapCandidate(point: candidate, kind: provider.kind, sourceStrokeID: stroke.id)
-                    }
+                    consider(candidate, kind: provider.kind, sourceStrokeID: stroke.id)
                 }
+            }
+        }
+
+        // Stage 2b: relational providers (intersections, …) over the in-zone set.
+        for provider in relationalProviders where enabledKinds.contains(provider.kind) {
+            for candidate in provider.candidates(near: point, within: radius, strokes: nearby) {
+                consider(candidate, kind: provider.kind, sourceStrokeID: nil)
             }
         }
 
@@ -337,6 +446,7 @@ extension VectrDocument {
         var kinds: Set<SnapKind> = []
         if endpointSnapEnabled { kinds.insert(.endpoint) }
         if midpointSnapEnabled { kinds.insert(.midpoint) }
+        if intersectionSnapEnabled { kinds.insert(.intersection) }
         return kinds
     }
 }
