@@ -16,7 +16,6 @@ struct EditorToolbarView: View {
     var onShare: () -> Void
     var onSave: () -> Void
     var onToolSelected: (ToolCategory) -> Void
-    var onVariantSelected: () -> Void
     var onSwitchToPrintLayout: (() -> Void)?
 
     private let toolbarHeight: CGFloat = 48
@@ -36,8 +35,7 @@ struct EditorToolbarView: View {
 
             SideToolPaletteView(
                 document: document,
-                onToolSelected: onToolSelected,
-                onVariantSelected: onVariantSelected
+                onToolSelected: onToolSelected
             )
 
             Spacer(minLength: 16)
