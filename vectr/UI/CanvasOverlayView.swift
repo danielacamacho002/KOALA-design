@@ -357,7 +357,11 @@ struct CanvasOverlayView: View {
                 .contentShape(Rectangle())
                 .gesture(
                     backgroundDrag(
-                        canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
+                        canMove: { point in
+                            document.selectionContains(point: point, threshold: moveHitThreshold)
+                                || (document.selectedGroup != nil
+                                    && document.selectionBoundingBox()?.contains(point) == true)
+                        },
                         onMoveBegan: { beginGroupMove() },
                         onMoveChanged: { value in
                             applyGroupMove(delta: documentDelta(from: value.translation))
@@ -619,7 +623,11 @@ struct CanvasOverlayView: View {
                 document.toggleTextSelection(id)
             }
         case .none:
-            document.clearElementSelection()
+            if let group = document.group(at: documentPoint) {
+                document.selectGroup(group)
+            } else {
+                document.clearElementSelection()
+            }
         }
         onChanged()
     }

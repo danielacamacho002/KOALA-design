@@ -1082,6 +1082,34 @@ final class VectrDocument {
         return (resultStrokes, resultTexts)
     }
 
+    /// Combined document-space bounds of a group's existing members.
+    func groupBoundingBox(_ group: ObjectGroup) -> CGRect? {
+        var rect: CGRect?
+        for id in group.strokeIDs {
+            if let s = stroke(with: id), let b = s.boundingBox() {
+                rect = rect.map { $0.union(b) } ?? b
+            }
+        }
+        for id in group.textIDs {
+            if let t = textElement(with: id) {
+                let b = t.boundingBox()
+                rect = rect.map { $0.union(b) } ?? b
+            }
+        }
+        return rect
+    }
+
+    /// Topmost group whose bounding box contains `documentPoint` (gives thin/open
+    /// members a large, closed-shape-like hit area).
+    func group(at documentPoint: CGPoint) -> ObjectGroup? {
+        groups.reversed().first { groupBoundingBox($0)?.contains(documentPoint) == true }
+    }
+
+    /// The group whose membership exactly matches the current selection, if any.
+    var selectedGroup: ObjectGroup? {
+        groups.first { Set($0.strokeIDs) == selectedStrokeIDs && Set($0.textIDs) == selectedTextIDs }
+    }
+
     /// Replaces the selection with the full membership of a group.
     func selectGroup(_ group: ObjectGroup) {
         let strokeIDs = Set(group.strokeIDs.filter { stroke(with: $0) != nil })
