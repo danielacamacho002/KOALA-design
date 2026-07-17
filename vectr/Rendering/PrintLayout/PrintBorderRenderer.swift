@@ -33,18 +33,16 @@ enum PrintBorderRenderer {
         )
     }
 
-    // MARK: - Border paths (one dashed rect per sheet)
+    // MARK: - Dashed printable border (one per page)
 
-    static func borderPath(for printableRect: CGRect, viewport: ViewportTransform) -> UIBezierPath {
-        UIBezierPath(rect: viewRect(for: printableRect, viewport: viewport))
-    }
-
-    /// Builds a path containing one inset printable border per sheet in the grid.
+    /// One dashed printable-area outline per page. Because pages are laid out
+    /// edge-to-edge, each page's printable rect is separated from its neighbours
+    /// by the combined margins, so borders never overlap or double up.
     static func combinedBorderPath(settings: PrintLayoutSettings, viewport: ViewportTransform) -> CGPath {
         let path = UIBezierPath()
         for sheet in PrintPageGridEngine.sheets(for: settings) {
             let printable = printableRect(for: sheet, settings: settings)
-            path.append(borderPath(for: printable, viewport: viewport))
+            path.append(UIBezierPath(rect: viewRect(for: printable, viewport: viewport)))
         }
         return path.cgPath
     }
@@ -60,16 +58,16 @@ enum PrintBorderRenderer {
         return layer
     }
 
-    // MARK: - Per-sheet dead-zone shading (margin within each sheet only)
+    // MARK: - Non-printable shading (per-page margin)
 
-    /// Shades the non-printable margin inside every individual sheet.
-    static func perSheetDimPath(settings: PrintLayoutSettings, viewport: ViewportTransform) -> CGPath {
+    /// Shades the non-printable margin inside each page (the ring between the
+    /// page edge and its printable area). Pages no longer overlap, so a simple
+    /// per-page even-odd fill is exact with no XOR artifacts between sheets.
+    static func nonPrintablePath(settings: PrintLayoutSettings, viewport: ViewportTransform) -> CGPath {
         let path = UIBezierPath()
         for sheet in PrintPageGridEngine.sheets(for: settings) {
-            let sheetView = viewRect(for: sheet.frame, viewport: viewport)
-            let printableView = viewRect(for: printableRect(for: sheet, settings: settings), viewport: viewport)
-            path.append(UIBezierPath(rect: sheetView))
-            path.append(UIBezierPath(rect: printableView))
+            path.append(UIBezierPath(rect: viewRect(for: sheet.frame, viewport: viewport)))
+            path.append(UIBezierPath(rect: viewRect(for: printableRect(for: sheet, settings: settings), viewport: viewport)))
         }
         path.usesEvenOddFillRule = true
         return path.cgPath
@@ -79,7 +77,7 @@ enum PrintBorderRenderer {
         let layer = CAShapeLayer()
         layer.fillColor = UIColor.systemRed.withAlphaComponent(0.08).cgColor
         layer.fillRule = .evenOdd
-        layer.path = perSheetDimPath(settings: settings, viewport: viewport)
+        layer.path = nonPrintablePath(settings: settings, viewport: viewport)
         layer.contentsScale = UIScreen.main.scale
         return layer
     }

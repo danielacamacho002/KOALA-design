@@ -36,11 +36,7 @@ enum TiledPDFExporter {
                 drawPrintText(document: document, in: cgContext)
 
                 cgContext.resetClip()
-                for mark in document.registrationMarks where mark.isLocked {
-                    if sheet.frame.contains(mark.position) {
-                        RegistrationMarkRenderer.drawMark(mark, in: cgContext, viewport: viewport)
-                    }
-                }
+                drawPageNumber(sheet.id + 1, in: printable, context: cgContext)
 
                 cgContext.restoreGState()
             }
@@ -92,6 +88,23 @@ enum TiledPDFExporter {
             context.setFillColor(element.cgColor)
             context.fillPath()
         }
+    }
+
+    /// Draws the page number in the bottom-right corner of the printable area so
+    /// it lands inside what the printer can actually render.
+    private static func drawPageNumber(_ number: Int, in printable: CGRect, context: CGContext) {
+        let text = "\(number)" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 10),
+            .foregroundColor: UIColor.darkGray
+        ]
+        let size = text.size(withAttributes: attributes)
+        let inset: CGFloat = 4
+        let origin = CGPoint(
+            x: printable.maxX - size.width - inset,
+            y: printable.maxY - size.height - inset
+        )
+        text.draw(at: origin, withAttributes: attributes)
     }
 
     private static func strokeColor(for stroke: VectorStroke) -> CGColor {

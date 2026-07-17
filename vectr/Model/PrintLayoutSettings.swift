@@ -15,7 +15,6 @@ struct PrintLayoutSettings: Codable, Equatable {
     /// Unprintable margin per sheet edge in document points (~0.25 in default).
     var printableMargin: CGFloat = 18
     var isPrintBorderVisible: Bool = false
-    var showRegistrationSuggestions: Bool = true
     var activeTool: PrintLayoutTool = .select
     /// Shifts all artwork onto the paper grid (applied before per-stroke transforms).
     var contentOffset: CGPoint = .zero
@@ -27,7 +26,7 @@ struct PrintLayoutSettings: Codable, Equatable {
         case paperSize, columns, rows, overlap, printableMargin
         case isPrintBorderVisible
         case showPrintBorders
-        case showRegistrationSuggestions, activeTool, contentOffset
+        case activeTool, contentOffset
     }
 
     init() {}
@@ -44,8 +43,9 @@ struct PrintLayoutSettings: Codable, Equatable {
         } else {
             isPrintBorderVisible = try container.decodeIfPresent(Bool.self, forKey: .showPrintBorders) ?? false
         }
-        showRegistrationSuggestions = try container.decodeIfPresent(Bool.self, forKey: .showRegistrationSuggestions) ?? true
-        activeTool = try container.decodeIfPresent(PrintLayoutTool.self, forKey: .activeTool) ?? .select
+        // Tolerate tool cases that no longer exist (e.g. a removed registration
+        // mark tool) by falling back to `.select` instead of failing to decode.
+        activeTool = (try? container.decode(PrintLayoutTool.self, forKey: .activeTool)) ?? .select
         contentOffset = try container.decodeIfPresent(CGPoint.self, forKey: .contentOffset) ?? .zero
     }
 
@@ -57,7 +57,6 @@ struct PrintLayoutSettings: Codable, Equatable {
         try container.encode(overlap, forKey: .overlap)
         try container.encode(printableMargin, forKey: .printableMargin)
         try container.encode(isPrintBorderVisible, forKey: .isPrintBorderVisible)
-        try container.encode(showRegistrationSuggestions, forKey: .showRegistrationSuggestions)
         try container.encode(activeTool, forKey: .activeTool)
         try container.encode(contentOffset, forKey: .contentOffset)
     }

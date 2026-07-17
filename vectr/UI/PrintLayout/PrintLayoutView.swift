@@ -90,24 +90,6 @@ struct PrintLayoutView: View {
             let threshold = document.viewport.viewToDocument(distance: 16)
             _ = document.selectPrintElement(near: documentPoint, threshold: threshold)
             onChanged()
-        case .registrationMark:
-            let threshold = document.viewport.viewToDocument(distance: 20)
-            if let mark = document.registrationMarks.first(where: {
-                RegistrationMarkRenderer.hitTest(mark: $0, at: documentPoint, threshold: threshold)
-            }) {
-                if mark.isLocked {
-                    document.removeRegistrationMark(id: mark.id)
-                    statusMessage = "Registration mark removed"
-                } else {
-                    document.lockRegistrationMark(mark)
-                    statusMessage = "Registration mark locked"
-                }
-                onChanged()
-            } else {
-                let selectThreshold = document.viewport.viewToDocument(distance: 16)
-                _ = document.selectPrintElement(near: documentPoint, threshold: selectThreshold)
-                onChanged()
-            }
         case .printBorder:
             break
         }

@@ -159,9 +159,6 @@ struct PrintLayoutToolbarView: View {
                         settings.isPrintBorderVisible.toggle()
                     } else {
                         settings.activeTool = tool
-                        if tool == .registrationMark {
-                            settings.showRegistrationSuggestions = true
-                        }
                     }
                     document.updatePrintLayout(settings, recordUndo: false)
                     onSettingsChanged()

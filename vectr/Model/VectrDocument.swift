@@ -80,7 +80,6 @@ final class VectrDocument {
 
     var printLayout: PrintLayoutSettings = PrintLayoutSettings()
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
-    var registrationMarks: [RegistrationMark] = []
     var printSelectedStrokeID: UUID?
     var printSelectedTextID: UUID?
     var printLayoutRevision = 0
@@ -132,11 +131,9 @@ final class VectrDocument {
         referenceImageFrame = snapshot.referenceImageFrame
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
-        registrationMarks = snapshot.registrationMarks
         dimensionOffsets = snapshot.dimensionOffsets
         settings.syncCanvasExtentToMaximum()
         syncGridFromSettings()
-        refreshRegistrationMarkSuggestions()
     }
 
     func strokes(for layerID: UUID) -> [VectorStroke] {
@@ -1223,35 +1220,6 @@ final class VectrDocument {
     func updatePrintLayout(_ settings: PrintLayoutSettings, recordUndo: Bool = true) {
         if recordUndo { pushUndo() }
         printLayout = settings
-        refreshRegistrationMarkSuggestions()
-        printLayoutRevision += 1
-    }
-
-    func refreshRegistrationMarkSuggestions() {
-        let locked = registrationMarks.filter(\.isLocked)
-        registrationMarks = PrintPageGridEngine.refreshRegistrationMarks(
-            locked: locked,
-            settings: printLayout
-        )
-    }
-
-    func lockRegistrationMark(_ mark: RegistrationMark) {
-        pushUndo()
-        if let index = registrationMarks.firstIndex(where: { $0.id == mark.id }) {
-            registrationMarks[index].isLocked = true
-        } else {
-            var locked = mark
-            locked.isLocked = true
-            registrationMarks.append(locked)
-        }
-        printLayoutRevision += 1
-    }
-
-    func removeRegistrationMark(id: UUID) {
-        guard registrationMarks.contains(where: { $0.id == id }) else { return }
-        pushUndo()
-        registrationMarks.removeAll { $0.id == id }
-        refreshRegistrationMarkSuggestions()
         printLayoutRevision += 1
     }
 
@@ -1329,7 +1297,6 @@ final class VectrDocument {
             referenceImageFrame: referenceImageFrame,
             printLayout: printLayout,
             printStrokeTransforms: printStrokeTransforms,
-            registrationMarks: registrationMarks,
             dimensionOffsets: dimensionOffsets
         )
     }
@@ -1348,7 +1315,6 @@ final class VectrDocument {
         referenceImageFrame = snapshot.referenceImageFrame
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
-        registrationMarks = snapshot.registrationMarks
         dimensionOffsets = snapshot.dimensionOffsets
         settings.syncCanvasExtentToMaximum()
         syncGridFromSettings()
@@ -1371,6 +1337,5 @@ struct DocumentSnapshot: Codable {
     var referenceImageFrame: CGRect?
     var printLayout: PrintLayoutSettings = PrintLayoutSettings()
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
-    var registrationMarks: [RegistrationMark] = []
     var dimensionOffsets: [String: CGPoint] = [:]
 }

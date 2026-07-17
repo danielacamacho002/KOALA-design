@@ -21,7 +21,6 @@ final class PrintLayoutCanvasUIView: UIView {
 
     private var strokeLayers: [UUID: CAShapeLayer] = [:]
     private var textLayers: [UUID: CAShapeLayer] = [:]
-    private var markLayers: [UUID: CALayer] = [:]
     private var dimOverlayLayer: CAShapeLayer?
 
     private var pinchStartScale: CGFloat = 1
@@ -62,7 +61,6 @@ final class PrintLayoutCanvasUIView: UIView {
         reloadTextElements()
         reloadDimOverlay()
         reloadBorders()
-        reloadMarks()
     }
 
     func refreshViewport() {
@@ -71,7 +69,6 @@ final class PrintLayoutCanvasUIView: UIView {
         reloadTextElements()
         reloadDimOverlay()
         reloadBorders()
-        reloadMarks()
     }
 
     // MARK: - Rendering
@@ -80,24 +77,52 @@ final class PrintLayoutCanvasUIView: UIView {
         sheetLayers.forEach { $0.removeFromSuperlayer() }
         sheetLayers.removeAll()
 
-        for frame in PrintPageGridEngine.sheetFrames(for: document.printLayout) {
-            let viewOrigin = document.viewport.documentToView(frame.origin)
+        for sheet in PrintPageGridEngine.sheets(for: document.printLayout) {
+            let viewOrigin = document.viewport.documentToView(sheet.frame.origin)
             let viewSize = CGSize(
-                width: document.viewport.documentToView(distance: frame.width),
-                height: document.viewport.documentToView(distance: frame.height)
+                width: document.viewport.documentToView(distance: sheet.frame.width),
+                height: document.viewport.documentToView(distance: sheet.frame.height)
             )
+            let sheetViewFrame = CGRect(origin: viewOrigin, size: viewSize)
+
             let layer = CALayer()
             layer.backgroundColor = UIColor.white.cgColor
-            layer.frame = CGRect(origin: viewOrigin, size: viewSize)
+            layer.frame = sheetViewFrame
             layer.shadowColor = UIColor.black.cgColor
             layer.shadowOpacity = 0.12
             layer.shadowRadius = 4
             layer.shadowOffset = CGSize(width: 0, height: 2)
-            layer.borderColor = UIColor.separator.cgColor
-            layer.borderWidth = 0.5
+            // Distinct border so each page reads as an individual sheet of paper.
+            layer.borderColor = UIColor.systemGray2.cgColor
+            layer.borderWidth = 1
             sheetsLayer.addSublayer(layer)
             sheetLayers.append(layer)
+
+            // Page number in the bottom-right corner of each sheet.
+            let label = makePageNumberLayer(number: sheet.id + 1, sheetViewFrame: sheetViewFrame)
+            sheetsLayer.addSublayer(label)
+            sheetLayers.append(label)
         }
+    }
+
+    private func makePageNumberLayer(number: Int, sheetViewFrame: CGRect) -> CATextLayer {
+        let width: CGFloat = 44
+        let height: CGFloat = 16
+        let inset: CGFloat = 8
+        let label = CATextLayer()
+        label.string = "\(number)"
+        label.fontSize = 12
+        label.foregroundColor = UIColor.secondaryLabel.cgColor
+        label.alignmentMode = .right
+        label.truncationMode = .none
+        label.contentsScale = UIScreen.main.scale
+        label.frame = CGRect(
+            x: sheetViewFrame.maxX - width - inset,
+            y: sheetViewFrame.maxY - height - inset,
+            width: width,
+            height: height
+        )
+        return label
     }
 
     private func reloadStrokes() {
@@ -201,26 +226,6 @@ final class PrintLayoutCanvasUIView: UIView {
         )
         overlayLayer.addSublayer(layer)
         borderLayer = layer
-    }
-
-    private func reloadMarks() {
-        markLayers.values.forEach { $0.removeFromSuperlayer() }
-        markLayers.removeAll()
-
-        let showSuggestions = document.printLayout.showRegistrationSuggestions
-            || document.printLayout.activeTool == .registrationMark
-
-        for mark in document.registrationMarks {
-            if !mark.isLocked, !showSuggestions { continue }
-            let isInteractive = document.printLayout.activeTool == .registrationMark
-            let layer = RegistrationMarkRenderer.makeMarkLayer(
-                for: mark,
-                viewport: document.viewport,
-                isInteractive: isInteractive
-            )
-            overlayLayer.addSublayer(layer)
-            markLayers[mark.id] = layer
-        }
     }
 
     private func reloadDimOverlay() {
