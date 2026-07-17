@@ -314,6 +314,22 @@ struct EditorView: View {
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
+            .overlay(alignment: .topLeading) {
+                if store.document.activeCategory == .type && editingTextID == nil {
+                    FontPickerView(document: store.document, library: FontLibrary.shared) {
+                        refreshCanvas()
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if store.document.activeCategory == .scale {
+                    ScaleToolPanelView(document: store.document) {
+                        refreshCanvas()
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+            }
             .overlay(alignment: .bottomLeading) {
                 ConstraintSettingsView(document: store.document)
                     .padding(.leading, 16)
@@ -380,10 +396,6 @@ struct EditorView: View {
                 onShare: { showExportSheet = true },
                 onSave: { saveDocument() },
                 onToolSelected: handleToolSelected,
-                onVariantSelected: {
-                    showCommandPanel = true
-                    startDrawingSessionIfNeeded()
-                },
                 onSwitchToPrintLayout: { switchToPrintLayoutMode() }
             )
         }
