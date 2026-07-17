@@ -560,6 +560,24 @@ enum ShapeGeometry {
         return (center, radius)
     }
 
+    /// Center and radius of the circle underlying a circle or arc stroke. Used by object
+    /// snapping (center / tangent) to locate curved geometry regardless of shape type.
+    static func arcCircle(for stroke: VectorStroke) -> (center: CGPoint, radius: CGFloat)? {
+        switch stroke.shapeType {
+        case .circle:
+            return circleFromCardinalPoints(stroke.points)
+        case .arc:
+            guard let center = arcControlCenter(from: stroke.points), !stroke.points.isEmpty else { return nil }
+            let radius = stroke.points
+                .map { hypot($0.x - center.x, $0.y - center.y) }
+                .reduce(0, +) / CGFloat(stroke.points.count)
+            guard radius > 0.001 else { return nil }
+            return (center, radius)
+        default:
+            return nil
+        }
+    }
+
     static func updateCircleHandle(at index: Int, to point: CGPoint, stroke: VectorStroke) -> [CGPoint] {
         guard stroke.shapeType == .circle,
               let circle = circleFromCardinalPoints(stroke.points) else { return stroke.points }

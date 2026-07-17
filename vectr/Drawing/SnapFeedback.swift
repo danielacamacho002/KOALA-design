@@ -56,6 +56,9 @@ final class SnapIndicatorRenderer {
         // No implicit position/path animation — the marker must track the pencil crisply.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        // The concentric "center" glyph needs even-odd fill to punch its ring; every other
+        // glyph is a solid fill. Reset it each frame since the layer is shared across kinds.
+        markerLayer.fillRule = (kind == .center) ? .evenOdd : .nonZero
         switch kind {
         case .endpoint:
             markerLayer.path = squarePath(center: viewPoint, size: markerSize)
@@ -63,6 +66,12 @@ final class SnapIndicatorRenderer {
             markerLayer.path = trianglePath(center: viewPoint, size: markerSize)
         case .intersection:
             markerLayer.path = crossPath(center: viewPoint, size: markerSize)
+        case .center:
+            markerLayer.path = concentricPath(center: viewPoint, size: markerSize)
+        case .quadrant:
+            markerLayer.path = diamondPath(center: viewPoint, size: markerSize)
+        case .tangent:
+            markerLayer.path = tangentPath(center: viewPoint, size: markerSize)
         }
         CATransaction.commit()
     }
@@ -106,6 +115,54 @@ final class SnapIndicatorRenderer {
         path.addLine(to: CGPoint(x: center.x + half, y: center.y + half))
         path.addLine(to: CGPoint(x: center.x - half, y: center.y + half))
         path.close()
+        return path.cgPath
+    }
+
+    /// Concentric-circle glyph (⊙): an outer ring plus a center dot, drawn with even-odd fill.
+    private func concentricPath(center: CGPoint, size: CGFloat) -> CGPath {
+        let outer = size / 2
+        let path = UIBezierPath(ovalIn: CGRect(
+            x: center.x - outer, y: center.y - outer, width: size, height: size
+        ))
+        let mid = outer * 0.55
+        path.append(UIBezierPath(ovalIn: CGRect(
+            x: center.x - mid, y: center.y - mid, width: mid * 2, height: mid * 2
+        )))
+        let dot = outer * 0.24
+        path.append(UIBezierPath(ovalIn: CGRect(
+            x: center.x - dot, y: center.y - dot, width: dot * 2, height: dot * 2
+        )))
+        return path.cgPath
+    }
+
+    /// Diamond glyph (⋄) for quadrant apexes.
+    private func diamondPath(center: CGPoint, size: CGFloat) -> CGPath {
+        let half = size / 2
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: center.x, y: center.y - half))
+        path.addLine(to: CGPoint(x: center.x + half, y: center.y))
+        path.addLine(to: CGPoint(x: center.x, y: center.y + half))
+        path.addLine(to: CGPoint(x: center.x - half, y: center.y))
+        path.close()
+        return path.cgPath
+    }
+
+    /// Tangent glyph: a small disc with a line kissing its top edge.
+    private func tangentPath(center: CGPoint, size: CGFloat) -> CGPath {
+        let discRadius = size * 0.36
+        let discCenterY = center.y + size * 0.12
+        let path = UIBezierPath(ovalIn: CGRect(
+            x: center.x - discRadius,
+            y: discCenterY - discRadius,
+            width: discRadius * 2,
+            height: discRadius * 2
+        ))
+        let barHeight: CGFloat = 2.4
+        let barWidth = size
+        let barY = discCenterY - discRadius - barHeight / 2
+        path.append(UIBezierPath(rect: CGRect(
+            x: center.x - barWidth / 2, y: barY, width: barWidth, height: barHeight
+        )))
         return path.cgPath
     }
 

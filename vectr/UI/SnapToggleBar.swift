@@ -42,6 +42,33 @@ struct SnapToggleBar: View {
                 document.intersectionSnapEnabled.toggle()
             }
             .accessibilityLabel("Intersection snap")
+
+            StudioIconButton(
+                systemImage: "smallcircle.circle",
+                isActive: document.centerSnapEnabled,
+                size: iconSize
+            ) {
+                document.centerSnapEnabled.toggle()
+            }
+            .accessibilityLabel("Center point snap")
+
+            StudioIconButton(
+                systemImage: "diamond",
+                isActive: document.quadrantSnapEnabled,
+                size: iconSize
+            ) {
+                document.quadrantSnapEnabled.toggle()
+            }
+            .accessibilityLabel("Quadrant snap")
+
+            StudioIconButton(
+                systemImage: "circle.and.line.horizontal",
+                isActive: document.tangentSnapEnabled,
+                size: iconSize
+            ) {
+                document.tangentSnapEnabled.toggle()
+            }
+            .accessibilityLabel("Tangential snap")
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 3)
