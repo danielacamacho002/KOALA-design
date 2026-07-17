@@ -418,7 +418,9 @@ final class VectrDocument {
         }) {
             pushUndo()
             var stroke = strokes[index]
-            stroke.points.insert(end, at: 1)
+            // The drawn segment starts at the polyline's first point, so its free
+            // endpoint (`end`) becomes the new first vertex, extending outward.
+            stroke.points.insert(end, at: 0)
             finalizeOpenPolyline(&stroke)
             strokes[index] = stroke
             reconcileIntersectionAnchors(around: [stroke.id])
@@ -432,7 +434,9 @@ final class VectrDocument {
         }) {
             pushUndo()
             var stroke = strokes[index]
-            stroke.points.insert(start, at: stroke.points.count - 1)
+            // The drawn segment ends at the polyline's last point, so its free
+            // endpoint (`start`) becomes the new last vertex, extending outward.
+            stroke.points.append(start)
             finalizeOpenPolyline(&stroke)
             strokes[index] = stroke
             reconcileIntersectionAnchors(around: [stroke.id])
