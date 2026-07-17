@@ -46,7 +46,7 @@ struct CanvasOverlayView: View {
     @State private var marqueeCurrent: CGPoint?
     @State private var dragDecided = false
     @State private var dragIsMarquee = false
-    @State private var groupMoveStrokeOrigins: [UUID: [CGPoint]] = [:]
+    @State private var groupMoveStrokeOrigins: [UUID: VectorStroke] = [:]
     @State private var groupMoveTextOrigins: [UUID: CGPoint] = [:]
     @State private var groupRotateStrokeOrigins: [UUID: VectorStroke] = [:]
     @State private var groupRotateTextOrigins: [UUID: TextElement] = [:]
@@ -304,7 +304,7 @@ struct CanvasOverlayView: View {
     @ViewBuilder
     private var moveToolOverlay: some View {
         ZStack {
-            if document.hasMultiSelection {
+            if document.usesGroupTransform {
                 multiSelectionMoveOverlay
             } else if document.selectedTextID != nil {
                 textMoveOverlay
@@ -408,9 +408,14 @@ struct CanvasOverlayView: View {
     }
 
     private func beginGroupMove() {
+        // Guarantee every group member is included before capturing origins so
+        // a partial selection never translates one child independently.
+        document.expandSelectionToGroupsIfNeeded()
         groupMoveStrokeOrigins = [:]
         for id in document.selectedStrokeIDs {
-            groupMoveStrokeOrigins[id] = document.stroke(with: id)?.points ?? []
+            if let stroke = document.stroke(with: id) {
+                groupMoveStrokeOrigins[id] = stroke
+            }
         }
         groupMoveTextOrigins = [:]
         for id in document.selectedTextIDs {
@@ -422,9 +427,25 @@ struct CanvasOverlayView: View {
     }
 
     private func applyGroupMove(delta: CGPoint) {
-        for (id, origin) in groupMoveStrokeOrigins {
-            let moved = origin.map { CGPoint(x: $0.x + delta.x, y: $0.y + delta.y) }
-            document.setStrokePoints(id: id, points: moved, recordUndo: false)
+        // Translate each child independently from its captured origin. Overlapping
+        // anchors may coincide visually but are never welded or merged.
+        for (_, origin) in groupMoveStrokeOrigins {
+            var updated = origin
+            updated.points = origin.points.map {
+                CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
+            }
+            updated.cutoutPoints = origin.cutoutPoints.map { contour in
+                contour.map { CGPoint(x: $0.x + delta.x, y: $0.y + delta.y) }
+            }
+            if let base = origin.rotationBasePoints {
+                updated.rotationBasePoints = base.map {
+                    CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
+                }
+            }
+            if let center = origin.rotationBaseCenter {
+                updated.rotationBaseCenter = CGPoint(x: center.x + delta.x, y: center.y + delta.y)
+            }
+            document.updateStroke(updated, recordUndo: false)
         }
         for (id, origin) in groupMoveTextOrigins {
             document.setTextPosition(
@@ -437,12 +458,10 @@ struct CanvasOverlayView: View {
     }
 
     private func finishGroupMove() {
-        let ids = Set(groupMoveStrokeOrigins.keys)
         groupMoveStrokeOrigins = [:]
         groupMoveTextOrigins = [:]
-        if !ids.isEmpty {
-            document.reconcileIntersectionAnchors(around: ids)
-        }
+        // Skip intersection-anchor reconciliation so overlapping vertices inside a
+        // group stay independent (no weld/merge of coordinate arrays).
         onChanged()
     }
 
@@ -452,6 +471,7 @@ struct CanvasOverlayView: View {
                 let currentDoc = document.viewport.viewToDocument(value.location)
                 if !groupRotateActive {
                     groupRotateActive = true
+                    document.expandSelectionToGroupsIfNeeded()
                     groupRotatePivot = pivot
                     groupRotatePreviousAngle = atan2(currentDoc.y - pivot.y, currentDoc.x - pivot.x)
                     groupRotateAccumulated = 0
@@ -501,15 +521,13 @@ struct CanvasOverlayView: View {
                 onChanged()
             }
             .onEnded { _ in
-                let ids = Set(groupRotateStrokeOrigins.keys)
                 groupRotateActive = false
                 groupRotateStrokeOrigins = [:]
                 groupRotateTextOrigins = [:]
                 groupRotatePreviousAngle = 0
                 groupRotateAccumulated = 0
-                if !ids.isEmpty {
-                    document.reconcileIntersectionAnchors(around: ids)
-                }
+                // Skip intersection-anchor reconciliation so overlapping vertices
+                // inside a group remain independent after rotation.
                 onChanged()
             }
     }

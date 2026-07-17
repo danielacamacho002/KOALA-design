@@ -43,7 +43,7 @@ struct MoveRotatePanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             rotateSection
 
-            if document.hasMultiSelection {
+            if document.usesGroupTransform {
                 Divider()
                 multiSelectionSection
             }
@@ -71,7 +71,7 @@ struct MoveRotatePanelView: View {
     private var rotateSection: some View {
         ToolPanelHeader("Rotate")
 
-        if document.hasMultiSelection {
+        if document.usesGroupTransform {
             Text("Enter degrees to rotate the selection around its center.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
@@ -200,8 +200,8 @@ struct MoveRotatePanelView: View {
     }
 
     private func syncDegreesField() {
-        // For a multi-selection the field takes a relative rotation, so start at 0.
-        if document.hasMultiSelection {
+        // For a group / multi-selection the field takes a relative rotation, so start at 0.
+        if document.usesGroupTransform {
             degreesText = "0"
         } else {
             degreesText = String(format: "%.1f", currentDegrees)
@@ -216,7 +216,7 @@ struct MoveRotatePanelView: View {
 
     private func apply() {
         guard let value = Double(degreesText.trimmingCharacters(in: .whitespaces)) else { return }
-        if document.hasMultiSelection {
+        if document.usesGroupTransform {
             applyGroupRotation()
         } else {
             setRotation(toDegrees: value)

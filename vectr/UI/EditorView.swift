@@ -163,7 +163,11 @@ struct EditorView: View {
                     canvasBackgroundColor: Color(hex: canvasColorHex),
                     onCanvasTap: handleCanvasTap,
                     onStrokeSelected: { stroke in
-                        store.document.selectedStrokeID = stroke?.id
+                        if let stroke {
+                            store.document.selectStrokeConsideringGroups(stroke.id)
+                        } else {
+                            store.document.clearElementSelection()
+                        }
                         store.markDirty()
                     },
                     onDragDrawBegan: { start in
@@ -811,13 +815,16 @@ struct EditorView: View {
             if category == .move {
                 store.document.clearToolSelections()
                 // Restore the last stroke selection so its edit handles reappear
-                // when returning to the move tool from another tool.
+                // when returning to the move tool from another tool. Expand to
+                // the parent group when that stroke is a group member.
                 if store.document.selectionIsEmpty,
                    let lastID = store.document.lastSelectedStrokeID,
                    store.document.stroke(with: lastID) != nil {
-                    store.document.selectedStrokeID = lastID
+                    store.document.selectStrokeConsideringGroups(lastID)
+                } else {
+                    store.document.expandSelectionToGroupsIfNeeded()
                 }
-                if store.document.hasMultiSelection {
+                if store.document.usesGroupTransform {
                     statusMessage = "Drag to move the group, or use the handle to rotate; tap to add or remove"
                 } else if store.document.selectedTextID != nil {
                     statusMessage = "Drag to move the text, or use the handle to rotate"

@@ -960,7 +960,9 @@ final class VectrDocument {
 
     /// Rotates every selected element by `degrees` around the selection's combined
     /// bounding-box center. Used by the move panel when 2+ elements are selected.
+    /// Expands to full groups first; does not weld overlapping anchors.
     func rotateSelectedElements(byDegrees degrees: Double, recordUndo: Bool = true) {
+        expandSelectionToGroupsIfNeeded()
         guard let bbox = selectionBoundingBox() else { return }
         let radians = CGFloat(degrees * .pi / 180)
         guard abs(radians) > 1e-9 else { return }
@@ -986,12 +988,14 @@ final class VectrDocument {
             )
             updateTextElement(text, recordUndo: false)
         }
-        reconcileIntersectionAnchors(around: selectedStrokeIDs)
+        // Intentionally skip intersection-anchor reconciliation so overlapping
+        // vertices remain independent after a group transform.
         geometryRevision += 1
     }
 
     /// Mirrors the selection about its combined bounding-box center.
     func flipSelection(horizontal: Bool) {
+        expandSelectionToGroupsIfNeeded()
         guard let bbox = selectionBoundingBox() else { return }
         pushUndo()
         let cx = bbox.midX
@@ -1110,11 +1114,55 @@ final class VectrDocument {
         groups.first { Set($0.strokeIDs) == selectedStrokeIDs && Set($0.textIDs) == selectedTextIDs }
     }
 
+    /// True when any currently selected element belongs to a group.
+    var selectionTouchesGroup: Bool {
+        selectedStrokeIDs.contains { group(containingStroke: $0) != nil }
+            || selectedTextIDs.contains { group(containingText: $0) != nil }
+    }
+
+    /// True when the move tool should transform the selection as a unit
+    /// (multi-select or any selected member of a group).
+    var usesGroupTransform: Bool {
+        hasMultiSelection || selectionTouchesGroup
+    }
+
     /// Replaces the selection with the full membership of a group.
     func selectGroup(_ group: ObjectGroup) {
         let strokeIDs = Set(group.strokeIDs.filter { stroke(with: $0) != nil })
         let textIDs = Set(group.textIDs.filter { textElement(with: $0) != nil })
         setElementSelection(strokeIDs: strokeIDs, textIDs: textIDs)
+    }
+
+    /// Selects a stroke, expanding to its parent group when it belongs to one.
+    func selectStrokeConsideringGroups(_ id: UUID) {
+        if let group = group(containingStroke: id) {
+            selectGroup(group)
+        } else {
+            setElementSelection(strokeIDs: [id], textIDs: [])
+        }
+    }
+
+    /// Selects a text element, expanding to its parent group when it belongs to one.
+    func selectTextConsideringGroups(_ id: UUID) {
+        if let group = group(containingText: id) {
+            selectGroup(group)
+        } else {
+            setElementSelection(strokeIDs: [], textIDs: [id])
+        }
+    }
+
+    /// Expands the current selection so every touched group is fully selected.
+    /// Returns true when the selection changed.
+    @discardableResult
+    func expandSelectionToGroupsIfNeeded() -> Bool {
+        let expanded = expandedSelectionForGroups(
+            strokeIDs: selectedStrokeIDs,
+            textIDs: selectedTextIDs
+        )
+        guard expanded.strokeIDs != selectedStrokeIDs
+            || expanded.textIDs != selectedTextIDs else { return false }
+        setElementSelection(strokeIDs: expanded.strokeIDs, textIDs: expanded.textIDs)
+        return true
     }
 
     /// Bundles the current selection into a single new group. Any groups that
@@ -1152,7 +1200,9 @@ final class VectrDocument {
     }
 
     /// Dissolves every group that intersects the current selection, leaving the
-    /// members behind as independent entities. Selection is preserved.
+    /// members behind as independent entities. Selection is preserved so the
+    /// user can continue editing, but each child is once again individually
+    /// selectable (anchors/points are no longer locked to a parent group).
     func ungroupSelectedElements() {
         guard canUngroupSelection else { return }
         pushUndo()
@@ -1160,6 +1210,9 @@ final class VectrDocument {
             group.strokeIDs.contains(where: selectedStrokeIDs.contains)
                 || group.textIDs.contains(where: selectedTextIDs.contains)
         }
+        // Keep the former members selected as a loose multi-selection so
+        // subsequent taps can target individual shapes again.
+        clearToolSelections()
     }
 
     /// Removes stale member references and drops any group left with fewer than
@@ -1281,23 +1334,12 @@ final class VectrDocument {
     }
 
     func selectStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
-        let candidates = selectableStrokes()
-        if let fillHit = candidates.reversed().first(where: { $0.contains(documentPoint) }) {
-            setSelectedStrokeID(fillHit.id)
-            return fillHit
+        guard let hit = strokeHit(near: documentPoint, threshold: threshold) else {
+            setElementSelection(strokeIDs: [], textIDs: [])
+            return nil
         }
-
-        var best: VectorStroke?
-        var bestDistance = threshold
-        for stroke in candidates.reversed() {
-            let distance = stroke.distance(to: documentPoint)
-            if distance < bestDistance {
-                bestDistance = distance
-                best = stroke
-            }
-        }
-        setSelectedStrokeID(best?.id)
-        return best
+        selectStrokeConsideringGroups(hit.id)
+        return hit
     }
 
     /// Updates `selectedStrokeID`, clearing anchor/fillet selections whenever the stroke changes.
