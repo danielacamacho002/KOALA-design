@@ -64,6 +64,15 @@ enum AnchorPointEngine {
     ) -> VectorStroke? {
         guard canEditAnchors(on: stroke) else { return nil }
 
+        // Curves keep their custom tangent handles: split the exact bezier segment
+        // under the tap (de Casteljau) so the shape is preserved and every existing
+        // handle stays intact.
+        if stroke.shapeType == .curve,
+           let handles = stroke.curveHandles,
+           handles.count == stroke.points.count {
+            return insertOnCurve(stroke: stroke, handles: handles, point: point, threshold: threshold)
+        }
+
         // Bake live fillets into permanent anchors first so the rounded corners survive editing.
         let bakedBase = bakedFilletStroke(for: stroke) ?? stroke
 
@@ -96,6 +105,133 @@ enum AnchorPointEngine {
             cornerRadiiByIndex: remappedCorners,
             smoothMiddles: remappedSmooth
         )
+    }
+
+    /// Inserts an anchor onto a `.curve` stroke by splitting the exact cubic segment
+    /// under the tap. Existing tangent handles are preserved; the split segment's two
+    /// halves reproduce the original curvature so the shape does not change.
+    private static func insertOnCurve(
+        stroke: VectorStroke,
+        handles: [CurveHandle],
+        point: CGPoint,
+        threshold: CGFloat
+    ) -> VectorStroke? {
+        let anchors = stroke.points
+        let count = anchors.count
+        guard count >= 2, handles.count == count else { return nil }
+
+        let samples = 48
+        var best: (segment: Int, t: CGFloat, distance: CGFloat, isClosing: Bool)?
+
+        func consider(_ segment: Int, _ t: CGFloat, _ candidate: CGPoint, isClosing: Bool) {
+            let d = distance(candidate, point)
+            if best == nil || d < best!.distance {
+                best = (segment, t, d, isClosing)
+            }
+        }
+
+        // Cubic bezier segments i -> i+1.
+        for index in 0..<(count - 1) {
+            let p0 = anchors[index]
+            let p3 = anchors[index + 1]
+            let c1 = controlOut(anchor: p0, handle: handles[index])
+            let c2 = controlIn(anchor: p3, handle: handles[index + 1])
+            for step in 0...samples {
+                let t = CGFloat(step) / CGFloat(samples)
+                consider(index, t, subdivideCubic(p0, c1, c2, p3, t: t).f, isClosing: false)
+            }
+        }
+
+        // Closing edge (last -> first) is a straight line for closed curves.
+        if stroke.isClosed, count >= 3 {
+            let p0 = anchors[count - 1]
+            let p3 = anchors[0]
+            if distance(p0, p3) > dedupeEpsilon {
+                for step in 0...samples {
+                    let t = CGFloat(step) / CGFloat(samples)
+                    consider(count - 1, t, lerp(p0, p3, t), isClosing: true)
+                }
+            }
+        }
+
+        guard let best, best.distance <= threshold else { return nil }
+        guard best.t > endpointEpsilon, best.t < 1 - endpointEpsilon else { return nil }
+
+        var newPoints = anchors
+        var newHandles = handles
+
+        if best.isClosing {
+            // Keep the closing edge straight: zero-offset handles produce a line.
+            let p0 = anchors[count - 1]
+            let p3 = anchors[0]
+            newHandles[count - 1].outOffset = .zero
+            newPoints.append(lerp(p0, p3, best.t))
+            newHandles.append(CurveHandle())
+        } else {
+            let index = best.segment
+            let p0 = anchors[index]
+            let p3 = anchors[index + 1]
+            let c1 = controlOut(anchor: p0, handle: handles[index])
+            let c2 = controlIn(anchor: p3, handle: handles[index + 1])
+            let split = subdivideCubic(p0, c1, c2, p3, t: best.t)
+
+            // Left half controls: p0, split.a, split.d, split.f
+            newHandles[index].outOffset = offset(from: p0, to: split.a)
+            // Right half controls: split.f, split.e, split.c, p3
+            newHandles[index + 1].inOffset = offset(from: p3, to: split.c)
+            let inserted = CurveHandle(
+                inOffset: offset(from: split.f, to: split.d),
+                outOffset: offset(from: split.f, to: split.e)
+            )
+            newPoints.insert(split.f, at: index + 1)
+            newHandles.insert(inserted, at: index + 1)
+        }
+
+        var updated = stroke
+        updated.points = newPoints
+        updated.curveHandles = newHandles
+        updated.isClosed = true
+        // Curves don't carry fillet/rotation-baseline metadata that survives a
+        // changed anchor count; clear it so nothing renders against stale indices.
+        updated.cornerRadiiByIndex = nil
+        updated.smoothCornerIndices = nil
+        updated.rotationBasePoints = nil
+        updated.rotationBaseCenter = nil
+        return updated
+    }
+
+    private static func controlOut(anchor: CGPoint, handle: CurveHandle) -> CGPoint {
+        CGPoint(x: anchor.x + handle.outOffset.x, y: anchor.y + handle.outOffset.y)
+    }
+
+    private static func controlIn(anchor: CGPoint, handle: CurveHandle) -> CGPoint {
+        CGPoint(x: anchor.x + handle.inOffset.x, y: anchor.y + handle.inOffset.y)
+    }
+
+    private static func offset(from anchor: CGPoint, to control: CGPoint) -> CGPoint {
+        CGPoint(x: control.x - anchor.x, y: control.y - anchor.y)
+    }
+
+    private static func lerp(_ p: CGPoint, _ q: CGPoint, _ t: CGFloat) -> CGPoint {
+        CGPoint(x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t)
+    }
+
+    /// de Casteljau subdivision of a cubic at `t`. Returns the intermediate points
+    /// needed to rebuild both halves: left = (p0, a, d, f), right = (f, e, c, p3).
+    private static func subdivideCubic(
+        _ p0: CGPoint,
+        _ c1: CGPoint,
+        _ c2: CGPoint,
+        _ p3: CGPoint,
+        t: CGFloat
+    ) -> (a: CGPoint, c: CGPoint, d: CGPoint, e: CGPoint, f: CGPoint) {
+        let a = lerp(p0, c1, t)
+        let b = lerp(c1, c2, t)
+        let c = lerp(c2, p3, t)
+        let d = lerp(a, b, t)
+        let e = lerp(b, c, t)
+        let f = lerp(d, e, t)
+        return (a, c, d, e, f)
     }
 
     /// Shifts baked-arc midpoint indices to account for a newly inserted anchor. If the anchor
@@ -396,6 +532,11 @@ enum AnchorPointEngine {
         }
 
         let keepRectangleRadius = shapeType == .rectangle && points.count == 4
+        // A curve's anchor count changed, so rebuild its tangent handles to stay in
+        // sync; otherwise the move tool can't show/edit the beziers after editing.
+        let curveHandles = shapeType == .curve
+            ? ShapeGeometry.defaultCurveHandles(anchors: points)
+            : nil
         return VectorStroke(
             id: stroke.id,
             layerID: stroke.layerID,
@@ -408,7 +549,8 @@ enum AnchorPointEngine {
             smoothCornerIndices: smoothMiddles,
             isConstruction: stroke.isConstruction,
             shapeType: shapeType,
-            cutoutPoints: stroke.cutoutPoints
+            cutoutPoints: stroke.cutoutPoints,
+            curveHandles: curveHandles
         )
     }
 }

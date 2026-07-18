@@ -367,6 +367,10 @@ final class DrawingCanvasUIView: UIView {
         case .curve:
             // Curve points come from Pencil drags; a double-tap finishes it.
             break
+        case .move, .scale, .fillet, .pattern:
+            // Selection/manipulation for these tools is handled by the SwiftUI
+            // canvas overlay so group-aware selection is preserved.
+            break
         default:
             handleSelection(at: viewPoint)
         }

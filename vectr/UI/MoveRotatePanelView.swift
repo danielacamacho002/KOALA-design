@@ -41,69 +41,18 @@ struct MoveRotatePanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Rotate")
-                .font(.caption.weight(.semibold))
+            rotateSection
 
-            Text("0° is the original drawn angle. Drag the handle or enter an absolute degree.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("Current: \(String(format: "%.1f°", currentDegrees))")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 6) {
-                FingerOnlyTextField(
-                    placeholder: "Degrees",
-                    text: $degreesText,
-                    keyboardType: .numbersAndPunctuation,
-                    onSubmit: apply
-                )
-                .frame(height: 36)
-                .padding(.horizontal, 10)
-
-                Button(action: apply) {
-                    Image(systemName: "return")
-                        .font(.caption.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+            if document.usesGroupTransform {
+                Divider()
+                multiSelectionSection
             }
 
-            if !isTextSelected {
-                Text("Pivot: \(pivotLabel)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
+            Divider()
 
-            HStack(spacing: 8) {
-                Button("Reset to 0°") {
-                    resetToOriginal()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-
-                if !isTextSelected {
-                    Button("Center pivot") {
-                        document.moveRotationPivotAnchorIndex = nil
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(document.moveRotationPivotAnchorIndex == nil)
-                }
-            }
+            arrangeSection
         }
-        .padding(10)
-        .frame(width: 172)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(.systemBackground).opacity(0.92))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
+        .toolPanelChrome(width: 172)
         .onChange(of: document.selectedStrokeID) { _, _ in
             syncDegreesField()
         }
@@ -118,8 +67,145 @@ struct MoveRotatePanelView: View {
         }
     }
 
+    @ViewBuilder
+    private var rotateSection: some View {
+        ToolPanelHeader("Rotate")
+
+        if document.usesGroupTransform {
+            Text("Enter degrees to rotate the selection around its center.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            FingerOnlyTextField(
+                placeholder: "Degrees",
+                text: $degreesText,
+                keyboardType: .numbersAndPunctuation,
+                fontSize: 13,
+                cornerRadius: 0,
+                onSubmit: apply
+            )
+            .frame(height: 30)
+
+            HStack(spacing: 4) {
+                ToolPanelLabelButton(title: "Rotate", fullWidth: true) {
+                    applyGroupRotation()
+                }
+            }
+        } else {
+            Text("0° is the original drawn angle. Drag the handle or enter an absolute degree.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Current: \(String(format: "%.1f°", currentDegrees))")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+
+            FingerOnlyTextField(
+                placeholder: "Degrees",
+                text: $degreesText,
+                keyboardType: .numbersAndPunctuation,
+                fontSize: 13,
+                cornerRadius: 0,
+                onSubmit: apply
+            )
+            .frame(height: 30)
+
+            if !isTextSelected {
+                Text("Pivot: \(pivotLabel)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 4) {
+                ToolPanelLabelButton(title: "Reset to 0°") {
+                    resetToOriginal()
+                }
+
+                if !isTextSelected {
+                    ToolPanelLabelButton(
+                        title: "Center pivot",
+                        isDisabled: document.moveRotationPivotAnchorIndex == nil
+                    ) {
+                        document.moveRotationPivotAnchorIndex = nil
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var multiSelectionSection: some View {
+        ToolPanelHeader("\(document.selectionCount) selected")
+
+        Text("Drag to move the group. Tap a shape to add or remove it.")
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+        if document.canJoinSelection {
+            ToolPanelLabelButton(title: "Join paths", prominent: true, fullWidth: true) {
+                if document.joinSelectedPaths() { onApply() }
+            }
+        }
+
+        HStack(spacing: 4) {
+            ToolPanelLabelButton(
+                title: "Group",
+                isDisabled: !document.canGroupSelection,
+                fullWidth: true
+            ) {
+                document.groupSelectedElements()
+                onApply()
+            }
+
+            ToolPanelLabelButton(
+                title: "Ungroup",
+                isDisabled: !document.canUngroupSelection,
+                fullWidth: true
+            ) {
+                document.ungroupSelectedElements()
+                onApply()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var arrangeSection: some View {
+        HStack(spacing: 4) {
+            ToolPanelLabelButton(title: "Duplicate", fullWidth: true) {
+                let offset = max(document.grid.spacing, 1)
+                document.duplicateSelectedElements(offset: CGPoint(x: offset, y: offset))
+                onApply()
+            }
+
+            ToolPanelLabelButton(title: "Delete", fullWidth: true) {
+                document.deleteSelectedElements()
+                onApply()
+            }
+        }
+
+        HStack(spacing: 4) {
+            ToolPanelLabelButton(title: "Flip H", fullWidth: true) {
+                document.flipSelection(horizontal: true)
+                onApply()
+            }
+
+            ToolPanelLabelButton(title: "Flip V", fullWidth: true) {
+                document.flipSelection(horizontal: false)
+                onApply()
+            }
+        }
+    }
+
     private func syncDegreesField() {
-        degreesText = String(format: "%.1f", currentDegrees)
+        // For a group / multi-selection the field takes a relative rotation, so start at 0.
+        if document.usesGroupTransform {
+            degreesText = "0"
+        } else {
+            degreesText = String(format: "%.1f", currentDegrees)
+        }
     }
 
     private func syncDegreesFieldFromCurrent() {
@@ -130,7 +216,19 @@ struct MoveRotatePanelView: View {
 
     private func apply() {
         guard let value = Double(degreesText.trimmingCharacters(in: .whitespaces)) else { return }
-        setRotation(toDegrees: value)
+        if document.usesGroupTransform {
+            applyGroupRotation()
+        } else {
+            setRotation(toDegrees: value)
+        }
+    }
+
+    private func applyGroupRotation() {
+        guard let value = Double(degreesText.trimmingCharacters(in: .whitespaces)),
+              abs(value) > 0 else { return }
+        document.rotateSelectedElements(byDegrees: value)
+        degreesText = "0"
+        onApply()
     }
 
     private func resetToOriginal() {

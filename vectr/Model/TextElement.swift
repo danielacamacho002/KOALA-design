@@ -168,7 +168,11 @@ extension VectrDocument {
     @discardableResult
     func selectTextElement(at documentPoint: CGPoint) -> TextElement? {
         let hit = selectableTextElements().reversed().first { $0.contains(documentPoint) }
-        selectedTextID = hit?.id
+        if let hit {
+            selectTextConsideringGroups(hit.id)
+        } else {
+            setElementSelection(strokeIDs: [], textIDs: [])
+        }
         return hit
     }
 
@@ -180,21 +184,18 @@ extension VectrDocument {
     /// Unified selection: prefers a hit text element, otherwise falls back to
     /// stroke hit testing. Text and strokes share a single active selection so
     /// the standard manipulation tools (move/scale/delete) treat text like a shape.
+    /// Selecting any member of a group expands to the whole group.
     @discardableResult
     func selectElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
         if let text = textElement(at: documentPoint) {
-            selectedTextID = text.id
-            if selectedStrokeID != nil {
-                clearToolSelections()
-                selectedStrokeID = nil
-            }
+            selectTextConsideringGroups(text.id)
             return .text(text.id)
         }
-        if let stroke = selectStroke(near: documentPoint, threshold: threshold) {
-            selectedTextID = nil
+        if let stroke = strokeHit(near: documentPoint, threshold: threshold) {
+            selectStrokeConsideringGroups(stroke.id)
             return .stroke(stroke.id)
         }
-        selectedTextID = nil
+        clearElementSelection()
         return .none
     }
 }

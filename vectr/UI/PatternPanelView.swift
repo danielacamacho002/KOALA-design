@@ -11,6 +11,7 @@ struct PatternPanelView: View {
     @Binding var settings: PatternSettings
     var onPreviewChange: () -> Void
     var onApply: () -> Void
+    var onCancel: () -> Void
     var onStatus: (String) -> Void
 
     private var canApply: Bool {
@@ -29,11 +30,10 @@ struct PatternPanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Pattern")
-                .font(.caption.weight(.semibold))
+            ToolPanelHeader("Pattern")
 
             Text("Spread the selected shape into a grid, line, radial, or spiral arrangement.")
-                .font(.caption2)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -59,21 +59,15 @@ struct PatternPanelView: View {
 
             previewSummary
 
-            Button("Apply") { apply() }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(!canApply)
+            HStack(spacing: 4) {
+                ToolPanelCancelButton { onCancel() }
+
+                Spacer()
+
+                ToolPanelApplyButton(isDisabled: !canApply) { apply() }
+            }
         }
-        .padding(10)
-        .frame(width: 188)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(.systemBackground).opacity(0.92))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
+        .toolPanelChrome(width: 188)
         .onAppear {
             onPreviewChange()
         }
@@ -288,14 +282,11 @@ struct PatternPanelView: View {
         disabled: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.caption2.weight(.semibold))
-                .frame(width: 28, height: 28)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.mini)
-        .disabled(disabled)
+        ToolPanelIconButton(
+            systemImage: systemImage,
+            isDisabled: disabled,
+            action: action
+        )
     }
 
     private var lengthStep: Double {

@@ -17,6 +17,7 @@ struct SettingsView: View {
     @State private var thicknessDisplay: Double = 1.5
 
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
+    @AppStorage(AppearanceSettings.panelColorKey) private var panelColorHex = AppearanceSettings.defaultPanelHex
 
     var body: some View {
         NavigationStack {
@@ -52,6 +53,12 @@ struct SettingsView: View {
                         title: "Canvas color",
                         selectedHex: $canvasColorHex,
                         presets: AppearanceSettings.canvasPresets
+                    )
+
+                    ColorSettingRow(
+                        title: "Panel color",
+                        selectedHex: $panelColorHex,
+                        presets: AppearanceSettings.panelPresets
                     )
                 }
 

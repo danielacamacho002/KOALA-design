@@ -48,6 +48,20 @@ struct CanvasOverlayView: View {
     @State private var snapHaptics = SnapHaptics()
     @State private var activeSnap: SnapCandidate?
 
+    // Marquee + group transform (move tool)
+    @State private var marqueeStart: CGPoint?
+    @State private var marqueeCurrent: CGPoint?
+    @State private var dragDecided = false
+    @State private var dragIsMarquee = false
+    @State private var groupMoveStrokeOrigins: [UUID: VectorStroke] = [:]
+    @State private var groupMoveTextOrigins: [UUID: CGPoint] = [:]
+    @State private var groupRotateStrokeOrigins: [UUID: VectorStroke] = [:]
+    @State private var groupRotateTextOrigins: [UUID: TextElement] = [:]
+    @State private var groupRotatePivot: CGPoint = .zero
+    @State private var groupRotatePreviousAngle: CGFloat = 0
+    @State private var groupRotateAccumulated: CGFloat = 0
+    @State private var groupRotateActive = false
+
     private let handleSize: CGFloat = 22
     private let centerHandleSize: CGFloat = 16
     private let coordinateSpaceName = "editor"
@@ -64,11 +78,7 @@ struct CanvasOverlayView: View {
                 if commandSession.isActive {
                     commandPreviewHandles
                 } else if document.activeCategory == .move {
-                    if document.selectedTextID != nil {
-                        textMoveOverlay
-                    } else {
-                        strokeMoveOverlay
-                    }
+                    moveToolOverlay
                 } else if document.activeCategory == .scale {
                     if document.selectedTextID != nil {
                         textScaleOverlay
@@ -312,6 +322,357 @@ struct CanvasOverlayView: View {
         return resolveMoveSnap(reference: rawPoint, excluding: strokeID, referenceStarts: references)
     }
 
+    // MARK: - Move tool routing
+
+    @ViewBuilder
+    private var moveToolOverlay: some View {
+        ZStack {
+            if document.usesGroupTransform {
+                multiSelectionMoveOverlay
+            } else if document.selectedTextID != nil {
+                textMoveOverlay
+            } else if document.selectedStrokeID != nil {
+                strokeMoveOverlay
+            } else {
+                emptyMoveOverlay
+            }
+
+            if let rect = marqueeViewRect {
+                marqueeBox(rect)
+            }
+        }
+    }
+
+    /// Background layer shown when nothing is selected: a drag draws a marquee and
+    /// a tap selects (or toggles) the element underneath.
+    @ViewBuilder
+    private var emptyMoveOverlay: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .gesture(
+                backgroundDrag(
+                    canMove: { _ in false },
+                    onMoveBegan: {},
+                    onMoveChanged: { _ in },
+                    onMoveEnded: {}
+                )
+            )
+            .simultaneousGesture(
+                SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
+                    .onEnded { value in handleMoveTap(at: value.location) }
+            )
+    }
+
+    // MARK: - Multi-selection group transform
+
+    @ViewBuilder
+    private var multiSelectionMoveOverlay: some View {
+        if let bbox = document.selectionBoundingBox() {
+            let center = CGPoint(x: bbox.midX, y: bbox.midY)
+            let viewCorners = [
+                CGPoint(x: bbox.minX, y: bbox.minY),
+                CGPoint(x: bbox.maxX, y: bbox.minY),
+                CGPoint(x: bbox.maxX, y: bbox.maxY),
+                CGPoint(x: bbox.minX, y: bbox.maxY)
+            ].map { document.viewport.documentToView($0) }
+
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(
+                    backgroundDrag(
+                        canMove: { point in
+                            document.selectionContains(point: point, threshold: moveHitThreshold)
+                                || (document.selectedGroup != nil
+                                    && document.selectionBoundingBox()?.contains(point) == true)
+                        },
+                        onMoveBegan: { beginGroupMove() },
+                        onMoveChanged: { value in
+                            applyGroupMove(delta: documentDelta(from: value.translation))
+                        },
+                        onMoveEnded: { finishGroupMove() }
+                    )
+                )
+                .simultaneousGesture(
+                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
+                        .onEnded { value in handleMoveTap(at: value.location) }
+                )
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                .allowsHitTesting(false)
+
+            pivotMarker(at: center)
+            groupRotationHandle(pivot: center)
+        }
+    }
+
+    @ViewBuilder
+    private func groupRotationHandle(pivot: CGPoint) -> some View {
+        let viewPivot = document.viewport.documentToView(pivot)
+        let handlePosition = CGPoint(
+            x: viewPivot.x,
+            y: viewPivot.y - document.viewport.documentToView(distance: rotateHandleOffset)
+        )
+
+        Path { path in
+            path.move(to: viewPivot)
+            path.addLine(to: handlePosition)
+        }
+        .stroke(Color.orange.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+        .allowsHitTesting(false)
+
+        Image(systemName: "arrow.triangle.2.circlepath")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: handleSize, height: handleSize)
+            .background(Circle().fill(Color.orange))
+            .position(handlePosition)
+            .highPriorityGesture(groupRotateGesture(pivot: pivot))
+    }
+
+    private func beginGroupMove() {
+        // Guarantee every group member is included before capturing origins so
+        // a partial selection never translates one child independently.
+        document.expandSelectionToGroupsIfNeeded()
+        groupMoveStrokeOrigins = [:]
+        for id in document.selectedStrokeIDs {
+            if let stroke = document.stroke(with: id) {
+                groupMoveStrokeOrigins[id] = stroke
+            }
+        }
+        groupMoveTextOrigins = [:]
+        for id in document.selectedTextIDs {
+            if let position = document.textElement(with: id)?.position {
+                groupMoveTextOrigins[id] = position
+            }
+        }
+        document.beginInteractiveEdit()
+    }
+
+    private func applyGroupMove(delta: CGPoint) {
+        // Translate each child independently from its captured origin. Overlapping
+        // anchors may coincide visually but are never welded or merged.
+        for (_, origin) in groupMoveStrokeOrigins {
+            var updated = origin
+            updated.points = origin.points.map {
+                CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
+            }
+            updated.cutoutPoints = origin.cutoutPoints.map { contour in
+                contour.map { CGPoint(x: $0.x + delta.x, y: $0.y + delta.y) }
+            }
+            if let base = origin.rotationBasePoints {
+                updated.rotationBasePoints = base.map {
+                    CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
+                }
+            }
+            if let center = origin.rotationBaseCenter {
+                updated.rotationBaseCenter = CGPoint(x: center.x + delta.x, y: center.y + delta.y)
+            }
+            document.updateStroke(updated, recordUndo: false)
+        }
+        for (id, origin) in groupMoveTextOrigins {
+            document.setTextPosition(
+                id: id,
+                position: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y),
+                recordUndo: false
+            )
+        }
+        onChanged()
+    }
+
+    private func finishGroupMove() {
+        groupMoveStrokeOrigins = [:]
+        groupMoveTextOrigins = [:]
+        // Skip intersection-anchor reconciliation so overlapping vertices inside a
+        // group stay independent (no weld/merge of coordinate arrays).
+        onChanged()
+    }
+
+    private func groupRotateGesture(pivot: CGPoint) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                let currentDoc = document.viewport.viewToDocument(value.location)
+                if !groupRotateActive {
+                    groupRotateActive = true
+                    document.expandSelectionToGroupsIfNeeded()
+                    groupRotatePivot = pivot
+                    groupRotatePreviousAngle = atan2(currentDoc.y - pivot.y, currentDoc.x - pivot.x)
+                    groupRotateAccumulated = 0
+                    groupRotateStrokeOrigins = [:]
+                    for id in document.selectedStrokeIDs {
+                        if let stroke = document.stroke(with: id) {
+                            groupRotateStrokeOrigins[id] = stroke
+                        }
+                    }
+                    groupRotateTextOrigins = [:]
+                    for id in document.selectedTextIDs {
+                        if let text = document.textElement(with: id) {
+                            groupRotateTextOrigins[id] = text
+                        }
+                    }
+                    document.beginInteractiveEdit()
+                }
+                let angle = atan2(currentDoc.y - groupRotatePivot.y, currentDoc.x - groupRotatePivot.x)
+                let rawStep = angle - groupRotatePreviousAngle
+                let step = atan2(sin(rawStep), cos(rawStep))
+                groupRotateAccumulated += step
+                groupRotatePreviousAngle = angle
+
+                for (_, origin) in groupRotateStrokeOrigins {
+                    let rotated = ShapeGeometry.rotatedStroke(
+                        origin,
+                        around: groupRotatePivot,
+                        by: groupRotateAccumulated
+                    )
+                    document.updateStroke(rotated, recordUndo: false)
+                }
+                for (_, origin) in groupRotateTextOrigins {
+                    var updated = origin
+                    let rotatedCenter = ShapeGeometry.rotatePoints(
+                        [origin.center],
+                        around: groupRotatePivot,
+                        by: groupRotateAccumulated
+                    ).first ?? origin.center
+                    updated.rotation = origin.rotation + groupRotateAccumulated
+                    let size = updated.textSize()
+                    updated.position = CGPoint(
+                        x: rotatedCenter.x - size.width / 2,
+                        y: rotatedCenter.y - size.height / 2
+                    )
+                    document.updateTextElement(updated, recordUndo: false)
+                }
+                onChanged()
+            }
+            .onEnded { _ in
+                groupRotateActive = false
+                groupRotateStrokeOrigins = [:]
+                groupRotateTextOrigins = [:]
+                groupRotatePreviousAngle = 0
+                groupRotateAccumulated = 0
+                // Skip intersection-anchor reconciliation so overlapping vertices
+                // inside a group remain independent after rotation.
+                onChanged()
+            }
+    }
+
+    // MARK: - Marquee
+
+    private var moveHitThreshold: CGFloat {
+        document.viewport.viewToDocument(distance: 12)
+    }
+
+    private var marqueeViewRect: CGRect? {
+        guard let start = marqueeStart, let current = marqueeCurrent else { return nil }
+        return CGRect(
+            x: min(start.x, current.x),
+            y: min(start.y, current.y),
+            width: abs(start.x - current.x),
+            height: abs(start.y - current.y)
+        )
+    }
+
+    private func marqueeDocRect(start: CGPoint, current: CGPoint) -> CGRect? {
+        let a = document.viewport.viewToDocument(start)
+        let b = document.viewport.viewToDocument(current)
+        let rect = CGRect(
+            x: min(a.x, b.x),
+            y: min(a.y, b.y),
+            width: abs(a.x - b.x),
+            height: abs(a.y - b.y)
+        )
+        guard rect.width > 0.5 || rect.height > 0.5 else { return nil }
+        return rect
+    }
+
+    @ViewBuilder
+    private func marqueeBox(_ rect: CGRect) -> some View {
+        Rectangle()
+            .fill(Color.accentColor.opacity(0.08))
+            .overlay(
+                Rectangle()
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+            )
+            .frame(width: rect.width, height: rect.height)
+            .position(x: rect.midX, y: rect.midY)
+            .allowsHitTesting(false)
+    }
+
+    /// Shared background drag that either moves the current selection (when the
+    /// drag starts over it) or draws a marquee (when it starts on empty canvas).
+    private func backgroundDrag(
+        canMove: @escaping (CGPoint) -> Bool,
+        onMoveBegan: @escaping () -> Void,
+        onMoveChanged: @escaping (DragGesture.Value) -> Void,
+        onMoveEnded: @escaping () -> Void
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if !dragDecided {
+                    dragDecided = true
+                    let startDoc = document.viewport.viewToDocument(value.startLocation)
+                    dragIsMarquee = !canMove(startDoc)
+                    if dragIsMarquee {
+                        marqueeStart = value.startLocation
+                    } else {
+                        onMoveBegan()
+                    }
+                }
+                if dragIsMarquee {
+                    marqueeCurrent = value.location
+                    onChanged()
+                } else {
+                    onMoveChanged(value)
+                }
+            }
+            .onEnded { value in
+                if dragIsMarquee {
+                    if let rect = marqueeDocRect(start: value.startLocation, current: value.location) {
+                        document.selectElements(in: rect)
+                    }
+                    marqueeStart = nil
+                    marqueeCurrent = nil
+                } else {
+                    onMoveEnded()
+                }
+                dragDecided = false
+                dragIsMarquee = false
+                onChanged()
+            }
+    }
+
+    /// Move-tool tap: toggles the element under the tap in/out of the selection,
+    /// or clears the selection when tapping empty canvas. A single already-selected
+    /// element stays selected so a simple tap never deselects it.
+    private func handleMoveTap(at viewPoint: CGPoint) {
+        let documentPoint = document.viewport.viewToDocument(viewPoint)
+        let threshold = document.viewport.viewToDocument(distance: 16)
+        switch document.elementHit(near: documentPoint, threshold: threshold) {
+        case .stroke(let id):
+            if let group = document.group(containingStroke: id) {
+                document.selectGroup(group)
+            } else if document.selectedStrokeIDs.contains(id) {
+                if document.selectionCount > 1 { document.toggleStrokeSelection(id) }
+            } else {
+                document.toggleStrokeSelection(id)
+            }
+        case .text(let id):
+            if let group = document.group(containingText: id) {
+                document.selectGroup(group)
+            } else if document.selectedTextIDs.contains(id) {
+                if document.selectionCount > 1 { document.toggleTextSelection(id) }
+            } else {
+                document.toggleTextSelection(id)
+            }
+        case .none:
+            if let group = document.group(at: documentPoint) {
+                document.selectGroup(group)
+            } else {
+                document.clearElementSelection()
+            }
+        }
+        onChanged()
+    }
+
     // MARK: - Move (multi-anchor)
 
     @ViewBuilder
@@ -328,23 +689,24 @@ struct CanvasOverlayView: View {
             Color.clear
                 .contentShape(Rectangle())
                 .gesture(
-                    DragGesture(minimumDistance: 2, coordinateSpace: .named(coordinateSpaceName))
-                        .onChanged { value in
+                    backgroundDrag(
+                        canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
+                        onMoveBegan: {},
+                        onMoveChanged: { value in
                             handleMoveDragChanged(
                                 strokeID: strokeID,
                                 stroke: stroke,
                                 value: value,
                                 anchorIndex: nil
                             )
-                        }
-                        .onEnded { _ in
-                            finishMoveDrag(strokeID: strokeID)
-                        }
+                        },
+                        onMoveEnded: { finishMoveDrag(strokeID: strokeID) }
+                    )
                 )
                 .simultaneousGesture(
                     SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
                         .onEnded { value in
-                            handleMoveBackgroundTap(at: value.location)
+                            handleMoveTap(at: value.location)
                         }
                 )
 
@@ -715,22 +1077,6 @@ struct CanvasOverlayView: View {
         activeSnap = nil
     }
 
-    /// A quick tap on the empty canvas (not on an anchor handle) clears every anchor
-    /// selection and re-runs stroke hit testing so nothing stays stuck selected.
-    private func handleMoveBackgroundTap(at viewPoint: CGPoint) {
-        handleElementBackgroundTap(at: viewPoint)
-    }
-
-    /// Reselects whatever element (text or stroke) sits under the tap, clearing
-    /// any anchor selection first.
-    private func handleElementBackgroundTap(at viewPoint: CGPoint) {
-        document.clearAnchorSelection()
-        let threshold = document.viewport.viewToDocument(distance: 16)
-        let documentPoint = document.viewport.viewToDocument(viewPoint)
-        document.selectElement(near: documentPoint, threshold: threshold)
-        onChanged()
-    }
-
     // MARK: - Trim
 
     @ViewBuilder
@@ -1089,11 +1435,33 @@ struct CanvasOverlayView: View {
 
             Color.clear
                 .contentShape(Rectangle())
-                .gesture(textMoveDrag(id: id))
+                .gesture(
+                    backgroundDrag(
+                        canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
+                        onMoveBegan: {
+                            textMoveOrigin = document.textElement(with: id)?.position
+                            document.beginInteractiveEdit()
+                        },
+                        onMoveChanged: { value in
+                            guard let origin = textMoveOrigin else { return }
+                            let delta = documentDelta(from: value.translation)
+                            document.setTextPosition(
+                                id: id,
+                                position: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y),
+                                recordUndo: false
+                            )
+                            onChanged()
+                        },
+                        onMoveEnded: {
+                            textMoveOrigin = nil
+                            onChanged()
+                        }
+                    )
+                )
                 .simultaneousGesture(
                     SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
                         .onEnded { value in
-                            handleElementBackgroundTap(at: value.location)
+                            handleMoveTap(at: value.location)
                         }
                 )
 

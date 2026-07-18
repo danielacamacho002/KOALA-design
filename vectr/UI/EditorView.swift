@@ -164,7 +164,11 @@ struct EditorView: View {
                     canvasBackgroundColor: Color(hex: canvasColorHex),
                     onCanvasTap: handleCanvasTap,
                     onStrokeSelected: { stroke in
-                        store.document.selectedStrokeID = stroke?.id
+                        if let stroke {
+                            store.document.selectStrokeConsideringGroups(stroke.id)
+                        } else {
+                            store.document.clearElementSelection()
+                        }
                         store.markDirty()
                     },
                     onDragDrawBegan: { start in
@@ -246,25 +250,23 @@ struct EditorView: View {
                             refreshCanvas()
                         }
                     )
-                    .padding(.leading, 10)
-                    .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .move,
-                          store.document.selectedStrokeID != nil || store.document.selectedTextID != nil {
+                          !store.document.selectionIsEmpty {
                     MoveRotatePanelView(document: store.document) {
                         refreshCanvas()
                     }
-                    .padding(.leading, 10)
-                    .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .addAnchor {
                     AddAnchorPanelView(
                         document: store.document,
                         onApply: { refreshCanvas() },
+                        onCancel: {
+                            store.document.clearToolSelections()
+                            refreshCanvas()
+                        },
                         onStatus: { statusMessage = $0 }
                     )
-                    .padding(.leading, 10)
-                    .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .pattern {
                     PatternPanelView(
@@ -276,10 +278,13 @@ struct EditorView: View {
                             patternPreviewStrokes = []
                             refreshCanvas()
                         },
+                        onCancel: {
+                            patternPreviewStrokes = []
+                            store.document.clearToolSelections()
+                            refreshCanvas()
+                        },
                         onStatus: { statusMessage = $0 }
                     )
-                    .padding(.leading, 10)
-                    .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
@@ -291,8 +296,6 @@ struct EditorView: View {
                         onChanged: { refreshCanvas() },
                         onDone: { endTextEditingIfNeeded() }
                     )
-                    .padding(.leading, 10)
-                    .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
@@ -313,6 +316,22 @@ struct EditorView: View {
                         },
                         onVariantChanged: { startDrawingSessionIfNeeded() }
                     )
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if store.document.activeCategory == .type && editingTextID == nil {
+                    FontPickerView(document: store.document, library: FontLibrary.shared) {
+                        refreshCanvas()
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if store.document.activeCategory == .scale {
+                    ScaleToolPanelView(document: store.document) {
+                        refreshCanvas()
+                    }
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
@@ -382,10 +401,6 @@ struct EditorView: View {
                 onShare: { showExportSheet = true },
                 onSave: { saveDocument() },
                 onToolSelected: handleToolSelected,
-                onVariantSelected: {
-                    showCommandPanel = true
-                    startDrawingSessionIfNeeded()
-                },
                 onSwitchToPrintLayout: { switchToPrintLayoutMode() }
             )
         }
@@ -830,12 +845,24 @@ struct EditorView: View {
             commandSession.cancel()
             if category == .move {
                 store.document.clearToolSelections()
-                if store.document.selectedTextID != nil {
+                // Restore the last stroke selection so its edit handles reappear
+                // when returning to the move tool from another tool. Expand to
+                // the parent group when that stroke is a group member.
+                if store.document.selectionIsEmpty,
+                   let lastID = store.document.lastSelectedStrokeID,
+                   store.document.stroke(with: lastID) != nil {
+                    store.document.selectStrokeConsideringGroups(lastID)
+                } else {
+                    store.document.expandSelectionToGroupsIfNeeded()
+                }
+                if store.document.usesGroupTransform {
+                    statusMessage = "Drag to move the group, or use the handle to rotate; tap to add or remove"
+                } else if store.document.selectedTextID != nil {
                     statusMessage = "Drag to move the text, or use the handle to rotate"
                 } else if store.document.selectedStrokeID == nil {
-                    statusMessage = "Select a shape or text to move or rotate"
+                    statusMessage = "Tap a shape to select; drag empty space to marquee-select"
                 } else {
-                    statusMessage = "Tap an anchor to select it; double-tap to multi-select; drag to move"
+                    statusMessage = "Drag anchors or curve handles to edit; drag empty space to marquee-select"
                 }
             }
         default:
