@@ -41,6 +41,13 @@ struct CanvasOverlayView: View {
     @State private var textRotatePreviousAngle: CGFloat = 0
     @State private var textRotateAccumulated: CGFloat = 0
 
+    // Object snapping (endpoints/midpoints) for the Move tool. Shares the same decoupled
+    // engine as the drawing canvas; the lock session + haptics + indicator are per-overlay.
+    private let snapEngine = PathSnapEngine.makeDefault()
+    @State private var snapSession = SnapInteractionSession()
+    @State private var snapHaptics = SnapHaptics()
+    @State private var activeSnap: SnapCandidate?
+
     // Marquee + group transform (move tool)
     @State private var marqueeStart: CGPoint?
     @State private var marqueeCurrent: CGPoint?
@@ -172,6 +179,10 @@ struct CanvasOverlayView: View {
                     .highPriorityGesture(strokeNodeDrag(strokeID: strokeID, index: index))
             }
             centerHandle(strokeID: strokeID, stroke: stroke)
+
+            if let activeSnap {
+                snapMarker(activeSnap)
+            }
         }
     }
 
@@ -279,13 +290,14 @@ struct CanvasOverlayView: View {
                     document.beginInteractiveEdit()
                 }
                 guard var stroke = document.stroke(with: strokeID) else { return }
-                let docPoint = document.viewport.viewToDocument(value.location)
+                let rawPoint = document.viewport.viewToDocument(value.location)
                 if stroke.shapeType == .circle {
-                    stroke.points = ShapeGeometry.updateCircleHandle(at: index, to: docPoint, stroke: stroke)
+                    // Radius handles move radially; absolute object snapping doesn't apply.
+                    stroke.points = ShapeGeometry.updateCircleHandle(at: index, to: rawPoint, stroke: stroke)
                 } else if stroke.shapeType == .ellipse {
-                    stroke.points = ShapeGeometry.updateEllipseHandle(at: index, to: docPoint, stroke: stroke)
+                    stroke.points = ShapeGeometry.updateEllipseHandle(at: index, to: rawPoint, stroke: stroke)
                 } else {
-                    stroke.points[index] = docPoint
+                    stroke.points[index] = resolveNodeSnap(rawPoint: rawPoint, stroke: stroke, index: index, strokeID: strokeID)
                 }
                 document.updateStroke(stroke, recordUndo: false)
                 onChanged()
@@ -293,10 +305,21 @@ struct CanvasOverlayView: View {
             .onEnded { _ in
                 let didEdit = !nodeDragOriginPoints.isEmpty
                 nodeDragOriginPoints = []
+                clearMoveSnap()
                 guard didEdit else { return }
                 document.reconcileIntersectionAnchors(around: [strokeID])
                 onChanged()
             }
+    }
+
+    /// Snaps a node-edit vertex to nearby object geometry (endpoints/center/quadrant/intersection),
+    /// and for straight segmented paths lets it go tangent to circles/arcs using the vertex's
+    /// stationary neighbors as the tangent anchors. Returns the raw point when nothing snaps.
+    private func resolveNodeSnap(rawPoint: CGPoint, stroke: VectorStroke, index: Int, strokeID: UUID) -> CGPoint {
+        let references: [CGPoint] = (stroke.shapeType == .polyline || stroke.shapeType == .construction)
+            ? neighborReferenceStarts(movingAnchor: index, points: nodeDragOriginPoints, isClosed: stroke.isClosed)
+            : []
+        return resolveMoveSnap(reference: rawPoint, excluding: strokeID, referenceStarts: references)
     }
 
     // MARK: - Move tool routing
@@ -728,7 +751,53 @@ struct CanvasOverlayView: View {
                 stroke: stroke,
                 centerOverride: rotateDragOriginStroke != nil ? rotateDragPivot : nil
             )
+
+            if let activeSnap {
+                snapMarker(activeSnap)
+            }
         }
+    }
+
+    /// High-contrast snap indicator: a square for endpoints, a triangle for midpoints,
+    /// drawn at the locked coordinate. Mirrors the drawing-canvas marker styling.
+    @ViewBuilder
+    private func snapMarker(_ candidate: SnapCandidate) -> some View {
+        let size: CGFloat = 13
+        let position = document.viewport.documentToView(candidate.point)
+        Group {
+            switch candidate.kind {
+            case .endpoint:
+                Rectangle()
+                    .fill(Color.pink.opacity(0.95))
+                    .overlay(Rectangle().stroke(Color.white, lineWidth: 1.5))
+                    .frame(width: size, height: size)
+            case .midpoint:
+                SnapTriangle()
+                    .fill(Color.pink.opacity(0.95))
+                    .overlay(SnapTriangle().stroke(Color.white, lineWidth: 1.5))
+                    .frame(width: size, height: size)
+            case .intersection:
+                SnapCross()
+                    .fill(Color.pink.opacity(0.95))
+                    .overlay(SnapCross().stroke(Color.white, lineWidth: 1.5))
+                    .frame(width: size, height: size)
+            case .center:
+                SnapConcentric()
+                    .fill(Color.pink.opacity(0.95), style: FillStyle(eoFill: true))
+                    .frame(width: size, height: size)
+            case .quadrant:
+                SnapDiamond()
+                    .fill(Color.pink.opacity(0.95))
+                    .overlay(SnapDiamond().stroke(Color.white, lineWidth: 1.5))
+                    .frame(width: size, height: size)
+            case .tangent:
+                SnapTangent()
+                    .fill(Color.pink.opacity(0.95))
+                    .frame(width: size, height: size)
+            }
+        }
+        .position(position)
+        .allowsHitTesting(false)
     }
 
     @ViewBuilder
@@ -855,9 +924,17 @@ struct CanvasOverlayView: View {
             if let anchorIndex, document.selectedAnchorIndices.isEmpty {
                 document.selectedAnchorIndices = [anchorIndex]
             }
+            snapHaptics.prepare()
             document.beginInteractiveEdit()
         }
-        let delta = documentDelta(from: value.translation)
+        let rawDelta = documentDelta(from: value.translation)
+        let delta = snapAdjustedDelta(
+            strokeID: strokeID,
+            stroke: stroke,
+            rawDelta: rawDelta,
+            anchorIndex: anchorIndex,
+            cursorViewPoint: value.location
+        )
         applyMove(strokeID: strokeID, stroke: stroke, delta: delta)
         onChanged()
     }
@@ -865,9 +942,139 @@ struct CanvasOverlayView: View {
     private func finishMoveDrag(strokeID: UUID) {
         let didEdit = !moveDragOriginPoints.isEmpty
         moveDragOriginPoints = []
+        clearMoveSnap()
         guard didEdit else { return }
         document.reconcileIntersectionAnchors(around: [strokeID])
         onChanged()
+    }
+
+    // MARK: - Move-tool object snapping
+
+    /// Corrects a raw move delta so the moving reference point magnetically locks onto a
+    /// nearby endpoint/midpoint of another stroke. Returns the delta unchanged when snapping
+    /// is disabled, unsupported, or nothing is in range.
+    ///
+    /// Reference point selection:
+    /// - dragging a single anchor handle → that anchor,
+    /// - dragging with a multi-anchor selection → the first selected anchor,
+    /// - whole-object background drag → the pencil/cursor position.
+    private func snapAdjustedDelta(
+        strokeID: UUID,
+        stroke: VectorStroke,
+        rawDelta: CGPoint,
+        anchorIndex: Int?,
+        cursorViewPoint: CGPoint
+    ) -> CGPoint {
+        guard !document.enabledSnapKinds.isEmpty, moveSnapSupported(stroke, anchorIndex: anchorIndex) else {
+            clearMoveSnap()
+            return rawDelta
+        }
+
+        let raw: CGPoint
+        if let anchorIndex, moveDragOriginPoints.indices.contains(anchorIndex) {
+            let origin = moveDragOriginPoints[anchorIndex]
+            raw = CGPoint(x: origin.x + rawDelta.x, y: origin.y + rawDelta.y)
+        } else if let first = document.selectedAnchorIndices.sorted().first,
+                  moveDragOriginPoints.indices.contains(first) {
+            let origin = moveDragOriginPoints[first]
+            raw = CGPoint(x: origin.x + rawDelta.x, y: origin.y + rawDelta.y)
+        } else {
+            raw = document.viewport.viewToDocument(cursorViewPoint)
+        }
+
+        let snapped = resolveMoveSnap(
+            reference: raw,
+            excluding: strokeID,
+            referenceStarts: tangentReferenceStarts(stroke: stroke, movingAnchor: anchorIndex)
+        )
+        return CGPoint(x: rawDelta.x + (snapped.x - raw.x), y: rawDelta.y + (snapped.y - raw.y))
+    }
+
+    /// Fixed neighbor anchor(s) of the vertex being dragged, used as tangent anchors. A dragged
+    /// endpoint has one stationary neighbor; a dragged middle anchor has two, so its adjacent
+    /// segments can each go tangent. Only straight segmented paths qualify, and only neighbors
+    /// that are themselves stationary (not part of the same multi-anchor move) are included.
+    private func tangentReferenceStarts(stroke: VectorStroke, movingAnchor: Int?) -> [CGPoint] {
+        guard let movingAnchor,
+              stroke.points.count >= 2,
+              stroke.shapeType == .polyline || stroke.shapeType == .construction else { return [] }
+        return neighborReferenceStarts(
+            movingAnchor: movingAnchor,
+            points: moveDragOriginPoints,
+            isClosed: stroke.isClosed
+        )
+    }
+
+    /// Shared neighbor lookup: the stationary anchors adjacent to `movingAnchor` in `points`.
+    /// Skips neighbors also included in the current anchor selection so a tangent reference is
+    /// always a truly fixed point.
+    private func neighborReferenceStarts(
+        movingAnchor: Int,
+        points: [CGPoint],
+        isClosed: Bool
+    ) -> [CGPoint] {
+        guard points.indices.contains(movingAnchor) else { return [] }
+        let count = points.count
+        var neighborIndices: [Int] = []
+        if movingAnchor - 1 >= 0 {
+            neighborIndices.append(movingAnchor - 1)
+        } else if isClosed {
+            neighborIndices.append(count - 1)
+        }
+        if movingAnchor + 1 < count {
+            neighborIndices.append(movingAnchor + 1)
+        } else if isClosed {
+            neighborIndices.append(0)
+        }
+        return neighborIndices.compactMap { index in
+            guard index != movingAnchor,
+                  points.indices.contains(index),
+                  !document.selectedAnchorIndices.contains(index) else { return nil }
+            return points[index]
+        }
+    }
+
+    /// Radius handles on circles/ellipses move radially rather than translating, so absolute
+    /// point snapping would feel wrong there; skip them. Everything else (including whole-object
+    /// circle/ellipse moves) is supported.
+    private func moveSnapSupported(_ stroke: VectorStroke, anchorIndex: Int?) -> Bool {
+        if anchorIndex != nil, stroke.shapeType == .circle || stroke.shapeType == .ellipse {
+            return false
+        }
+        return true
+    }
+
+    /// Runs the shared snapping engine for a live move reference point, driving the indicator
+    /// and haptics. Returns the locked point (or the raw point when nothing snaps).
+    private func resolveMoveSnap(
+        reference raw: CGPoint,
+        excluding strokeID: UUID,
+        referenceStarts: [CGPoint] = []
+    ) -> CGPoint {
+        let scale = max(document.viewport.scale, 0.0001)
+        let update = snapSession.update(
+            rawPoint: raw,
+            engine: snapEngine,
+            strokes: document.strokes,
+            enabledKinds: document.enabledSnapKinds,
+            snapRadius: SnapTuning.snapRadiusPoints / scale,
+            breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
+            breakawayVelocity: SnapTuning.breakawayVelocityPoints / scale,
+            excludedStrokeID: strokeID,
+            referenceStarts: referenceStarts
+        )
+        if let candidate = update.candidate {
+            activeSnap = candidate
+            if update.didLock { snapHaptics.play() }
+            return candidate.point
+        }
+        activeSnap = nil
+        return raw
+    }
+
+    private func clearMoveSnap() {
+        snapSession.reset()
+        activeSnap = nil
     }
 
     // MARK: - Trim
@@ -1450,5 +1657,82 @@ struct CanvasOverlayView: View {
             x: document.viewport.viewToDocument(distance: translation.width),
             y: document.viewport.viewToDocument(distance: translation.height)
         )
+    }
+}
+
+/// Upward-pointing triangle used for the midpoint snap indicator.
+private struct SnapTriangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// Solid "X" used for the intersection snap indicator. Shares vertex math with the canvas
+/// indicator via `SnapMarkerGeometry` so both glyphs match.
+private struct SnapCross: Shape {
+    func path(in rect: CGRect) -> Path {
+        let size = min(rect.width, rect.height)
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        var path = Path()
+        for (index, vertex) in SnapMarkerGeometry.crossVertices(size: size).enumerated() {
+            let placed = CGPoint(x: center.x + vertex.x, y: center.y + vertex.y)
+            if index == 0 { path.move(to: placed) } else { path.addLine(to: placed) }
+        }
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// Concentric-circle glyph (⊙) for the center snap indicator: an outer ring plus a center dot.
+private struct SnapConcentric: Shape {
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let outer = min(rect.width, rect.height) / 2
+        var path = Path()
+        path.addEllipse(in: CGRect(x: center.x - outer, y: center.y - outer, width: outer * 2, height: outer * 2))
+        let mid = outer * 0.55
+        path.addEllipse(in: CGRect(x: center.x - mid, y: center.y - mid, width: mid * 2, height: mid * 2))
+        let dot = outer * 0.24
+        path.addEllipse(in: CGRect(x: center.x - dot, y: center.y - dot, width: dot * 2, height: dot * 2))
+        return path
+    }
+}
+
+/// Diamond glyph (⋄) for the quadrant snap indicator.
+private struct SnapDiamond: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.midY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// A disc with a line kissing its top edge, used for the tangent snap indicator.
+private struct SnapTangent: Shape {
+    func path(in rect: CGRect) -> Path {
+        let size = min(rect.width, rect.height)
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let discRadius = size * 0.36
+        let discCenterY = center.y + size * 0.12
+        var path = Path()
+        path.addEllipse(in: CGRect(
+            x: center.x - discRadius,
+            y: discCenterY - discRadius,
+            width: discRadius * 2,
+            height: discRadius * 2
+        ))
+        let barHeight: CGFloat = 2.4
+        let barY = discCenterY - discRadius - barHeight / 2
+        path.addRect(CGRect(x: center.x - size / 2, y: barY, width: size, height: barHeight))
+        return path
     }
 }

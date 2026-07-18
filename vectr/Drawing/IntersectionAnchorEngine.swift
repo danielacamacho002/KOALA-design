@@ -59,7 +59,7 @@ enum IntersectionAnchorEngine {
                         guard let intersection = segmentIntersection(a, b, c, d) else { continue }
 
                         let tFirst = parameter(on: a, b, point: intersection)
-                        if isInteriorParameter(tFirst) {
+                        if acceptsInsertedAnchors(firstStroke), isInteriorParameter(tFirst) {
                             recordHit(
                                 into: &hitsByStroke,
                                 strokeIndex: firstIndex,
@@ -70,7 +70,7 @@ enum IntersectionAnchorEngine {
                         }
 
                         let tSecond = parameter(on: c, d, point: intersection)
-                        if isInteriorParameter(tSecond) {
+                        if acceptsInsertedAnchors(secondStroke), isInteriorParameter(tSecond) {
                             recordHit(
                                 into: &hitsByStroke,
                                 strokeIndex: secondIndex,
@@ -154,6 +154,13 @@ enum IntersectionAnchorEngine {
             shapeType: normalizedShapeType,
             cutoutPoints: stroke.cutoutPoints
         )
+    }
+
+    /// Open lines/polylines are never subdivided — repositioning a line should never carve
+    /// extra anchors into it. Closed shapes (rectangles, closed polygons, circles, …) still
+    /// gain anchors where other geometry crosses them.
+    private static func acceptsInsertedAnchors(_ stroke: VectorStroke) -> Bool {
+        !(stroke.shapeType == .polyline && !stroke.isClosed)
     }
 
     private static func segmentCount(for stroke: VectorStroke, points: [CGPoint]) -> Int {

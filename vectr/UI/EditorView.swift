@@ -13,6 +13,7 @@ struct EditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var store = DocumentStore()
     @State private var commandSession = ShapeCommandSession()
+    private let objectSnapEngine = PathSnapEngine.makeDefault()
     @State private var showExportSheet = false
     @State private var showFileExporter = false
     @State private var exportFormat: ExportFormat = .vectr
@@ -335,7 +336,7 @@ struct EditorView: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                ConstraintSettingsView(document: store.document)
+                SnapToggleBar(document: store.document)
                     .padding(.leading, 16)
                     .padding(.bottom, 16)
             }
@@ -486,8 +487,25 @@ struct EditorView: View {
         store.document.snapEnabled && store.document.grid.snapEnabled
     }
 
-    private func snapDrawingInput(_ point: CGPoint) -> CGPoint {
-        snapDrawingPoint(
+    /// Object snap (endpoints/midpoints) resolved from the committed point, so tap-to-place and
+    /// drag-draw commits land exactly on real geometry. Object snap takes priority over the grid.
+    private func objectSnappedPoint(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint? {
+        let enabledKinds = store.document.enabledSnapKinds
+        guard !enabledKinds.isEmpty else { return nil }
+        let scale = max(store.document.viewport.scale, 0.0001)
+        return objectSnapEngine.closestCandidate(
+            to: point,
+            within: SnapTuning.snapRadiusPoints / scale,
+            strokes: store.document.strokes,
+            excludedStrokeID: commandSession.attachedStrokeID,
+            enabledKinds: enabledKinds,
+            referenceStarts: referenceStart.map { [$0] } ?? []
+        )?.point
+    }
+
+    private func snapDrawingInput(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint {
+        if let snapped = objectSnappedPoint(point, referenceStart: referenceStart) { return snapped }
+        return snapDrawingPoint(
             point,
             grid: store.document.grid,
             settings: store.document.settings,
@@ -496,7 +514,8 @@ struct EditorView: View {
     }
 
     private func snapDrawingControlInput(_ raw: CGPoint, projected: CGPoint) -> CGPoint {
-        snapDrawingControlPoint(
+        if let snapped = objectSnappedPoint(projected) { return snapped }
+        return snapDrawingControlPoint(
             raw: raw,
             projected: projected,
             grid: store.document.grid,
@@ -1034,7 +1053,10 @@ struct EditorView: View {
 
     private func commitDragDraw(start: CGPoint, end: CGPoint) {
         let snappedStart = snapDrawingInput(start)
-        let snappedEnd = snapDrawingInput(end)
+        // Re-snap the end with the start as the tangent reference so a live tangent lock is
+        // preserved on release; without it the on-rim contact point would be grid-snapped off
+        // the circle, making the finished line jump.
+        let snappedEnd = snapDrawingInput(end, referenceStart: snappedStart)
         guard hypot(snappedEnd.x - snappedStart.x, snappedEnd.y - snappedStart.y) > 0.001 else {
             startDrawingSessionIfNeeded()
             return

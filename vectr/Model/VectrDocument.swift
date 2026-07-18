@@ -49,6 +49,20 @@ final class VectrDocument {
     /// Guards the selection property observers against re-entrant updates.
     private var isSyncingSelection = false
     var snapEnabled: Bool = true
+    /// Master switch for the object snapping engine (endpoint/midpoint magnetic snapping).
+    /// Independent of grid snapping (`snapEnabled`); map this to a toolbar icon to toggle
+    /// the whole engine on/off. Kept as a plain document property so it is globally reachable
+    /// wherever the document is in scope.
+    var isSnappingEnabled: Bool = true
+    /// Per-type toggles for the object snapping engine, driven by the canvas snap bar.
+    var endpointSnapEnabled: Bool = true
+    var midpointSnapEnabled: Bool = true
+    var intersectionSnapEnabled: Bool = true
+    /// Curved-geometry snap toggles: circle/ellipse/arc center, quadrant apexes, and
+    /// tangent contact for an in-progress line.
+    var centerSnapEnabled: Bool = true
+    var quadrantSnapEnabled: Bool = true
+    var tangentSnapEnabled: Bool = true
     var dimensionsVisible: Bool = false
     // Document-space offsets of dragged dimension labels, keyed by "<strokeID>:<dimensionID>".
     var dimensionOffsets: [String: CGPoint] = [:]
@@ -57,7 +71,6 @@ final class VectrDocument {
     var selectedFilletCornerIndices: Set<Int> = []
     /// When set, move-tool rotation pivots around this anchor index; nil uses shape center.
     var moveRotationPivotAnchorIndex: Int?
-    var constraints: ConstraintSettings = ConstraintSettings()
     var activeCategory: ToolCategory = .line
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center

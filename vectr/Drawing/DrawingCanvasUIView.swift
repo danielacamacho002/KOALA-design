@@ -69,6 +69,13 @@ final class DrawingCanvasUIView: UIView {
     private var cachedReferenceImageData: Data?
     private var cachedReferenceImage: UIImage?
 
+    // Object snapping (endpoints/midpoints). Decoupled engine + per-gesture lock session +
+    // visual/haptic feedback. Toggle globally via `document.isSnappingEnabled`.
+    private let snapEngine = PathSnapEngine.makeDefault()
+    private let snapSession = SnapInteractionSession()
+    private let snapHaptics = SnapHaptics()
+    private let snapIndicator = SnapIndicatorRenderer()
+
     init(document: VectrDocument) {
         self.document = document
         super.init(frame: .zero)
@@ -384,10 +391,13 @@ final class DrawingCanvasUIView: UIView {
 
         let viewPoint = gesture.location(in: self)
         let rawPoint = document.viewport.viewToDocument(viewPoint)
-        let documentPoint = snappedDragPoint(rawPoint)
+        // Tangent snapping needs the anchored end of the in-progress line, which is
+        // `dragDrawStart` once the drag is underway (nil during `.began`).
+        let documentPoint = snappedDragPoint(rawPoint, referenceStart: dragDrawStart)
 
         switch gesture.state {
         case .began:
+            snapHaptics.prepare()
             let startPoint = dragStartPoint(for: documentPoint)
             dragDrawStart = startPoint
             dragDrawCurrent = startPoint
@@ -399,6 +409,7 @@ final class DrawingCanvasUIView: UIView {
             updateDragPreviewLayer()
             onDragDrawChanged?(start, documentPoint)
         case .ended, .cancelled:
+            finishSnapInteraction()
             guard let start = dragDrawStart else { return }
             let end = documentPoint
             if hypot(end.x - start.x, end.y - start.y) <= 0.001 {
@@ -423,7 +434,13 @@ final class DrawingCanvasUIView: UIView {
         }
     }
 
-    private func snappedDragPoint(_ point: CGPoint) -> CGPoint {
+    private func snappedDragPoint(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint {
+        // Object snapping (centers/quadrants/endpoints/midpoints/intersections/tangents) takes
+        // precedence over grid snapping so the pencil magnetically locks to real geometry when
+        // it is in range.
+        if let objectSnapped = resolveObjectSnap(rawPoint: point, referenceStart: referenceStart) {
+            return objectSnapped
+        }
         let enabled = document.snapEnabled && document.grid.snapEnabled
         return snapDrawingPoint(
             point,
@@ -431,6 +448,52 @@ final class DrawingCanvasUIView: UIView {
             settings: document.settings,
             enabled: enabled
         )
+    }
+
+    /// Runs the snapping engine for a live pencil position, updates the visual indicator and
+    /// haptics, and returns the locked point (or `nil` when nothing is snapped).
+    ///
+    /// Thresholds are defined in view points and converted to document units here so the feel
+    /// stays constant across zoom levels.
+    private func resolveObjectSnap(rawPoint: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint? {
+        let enabledKinds = document.enabledSnapKinds
+        guard !enabledKinds.isEmpty else {
+            finishSnapInteraction()
+            return nil
+        }
+
+        let scale = max(document.viewport.scale, 0.0001)
+        let update = snapSession.update(
+            rawPoint: rawPoint,
+            engine: snapEngine,
+            strokes: document.strokes,
+            enabledKinds: enabledKinds,
+            snapRadius: SnapTuning.snapRadiusPoints / scale,
+            breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
+            breakawayVelocity: SnapTuning.breakawayVelocityPoints / scale,
+            referenceStarts: referenceStart.map { [$0] } ?? []
+        )
+
+        if let candidate = update.candidate {
+            snapIndicator.update(
+                kind: candidate.kind,
+                viewPoint: document.viewport.documentToView(candidate.point),
+                in: layer
+            )
+            if update.didLock {
+                snapHaptics.play()
+            }
+            return candidate.point
+        }
+
+        snapIndicator.update(kind: nil, viewPoint: nil, in: layer)
+        return nil
+    }
+
+    /// Clears snap lock state and hides the indicator. Call when a snap-capable gesture ends.
+    private func finishSnapInteraction() {
+        snapSession.reset()
+        snapIndicator.clear()
     }
 
     private func dragStartPoint(for point: CGPoint) -> CGPoint {
@@ -465,10 +528,11 @@ final class DrawingCanvasUIView: UIView {
         }
 
         let rawPoint = document.viewport.viewToDocument(gesture.location(in: self))
-        let documentPoint = snappedDragPoint(rawPoint)
+        let documentPoint = snappedDragPoint(rawPoint, referenceStart: curveDragStart)
 
         switch gesture.state {
         case .began:
+            snapHaptics.prepare()
             curveDragStart = documentPoint
             curveDragCurrent = documentPoint
             updateCurvePreview()
@@ -481,10 +545,12 @@ final class DrawingCanvasUIView: UIView {
             }
             curveDragStart = nil
             curveDragCurrent = nil
+            finishSnapInteraction()
             updateCurvePreview()
         case .cancelled, .failed:
             curveDragStart = nil
             curveDragCurrent = nil
+            finishSnapInteraction()
             updateCurvePreview()
         default:
             break
