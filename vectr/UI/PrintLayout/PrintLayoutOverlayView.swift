@@ -44,7 +44,7 @@ struct PrintLayoutOverlayView: View {
                         )
                     }
                     if let strokeID = document.printSelectedStrokeID,
-                       let stroke = document.stroke(with: strokeID) {
+                       let stroke = document.printLayoutStroke(with: strokeID) {
                         strokeSelectionOverlay(strokeID: strokeID, stroke: stroke)
                     } else if let textID = document.printSelectedTextID,
                               let element = document.textElement(with: textID) {
@@ -195,7 +195,7 @@ struct PrintLayoutOverlayView: View {
     // MARK: - Axis lock + snapping
 
     private func boundsForElement(_ id: UUID) -> CGRect {
-        if let stroke = document.stroke(with: id) {
+        if let stroke = document.printLayoutStroke(with: id) {
             let transformed = document.transformedPrintStroke(stroke)
             return PrintLayoutCoordinateSpace.boundingRect(
                 for: ShapeGeometry.renderPoints(for: transformed)

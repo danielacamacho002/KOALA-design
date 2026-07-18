@@ -48,7 +48,7 @@ enum TiledPDFExporter {
         in context: CGContext,
         viewport: ViewportTransform
     ) {
-        for stroke in document.visibleStrokes() {
+        for stroke in document.printLayoutStrokes() {
             let transform = document.effectivePrintTransform(for: stroke.id)
             let path = StrokeRenderer.path(
                 for: stroke,

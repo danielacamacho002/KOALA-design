@@ -92,6 +92,10 @@ struct PrintLayoutView: View {
             onChanged()
         case .printBorder:
             break
+        case .cut:
+            let threshold = document.viewport.viewToDocument(distance: 20)
+            _ = document.cutAlongNearestPrintBorder(near: documentPoint, threshold: threshold)
+            onChanged()
         }
     }
 }

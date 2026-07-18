@@ -1227,7 +1227,9 @@ struct EditorView: View {
             referenceImageData: store.document.referenceImageData,
             referenceImageFrame: store.document.referenceImageFrame,
             printLayout: store.document.printLayout,
-            printStrokeTransforms: store.document.printStrokeTransforms
+            printStrokeTransforms: store.document.printStrokeTransforms,
+            printPieces: store.document.printPieces,
+            printHiddenStrokeIDs: store.document.printHiddenStrokeIDs
         )
     }
 

@@ -126,13 +126,14 @@ final class PrintLayoutCanvasUIView: UIView {
     }
 
     private func reloadStrokes() {
-        let visibleIDs = Set(document.visibleStrokes().map(\.id))
+        let printStrokes = document.printLayoutStrokes()
+        let visibleIDs = Set(printStrokes.map(\.id))
         for (id, layer) in strokeLayers where !visibleIDs.contains(id) {
             layer.removeFromSuperlayer()
             strokeLayers.removeValue(forKey: id)
         }
 
-        for stroke in document.visibleStrokes() {
+        for stroke in printStrokes {
             let transform = document.effectivePrintTransform(for: stroke.id)
             let transformed = document.transformedPrintStroke(stroke)
             let opacity = PrintBorderRenderer.strokeOpacity(
