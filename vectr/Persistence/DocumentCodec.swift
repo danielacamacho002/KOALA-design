@@ -13,6 +13,7 @@ enum DocumentCodec {
             layers: document.layers,
             strokes: document.strokes,
             textElements: document.textElements,
+            groups: document.groups,
             activeLayerID: document.activeLayerID,
             viewport: document.viewport,
             grid: document.grid,
