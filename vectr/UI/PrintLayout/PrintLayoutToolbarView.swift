@@ -53,6 +53,8 @@ struct PrintLayoutToolbarView: View {
 
             Spacer(minLength: 8)
 
+            marginGuideMenu
+
             exportMenu
 
             ToolPaletteSeparator()
@@ -186,6 +188,39 @@ struct PrintLayoutToolbarView: View {
         default:
             return document.printLayout.activeTool == tool
         }
+    }
+
+    private var marginGuideMenu: some View {
+        let current = document.printLayout.printMarginGuide
+        return Menu {
+            ForEach(PrintMarginGuideStyle.allCases) { style in
+                Button {
+                    var settings = document.printLayout
+                    settings.printMarginGuide = style
+                    document.updatePrintLayout(settings, recordUndo: false)
+                    onSettingsChanged()
+                } label: {
+                    if style == current {
+                        Label(style.label, systemImage: "checkmark")
+                    } else {
+                        Text(style.label)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "rectangle.dashed")
+                Text(current == .off ? "Margins" : current.label)
+                    .font(.caption.weight(.medium))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                (current == .off ? Color.primary.opacity(0.06) : Color.accentColor.opacity(0.15)),
+                in: RoundedRectangle(cornerRadius: 8)
+            )
+        }
+        .padding(.trailing, 8)
     }
 
     private var exportMenu: some View {

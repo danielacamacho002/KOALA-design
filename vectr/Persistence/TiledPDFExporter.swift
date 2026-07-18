@@ -36,6 +36,7 @@ enum TiledPDFExporter {
                 drawPrintText(document: document, in: cgContext)
 
                 cgContext.resetClip()
+                drawMarginGuide(settings.printMarginGuide, in: printable, context: cgContext)
                 drawPageNumber(sheet.id + 1, in: printable, context: cgContext)
 
                 cgContext.restoreGState()
@@ -88,6 +89,21 @@ enum TiledPDFExporter {
             context.setFillColor(element.cgColor)
             context.fillPath()
         }
+    }
+
+    /// Draws the printable-area outline as a trim/alignment guide when enabled,
+    /// so the margin lines seen on screen also appear on the printed page.
+    private static func drawMarginGuide(_ style: PrintMarginGuideStyle, in printable: CGRect, context: CGContext) {
+        guard style != .off else { return }
+        context.saveGState()
+        context.setStrokeColor(UIColor.black.cgColor)
+        context.setLineWidth(0.75)
+        if style == .dashed {
+            context.setLineDash(phase: 0, lengths: [6, 4])
+        }
+        context.stroke(printable)
+        context.setLineDash(phase: 0, lengths: [])
+        context.restoreGState()
     }
 
     /// Draws the page number in the bottom-right corner of the printable area so

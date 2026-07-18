@@ -58,6 +58,27 @@ enum PrintBorderRenderer {
         return layer
     }
 
+    // MARK: - Printable margin guide (drawn into the print/export output)
+
+    /// Screen preview of the margin guide that will be printed. Rendered in a
+    /// neutral ink color (distinct from the orange on-screen print border) so it
+    /// reads as "this will appear on paper".
+    static func makeMarginGuideLayer(
+        style: PrintMarginGuideStyle,
+        settings: PrintLayoutSettings,
+        viewport: ViewportTransform
+    ) -> CAShapeLayer? {
+        guard style != .off else { return nil }
+        let layer = CAShapeLayer()
+        layer.path = combinedBorderPath(settings: settings, viewport: viewport)
+        layer.strokeColor = UIColor.label.cgColor
+        layer.fillColor = UIColor.clear.cgColor
+        layer.lineWidth = 1
+        layer.lineDashPattern = style == .dashed ? [6, 4] : nil
+        layer.contentsScale = UIScreen.main.scale
+        return layer
+    }
+
     // MARK: - Non-printable shading (per-page margin)
 
     /// Shades the non-printable margin inside each page (the ring between the

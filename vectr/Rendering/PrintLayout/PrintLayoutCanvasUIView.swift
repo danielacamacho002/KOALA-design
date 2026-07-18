@@ -22,6 +22,7 @@ final class PrintLayoutCanvasUIView: UIView {
     private var strokeLayers: [UUID: CAShapeLayer] = [:]
     private var textLayers: [UUID: CAShapeLayer] = [:]
     private var dimOverlayLayer: CAShapeLayer?
+    private var marginGuideLayer: CAShapeLayer?
 
     private var pinchStartScale: CGFloat = 1
     private var pinchAnchor: CGPoint = .zero
@@ -60,6 +61,7 @@ final class PrintLayoutCanvasUIView: UIView {
         reloadStrokes()
         reloadTextElements()
         reloadDimOverlay()
+        reloadMarginGuide()
         reloadBorders()
     }
 
@@ -68,6 +70,7 @@ final class PrintLayoutCanvasUIView: UIView {
         reloadStrokes()
         reloadTextElements()
         reloadDimOverlay()
+        reloadMarginGuide()
         reloadBorders()
     }
 
@@ -227,6 +230,18 @@ final class PrintLayoutCanvasUIView: UIView {
         )
         overlayLayer.addSublayer(layer)
         borderLayer = layer
+    }
+
+    private func reloadMarginGuide() {
+        marginGuideLayer?.removeFromSuperlayer()
+        marginGuideLayer = nil
+        guard let layer = PrintBorderRenderer.makeMarginGuideLayer(
+            style: document.printLayout.printMarginGuide,
+            settings: document.printLayout,
+            viewport: document.viewport
+        ) else { return }
+        overlayLayer.addSublayer(layer)
+        marginGuideLayer = layer
     }
 
     private func reloadDimOverlay() {

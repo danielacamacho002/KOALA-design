@@ -6,6 +6,24 @@
 import CoreGraphics
 import Foundation
 
+/// Whether (and how) the printable-area margin outline is drawn into the
+/// exported/printed output. `.off` keeps it a screen-only guide.
+enum PrintMarginGuideStyle: String, Codable, CaseIterable, Identifiable {
+    case off
+    case dashed
+    case solid
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .off: return "None"
+        case .dashed: return "Dashed"
+        case .solid: return "Solid"
+        }
+    }
+}
+
 struct PrintLayoutSettings: Codable, Equatable {
     var paperSize: PaperSize = .letter
     var columns: Int = 3
@@ -15,6 +33,9 @@ struct PrintLayoutSettings: Codable, Equatable {
     /// Unprintable margin per sheet edge in document points (~0.25 in default).
     var printableMargin: CGFloat = 18
     var isPrintBorderVisible: Bool = false
+    /// Draws the printable-area outline into the exported/printed pages as a
+    /// trim/alignment guide. Independent of the on-screen `isPrintBorderVisible`.
+    var printMarginGuide: PrintMarginGuideStyle = .off
     var activeTool: PrintLayoutTool = .select
     /// Shifts all artwork onto the paper grid (applied before per-stroke transforms).
     var contentOffset: CGPoint = .zero
@@ -26,6 +47,7 @@ struct PrintLayoutSettings: Codable, Equatable {
         case paperSize, columns, rows, overlap, printableMargin
         case isPrintBorderVisible
         case showPrintBorders
+        case printMarginGuide
         case activeTool, contentOffset
     }
 
@@ -43,6 +65,7 @@ struct PrintLayoutSettings: Codable, Equatable {
         } else {
             isPrintBorderVisible = try container.decodeIfPresent(Bool.self, forKey: .showPrintBorders) ?? false
         }
+        printMarginGuide = try container.decodeIfPresent(PrintMarginGuideStyle.self, forKey: .printMarginGuide) ?? .off
         // Tolerate tool cases that no longer exist (e.g. a removed registration
         // mark tool) by falling back to `.select` instead of failing to decode.
         activeTool = (try? container.decode(PrintLayoutTool.self, forKey: .activeTool)) ?? .select
@@ -57,6 +80,7 @@ struct PrintLayoutSettings: Codable, Equatable {
         try container.encode(overlap, forKey: .overlap)
         try container.encode(printableMargin, forKey: .printableMargin)
         try container.encode(isPrintBorderVisible, forKey: .isPrintBorderVisible)
+        try container.encode(printMarginGuide, forKey: .printMarginGuide)
         try container.encode(activeTool, forKey: .activeTool)
         try container.encode(contentOffset, forKey: .contentOffset)
     }
