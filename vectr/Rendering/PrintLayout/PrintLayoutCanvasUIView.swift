@@ -211,7 +211,7 @@ final class PrintLayoutCanvasUIView: UIView {
     /// Mirrors `PrintBorderRenderer.strokeOpacity`: dims text whose transformed
     /// corners fall outside every printable area.
     private func textOpacity(for element: TextElement, transform: PrintStrokeTransform) -> CGFloat {
-        guard document.printLayout.isPrintBorderVisible else { return 1 }
+        guard document.printLayout.marginMode.showsOverlay else { return 1 }
         let corners = PrintLayoutCoordinateSpace.transformedTextCorners(element, transform: transform)
         let hasUnprintablePoint = corners.contains {
             !PrintBorderRenderer.isPointInsideAnyPrintableArea($0, settings: document.printLayout)
@@ -222,7 +222,7 @@ final class PrintLayoutCanvasUIView: UIView {
     private func reloadBorders() {
         borderLayer?.removeFromSuperlayer()
         borderLayer = nil
-        guard document.printLayout.isPrintBorderVisible else { return }
+        guard document.printLayout.marginMode.showsScreenBorder else { return }
 
         let layer = PrintBorderRenderer.makeBorderLayer(
             settings: document.printLayout,
@@ -236,7 +236,7 @@ final class PrintLayoutCanvasUIView: UIView {
         marginGuideLayer?.removeFromSuperlayer()
         marginGuideLayer = nil
         guard let layer = PrintBorderRenderer.makeMarginGuideLayer(
-            style: document.printLayout.printMarginGuide,
+            style: document.printLayout.marginMode.printedStyle,
             settings: document.printLayout,
             viewport: document.viewport
         ) else { return }
@@ -247,7 +247,7 @@ final class PrintLayoutCanvasUIView: UIView {
     private func reloadDimOverlay() {
         dimOverlayLayer?.removeFromSuperlayer()
         dimOverlayLayer = nil
-        guard document.printLayout.isPrintBorderVisible else { return }
+        guard document.printLayout.marginMode.showsOverlay else { return }
 
         let layer = PrintBorderRenderer.makeDimOverlayLayer(
             settings: document.printLayout,

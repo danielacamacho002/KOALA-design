@@ -36,7 +36,7 @@ enum TiledPDFExporter {
                 drawPrintText(document: document, in: cgContext)
 
                 cgContext.resetClip()
-                drawMarginGuide(settings.printMarginGuide, in: printable, context: cgContext)
+                drawMarginGuide(settings.marginMode.printedStyle, in: printable, context: cgContext)
                 drawPageNumber(sheet.id + 1, in: printable, context: cgContext)
 
                 cgContext.restoreGState()

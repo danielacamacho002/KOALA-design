@@ -1152,6 +1152,12 @@ final class VectrDocument {
         printLayoutRevision += 1
     }
 
+    func clearPrintSelection() {
+        printSelectedStrokeID = nil
+        printSelectedTextID = nil
+        printLayoutRevision += 1
+    }
+
     func effectivePrintTransform(for strokeID: UUID) -> PrintStrokeTransform {
         var transform = printTransform(for: strokeID)
         transform.translation = CGPoint(

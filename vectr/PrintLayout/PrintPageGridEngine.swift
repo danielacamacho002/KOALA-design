@@ -15,7 +15,7 @@ enum PrintPageGridEngine {
     }
 
     static func pageSize(for settings: PrintLayoutSettings) -> CGSize {
-        settings.paperSize.sizeInPoints
+        settings.pageSizeInPoints
     }
 
     static func sheets(for settings: PrintLayoutSettings) -> [Sheet] {

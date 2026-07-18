@@ -20,6 +20,13 @@ struct PrintLayoutView: View {
     var onFitToGrid: (CGSize) -> Void
 
     @State private var statusMessage: String?
+    @State private var showPaperPanel = false
+    @State private var showMarginPanel = false
+    @State private var printRotateMode = false
+
+    private var hasPrintSelection: Bool {
+        document.printSelectedStrokeID != nil || document.printSelectedTextID != nil
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -35,10 +42,48 @@ struct PrintLayoutView: View {
                 )
                 .ignoresSafeArea()
 
-                PrintLayoutOverlayView(document: document, onChanged: onChanged)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(document.printLayout.activeTool == .select)
+                PrintLayoutOverlayView(
+                    document: document,
+                    rotateModeActive: printRotateMode,
+                    onChanged: onChanged
+                )
+                .ignoresSafeArea()
+                .allowsHitTesting(document.printLayout.activeTool == .select)
             }
+            .overlay(alignment: .topLeading) {
+                if showPaperPanel {
+                    PrintPaperPanelView(
+                        document: document,
+                        units: document.settings.units,
+                        onChanged: onChanged,
+                        onClose: { showPaperPanel = false }
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else if showMarginPanel {
+                    PrintMarginPanelView(
+                        document: document,
+                        onChanged: onChanged,
+                        onClose: { showMarginPanel = false }
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else if hasPrintSelection {
+                    PrintMoveRotatePanelView(
+                        document: document,
+                        rotateModeActive: $printRotateMode,
+                        onChanged: onChanged,
+                        onClose: {
+                            printRotateMode = false
+                            document.clearPrintSelection()
+                        }
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+            }
+            .animation(.easeInOut(duration: 0.15), value: showPaperPanel)
+            .animation(.easeInOut(duration: 0.15), value: showMarginPanel)
+            .animation(.easeInOut(duration: 0.15), value: hasPrintSelection)
+            .onChange(of: document.printSelectedStrokeID) { _, _ in printRotateMode = false }
+            .onChange(of: document.printSelectedTextID) { _, _ in printRotateMode = false }
             .overlay(alignment: .bottomTrailing) {
                 RecenterCanvasButton {
                     onFitToGrid(geometry.size)
@@ -71,6 +116,8 @@ struct PrintLayoutView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             PrintLayoutToolbarView(
                 document: document,
+                isPaperPanelOpen: $showPaperPanel,
+                isMarginPanelOpen: $showMarginPanel,
                 canUndo: canUndo,
                 canRedo: canRedo,
                 onBack: onBack,
@@ -85,13 +132,13 @@ struct PrintLayoutView: View {
     }
 
     private func handleCanvasTap(at documentPoint: CGPoint) {
+        if showPaperPanel { showPaperPanel = false }
+        if showMarginPanel { showMarginPanel = false }
         switch document.printLayout.activeTool {
         case .select:
             let threshold = document.viewport.viewToDocument(distance: 16)
             _ = document.selectPrintElement(near: documentPoint, threshold: threshold)
             onChanged()
-        case .printBorder:
-            break
         case .cut:
             let threshold = document.viewport.viewToDocument(distance: 20)
             _ = document.cutAlongNearestPrintBorder(near: documentPoint, threshold: threshold)

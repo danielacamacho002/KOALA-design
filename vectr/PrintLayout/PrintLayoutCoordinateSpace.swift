@@ -27,9 +27,12 @@ enum PrintLayoutCoordinateSpace {
         let pivot = center(of: points)
         let cosR = cos(transform.rotation)
         let sinR = sin(transform.rotation)
+        let scaleX: CGFloat = transform.flipHorizontal ? -1 : 1
+        let scaleY: CGFloat = transform.flipVertical ? -1 : 1
         return points.map { point in
-            let dx = point.x - pivot.x
-            let dy = point.y - pivot.y
+            // Mirror around the shape center first, then rotate, then translate.
+            let dx = (point.x - pivot.x) * scaleX
+            let dy = (point.y - pivot.y) * scaleY
             let rotated = CGPoint(
                 x: pivot.x + dx * cosR - dy * sinR,
                 y: pivot.y + dx * sinR + dy * cosR
@@ -84,7 +87,10 @@ enum PrintLayoutCoordinateSpace {
     ) -> CGAffineTransform {
         let bbox = element.boundingBox()
         let pivot = CGPoint(x: bbox.midX, y: bbox.midY)
+        let scaleX: CGFloat = transform.flipHorizontal ? -1 : 1
+        let scaleY: CGFloat = transform.flipVertical ? -1 : 1
         return CGAffineTransform(translationX: -pivot.x, y: -pivot.y)
+            .concatenating(CGAffineTransform(scaleX: scaleX, y: scaleY))
             .concatenating(CGAffineTransform(rotationAngle: transform.rotation))
             .concatenating(CGAffineTransform(
                 translationX: pivot.x + transform.translation.x,

@@ -13,6 +13,7 @@ private enum DragAxis {
 
 struct PrintLayoutOverlayView: View {
     @Bindable var document: VectrDocument
+    var rotateModeActive: Bool = false
     var onChanged: () -> Void
 
     @State private var moveDragOriginTransform = PrintStrokeTransform.identity
@@ -83,15 +84,26 @@ struct PrintLayoutOverlayView: View {
     private func selectionOverlay(elementID: UUID, bbox: CGRect) -> some View {
         let center = CGPoint(x: bbox.midX, y: bbox.midY)
         let viewCenter = document.viewport.documentToView(center)
+        let boxViewWidth = document.viewport.documentToView(distance: bbox.width)
+        let boxViewHeight = document.viewport.documentToView(distance: bbox.height)
+
+        // Draggable body: dragging anywhere inside the shape's bounds moves it.
+        // A small minimum distance lets simple taps fall through for (de)selection.
+        Rectangle()
+            .fill(Color.white.opacity(0.001))
+            .contentShape(Rectangle())
+            .frame(width: max(boxViewWidth, 24), height: max(boxViewHeight, 24))
+            .position(viewCenter)
+            .gesture(moveDrag(elementID: elementID, minimumDistance: 8))
 
         // Bounding box
         RoundedRectangle(cornerRadius: 2)
             .stroke(Color.accentColor.opacity(0.5), lineWidth: 1)
             .frame(
-                width: document.viewport.documentToView(distance: bbox.width),
-                height: document.viewport.documentToView(distance: bbox.height)
+                width: boxViewWidth,
+                height: boxViewHeight
             )
-            .position(document.viewport.documentToView(CGPoint(x: bbox.midX, y: bbox.midY)))
+            .position(viewCenter)
             .allowsHitTesting(false)
 
         // Move handle (center)
@@ -102,23 +114,26 @@ struct PrintLayoutOverlayView: View {
             .position(viewCenter)
             .gesture(moveDrag(elementID: elementID))
 
-        // Rotation handle
-        Image(systemName: "arrow.triangle.2.circlepath")
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(width: handleSize, height: handleSize)
-            .background(Circle().fill(Color.orange))
-            .position(
-                x: viewCenter.x,
-                y: viewCenter.y - document.viewport.documentToView(distance: rotateHandleOffset)
-            )
-            .gesture(rotateDrag(elementID: elementID, center: center))
+        // Rotation handle — only shown when the user has explicitly entered
+        // rotate mode from the command panel (not an always-on handle).
+        if rotateModeActive {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: handleSize, height: handleSize)
+                .background(Circle().fill(Color.orange))
+                .position(
+                    x: viewCenter.x,
+                    y: viewCenter.y - document.viewport.documentToView(distance: rotateHandleOffset)
+                )
+                .gesture(rotateDrag(elementID: elementID, center: center))
+        }
     }
 
     private var centerHandleSize: CGFloat { 18 }
 
-    private func moveDrag(elementID: UUID) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+    private func moveDrag(elementID: UUID, minimumDistance: CGFloat = 0) -> some Gesture {
+        DragGesture(minimumDistance: minimumDistance, coordinateSpace: .named(coordinateSpaceName))
             .onChanged { value in
                 if !isMoveDragging {
                     isMoveDragging = true
