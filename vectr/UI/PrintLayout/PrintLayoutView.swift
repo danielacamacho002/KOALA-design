@@ -62,6 +62,7 @@ struct PrintLayoutView: View {
                 } else if showMarginPanel {
                     PrintMarginPanelView(
                         document: document,
+                        units: document.settings.units,
                         onChanged: onChanged,
                         onClose: { showMarginPanel = false }
                     )

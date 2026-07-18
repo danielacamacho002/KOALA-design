@@ -211,7 +211,7 @@ final class PrintLayoutCanvasUIView: UIView {
     /// Mirrors `PrintBorderRenderer.strokeOpacity`: dims text whose transformed
     /// corners fall outside every printable area.
     private func textOpacity(for element: TextElement, transform: PrintStrokeTransform) -> CGFloat {
-        guard document.printLayout.marginMode.showsOverlay else { return 1 }
+        guard document.printLayout.activeTool == .cut else { return 1 }
         let corners = PrintLayoutCoordinateSpace.transformedTextCorners(element, transform: transform)
         let hasUnprintablePoint = corners.contains {
             !PrintBorderRenderer.isPointInsideAnyPrintableArea($0, settings: document.printLayout)
@@ -222,7 +222,8 @@ final class PrintLayoutCanvasUIView: UIView {
     private func reloadBorders() {
         borderLayer?.removeFromSuperlayer()
         borderLayer = nil
-        guard document.printLayout.marginMode.showsScreenBorder else { return }
+        // The red dashed border is a temporary trim guide shown while cutting.
+        guard document.printLayout.activeTool == .cut else { return }
 
         let layer = PrintBorderRenderer.makeBorderLayer(
             settings: document.printLayout,
@@ -247,7 +248,8 @@ final class PrintLayoutCanvasUIView: UIView {
     private func reloadDimOverlay() {
         dimOverlayLayer?.removeFromSuperlayer()
         dimOverlayLayer = nil
-        guard document.printLayout.marginMode.showsOverlay else { return }
+        // Red margin shading is only a cutting aid, not shown for display/print modes.
+        guard document.printLayout.activeTool == .cut else { return }
 
         let layer = PrintBorderRenderer.makeDimOverlayLayer(
             settings: document.printLayout,

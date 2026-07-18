@@ -15,13 +15,12 @@ enum PrintMarginGuideStyle: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// Unified control for the print margin / border. Chooses whether the printable
-/// area is shown only on screen, or additionally drawn onto the printed pages.
+/// Unified control for the print margin / border. Chooses whether (and how) the
+/// printable-area outline is drawn onto the printed pages. The Cut tool shows the
+/// guides temporarily on its own, so there is no separate display-only mode.
 enum PrintMarginMode: String, Codable, CaseIterable, Identifiable {
-    /// Nothing shown.
+    /// Nothing shown or printed.
     case off
-    /// On-screen red dashed border + dimmed margins; not printed.
-    case displayOnly
     /// Dashed outline shown on screen and printed onto the pages.
     case printDashed
     /// Solid outline shown on screen and printed onto the pages.
@@ -32,24 +31,20 @@ enum PrintMarginMode: String, Codable, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .off: return "Off"
-        case .displayOnly: return "Display only"
-        case .printDashed: return "Dashed (printed)"
-        case .printSolid: return "Solid (printed)"
+        case .printDashed: return "Dashed"
+        case .printSolid: return "Solid"
         }
     }
 
-    /// Any on-screen affordance (border/guide + dimmed margins) is shown.
+    /// Any on-screen affordance (guide + dimmed margins) is shown.
     var showsOverlay: Bool { self != .off }
-
-    /// The red dashed screen-only border (display-only mode).
-    var showsScreenBorder: Bool { self == .displayOnly }
 
     /// Line style drawn onto printed pages (`.off` when not printed).
     var printedStyle: PrintMarginGuideStyle {
         switch self {
         case .printDashed: return .dashed
         case .printSolid: return .solid
-        case .off, .displayOnly: return .off
+        case .off: return .off
         }
     }
 }
@@ -105,10 +100,11 @@ struct PrintLayoutSettings: Codable, Equatable {
             let legacyBorder = try (container.decodeIfPresent(Bool.self, forKey: .isPrintBorderVisible)
                 ?? container.decodeIfPresent(Bool.self, forKey: .showPrintBorders)) ?? false
             let legacyGuide = try container.decodeIfPresent(PrintMarginGuideStyle.self, forKey: .printMarginGuide) ?? .off
+            _ = legacyBorder
             switch legacyGuide {
             case .dashed: marginMode = .printDashed
             case .solid: marginMode = .printSolid
-            case .off: marginMode = legacyBorder ? .displayOnly : .off
+            case .off: marginMode = .off
             }
         }
         // Tolerate tool cases that no longer exist (e.g. a removed registration

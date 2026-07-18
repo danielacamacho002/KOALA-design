@@ -115,7 +115,7 @@ enum PrintBorderRenderer {
     }
 
     static func strokeOpacity(for stroke: VectorStroke, settings: PrintLayoutSettings) -> CGFloat {
-        guard settings.marginMode.showsOverlay else { return 1 }
+        guard settings.activeTool == .cut else { return 1 }
         let points = ShapeGeometry.renderPoints(for: stroke)
         let hasUnprintablePoint = points.contains { !isPointInsideAnyPrintableArea($0, settings: settings) }
         return hasUnprintablePoint ? 0.3 : 1

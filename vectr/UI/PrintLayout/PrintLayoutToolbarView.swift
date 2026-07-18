@@ -125,11 +125,6 @@ struct PrintLayoutToolbarView: View {
                 ) {
                     var settings = document.printLayout
                     settings.activeTool = tool
-                    // Cutting works against the dashed print-margin guides, so
-                    // make sure they are visible when the tool is selected.
-                    if tool == .cut, settings.marginMode == .off {
-                        settings.marginMode = .displayOnly
-                    }
                     document.updatePrintLayout(settings, recordUndo: false)
                     onSettingsChanged()
                 }
