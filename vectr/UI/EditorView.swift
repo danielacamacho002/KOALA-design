@@ -11,13 +11,16 @@ struct EditorView: View {
     var projectLibrary: ProjectLibrary?
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var store = DocumentStore()
     @State private var commandSession = ShapeCommandSession()
     private let objectSnapEngine = PathSnapEngine.makeDefault()
     @State private var showExportSheet = false
-    @State private var showFileExporter = false
+    @State private var pendingShareAfterDismiss = false
     @State private var exportFormat: ExportFormat = .vectr
-    @State private var exportDocument: EditorExportDocument?
+    @State private var exportQuality: ExportQuality = .medium
+    @State private var shareItems: [Any] = []
+    @State private var showShareSheet = false
     @State private var errorMessage: String?
     @State private var canvasSize: CGSize = .zero
     @State private var showSettings = false
@@ -37,10 +40,10 @@ struct EditorView: View {
     @State private var editingTextID: UUID?
     @State private var editorMode: EditorMode = .design
     @State private var savedDesignViewport: ViewportTransform?
-    @State private var printExportDocument: EditorExportDocument?
     @State private var lastSavedSnapshot: DocumentSnapshot?
     @State private var patternSettings = PatternSettings()
     @State private var patternPreviewStrokes: [VectorStroke] = []
+    @State private var autoSaveTask: Task<Void, Never>?
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
 
     init(projectURL: URL? = nil, projectLibrary: ProjectLibrary? = nil) {
@@ -58,16 +61,21 @@ struct EditorView: View {
                     onBack: handleBack,
                     onUndo: {
                         store.document.undo()
+                        store.markDirty()
                         refreshCanvas()
                     },
                     onRedo: {
                         store.document.redo()
+                        store.markDirty()
                         refreshCanvas()
                     },
-                    onSave: { saveDocument() },
+                    onSave: { saveDocumentNow() },
                     onSwitchToDesign: { switchToDesignMode() },
                     onExport: preparePrintExport,
-                    onChanged: { refreshCanvas() },
+                    onChanged: {
+                        store.markDirty()
+                        refreshCanvas()
+                    },
                     onLayoutReady: { size in centerPrintLayoutWithoutRescaling(in: size) },
                     onFitToGrid: { size in fitPrintLayoutToGrid(in: size) }
                 )
@@ -83,35 +91,34 @@ struct EditorView: View {
                 onFileNameChanged: handleFileNameChanged
             )
         }
-        .sheet(isPresented: $showExportSheet) {
-            ExportFormatSheet { format in
+        .sheet(isPresented: $showExportSheet, onDismiss: {
+            guard pendingShareAfterDismiss else { return }
+            pendingShareAfterDismiss = false
+            presentDesignShare()
+        }) {
+            ExportFormatSheet { format, quality in
                 exportFormat = format
-                prepareExport()
+                exportQuality = quality
+                pendingShareAfterDismiss = true
             }
         }
-        .fileExporter(
-            isPresented: $showFileExporter,
-            document: exportDocument,
-            contentType: exportFormat.contentType,
-            defaultFilename: store.fileName
-        ) { _ in
-            exportDocument = nil
+        .background {
+            ShareSheetPresenter(isPresented: $showShareSheet, items: shareItems) {
+                shareItems = []
+            }
         }
-        .fileExporter(
-            isPresented: Binding(
-                get: { printExportDocument != nil },
-                set: { if !$0 { printExportDocument = nil } }
-            ),
-            document: printExportDocument,
-            contentType: .pdf,
-            defaultFilename: "\(store.fileName)-tiled"
-        ) { _ in
-            printExportDocument = nil
+        .onChange(of: store.contentRevision) { _, _ in
+            if store.hasUnsavedChanges { scheduleAutoSave() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background || phase == .inactive {
+                flushAutoSave()
+            }
         }
         .alert("Unsaved Changes", isPresented: $showUnsavedAlert) {
             Button("Save") {
                 pendingDismiss = true
-                saveDocument()
+                saveDocumentNow()
             }
             Button("Discard", role: .destructive) {
                 discardChangesAndDismiss()
@@ -391,15 +398,17 @@ struct EditorView: View {
                 onBack: handleBack,
                 onUndo: {
                     store.document.undo()
+                    store.markDirty()
                     refreshCanvas()
                 },
                 onRedo: {
                     store.document.redo()
+                    store.markDirty()
                     refreshCanvas()
                 },
                 onSettings: { showSettings = true },
                 onShare: { showExportSheet = true },
-                onSave: { saveDocument() },
+                onSave: { saveDocumentNow() },
                 onToolSelected: handleToolSelected,
                 onSwitchToPrintLayout: { switchToPrintLayoutMode() }
             )
@@ -465,18 +474,23 @@ struct EditorView: View {
 
     private func preparePrintExport(_ kind: PrintLayoutExportKind) {
         do {
-            let tempURL: URL
+            let suffix: String
+            switch kind {
+            case .tiledPDF: suffix = "-tiled"
+            case .singlePDF: suffix = ""
+            }
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(store.fileName)\(suffix).pdf")
+            if FileManager.default.fileExists(atPath: tempURL.path) {
+                try FileManager.default.removeItem(at: tempURL)
+            }
             switch kind {
             case .tiledPDF:
-                tempURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("\(store.fileName)-tiled.pdf")
                 try TiledPDFExporter.write(document: store.document, to: tempURL)
             case .singlePDF:
-                tempURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("\(store.fileName).pdf")
-                try PDFExporter.write(document: store.document, to: tempURL)
+                try TiledPDFExporter.writeSinglePage(document: store.document, to: tempURL)
             }
-            printExportDocument = EditorExportDocument(fileURL: tempURL)
+            presentShare(url: tempURL)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -733,6 +747,7 @@ struct EditorView: View {
     }
 
     private func handleBack() {
+        flushAutoSave()
         if store.hasUnsavedChanges {
             showUnsavedAlert = true
         } else {
@@ -740,8 +755,52 @@ struct EditorView: View {
         }
     }
 
+    private func scheduleAutoSave() {
+        autoSaveTask?.cancel()
+        autoSaveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            guard store.hasUnsavedChanges else { return }
+            saveDocument()
+        }
+    }
+
+    private func flushAutoSave() {
+        autoSaveTask?.cancel()
+        autoSaveTask = nil
+        guard store.hasUnsavedChanges else { return }
+        saveDocument()
+    }
+
+    private func saveDocumentNow() {
+        autoSaveTask?.cancel()
+        autoSaveTask = nil
+        saveDocument()
+    }
+
+    private func presentShare(url: URL) {
+        shareItems = [url]
+        showShareSheet = true
+    }
+
+    private func presentDesignShare() {
+        do {
+            let tempURL = try ExportRouter.temporaryExportURL(
+                document: store.document,
+                name: store.fileName,
+                format: exportFormat,
+                quality: exportQuality
+            )
+            presentShare(url: tempURL)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func discardChangesAndDismiss() {
         pendingDismiss = false
+        autoSaveTask?.cancel()
+        autoSaveTask = nil
         if let lastSavedSnapshot {
             store.document = VectrDocument(snapshot: lastSavedSnapshot)
             store.hasUnsavedChanges = false
@@ -1300,37 +1359,6 @@ struct EditorView: View {
         }
     }
 
-    private func prepareExport() {
-        do {
-            let tempURL = try ExportRouter.temporaryExportURL(
-                document: store.document,
-                name: store.fileName,
-                format: exportFormat
-            )
-            exportDocument = EditorExportDocument(fileURL: tempURL)
-            showFileExporter = true
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-}
-
-private struct EditorExportDocument: FileDocument {
-    static var readableContentTypes: [UTType] { ExportFormat.allCases.map(\.contentType) }
-
-    var fileURL: URL
-
-    init(fileURL: URL) {
-        self.fileURL = fileURL
-    }
-
-    init(configuration: ReadConfiguration) throws {
-        throw CocoaError(.fileReadUnsupportedScheme)
-    }
-
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: try Data(contentsOf: fileURL))
-    }
 }
 
 extension UTType {

@@ -13,9 +13,11 @@ struct ProjectGalleryView: View {
     @State private var selectedIDs: Set<UUID> = []
     @State private var showImportPicker = false
     @State private var showExportSheet = false
+    @State private var pendingShareAfterDismiss = false
     @State private var exportFormat: ExportFormat = .vectr
-    @State private var showFileExporter = false
-    @State private var exportDocument: ExportDocument?
+    @State private var exportQuality: ExportQuality = .medium
+    @State private var shareItems: [Any] = []
+    @State private var showShareSheet = false
     @State private var errorMessage: String?
     @State private var navigationPath = NavigationPath()
 
@@ -65,19 +67,21 @@ struct ProjectGalleryView: View {
         ) { result in
             handleImport(result)
         }
-        .sheet(isPresented: $showExportSheet) {
-            ExportFormatSheet { format in
+        .sheet(isPresented: $showExportSheet, onDismiss: {
+            guard pendingShareAfterDismiss else { return }
+            pendingShareAfterDismiss = false
+            presentShareExport()
+        }) {
+            ExportFormatSheet { format, quality in
                 exportFormat = format
-                prepareExport()
+                exportQuality = quality
+                pendingShareAfterDismiss = true
             }
         }
-        .fileExporter(
-            isPresented: $showFileExporter,
-            document: exportDocument,
-            contentType: exportFormat.contentType,
-            defaultFilename: exportDocument?.fileName ?? "Export"
-        ) { _ in
-            exportDocument = nil
+        .background {
+            ShareSheetPresenter(isPresented: $showShareSheet, items: shareItems) {
+                shareItems = []
+            }
         }
         .alert("Error", isPresented: Binding(
             get: { errorMessage != nil },
@@ -202,7 +206,7 @@ struct ProjectGalleryView: View {
         }
     }
 
-    private func prepareExport() {
+    private func presentShareExport() {
         guard let id = selectedIDs.first,
               let record = library.projects.first(where: { $0.id == id }) else { return }
         do {
@@ -210,10 +214,11 @@ struct ProjectGalleryView: View {
             let tempURL = try ExportRouter.temporaryExportURL(
                 document: document,
                 name: record.name,
-                format: exportFormat
+                format: exportFormat,
+                quality: exportQuality
             )
-            exportDocument = ExportDocument(fileURL: tempURL, fileName: record.name)
-            showFileExporter = true
+            shareItems = [tempURL]
+            showShareSheet = true
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -224,33 +229,8 @@ private enum GalleryViewMode: String {
     case grid, list
 }
 
-private struct ExportDocument: FileDocument {
-    static var readableContentTypes: [UTType] { ExportFormat.allCases.map(\.contentType) }
-
-    var fileURL: URL
-    var fileName: String
-
-    init(fileURL: URL, fileName: String) {
-        self.fileURL = fileURL
-        self.fileName = fileName
-    }
-
-    init(configuration: ReadConfiguration) throws {
-        throw CocoaError(.fileReadUnsupportedScheme)
-    }
-
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        let data = try Data(contentsOf: fileURL)
-        return FileWrapper(regularFileWithContents: data)
-    }
-}
-
 extension ImportRouter {
     static var supportedTypes: [UTType] {
         [.vectrDocument, .jpeg, .pdf, .svg, UTType(filenameExtension: "ai") ?? .pdf]
     }
-}
-
-#Preview {
-    ProjectGalleryView()
 }

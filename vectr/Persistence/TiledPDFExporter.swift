@@ -6,6 +6,7 @@
 import UIKit
 
 enum TiledPDFExporter {
+    /// Writes one PDF page per print-layout sheet.
     static func write(document: VectrDocument, to url: URL) throws {
         let settings = document.printLayout
         let pageSize = PrintPageGridEngine.pageSize(for: settings)
@@ -25,15 +26,10 @@ enum TiledPDFExporter {
                 // Map document coordinates onto this page.
                 cgContext.translateBy(x: -sheet.frame.origin.x, y: -sheet.frame.origin.y)
 
-                var viewport = ViewportTransform()
-                viewport.scale = 1
-                viewport.translation = .zero
-
                 let printable = PrintPageGridEngine.printableRect(for: sheet.frame, settings: settings)
                 cgContext.clip(to: printable)
 
-                drawPrintStrokes(document: document, in: cgContext, viewport: viewport)
-                drawPrintText(document: document, in: cgContext)
+                drawPrintContent(document: document, in: cgContext)
 
                 cgContext.resetClip()
                 drawMarginGuide(settings.marginMode.printedStyle, in: printable, context: cgContext)
@@ -42,6 +38,47 @@ enum TiledPDFExporter {
                 cgContext.restoreGState()
             }
         }
+    }
+
+    /// Writes the full print grid onto a single PDF page (print transforms + margins).
+    static func writeSinglePage(document: VectrDocument, to url: URL) throws {
+        let settings = document.printLayout
+        let gridBounds = PrintPageGridEngine.gridBounds(for: settings)
+        let pageSize = CGSize(
+            width: max(gridBounds.width, 1),
+            height: max(gridBounds.height, 1)
+        )
+        let pageRect = CGRect(origin: .zero, size: pageSize)
+        let sheets = PrintPageGridEngine.sheets(for: settings)
+
+        let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
+        try renderer.writePDF(to: url) { context in
+            context.beginPage(withBounds: pageRect, pageInfo: [:])
+            let cgContext = context.cgContext
+
+            cgContext.saveGState()
+            cgContext.setFillColor(UIColor.white.cgColor)
+            cgContext.fill(pageRect)
+            cgContext.translateBy(x: -gridBounds.origin.x, y: -gridBounds.origin.y)
+
+            drawPrintContent(document: document, in: cgContext)
+
+            for sheet in sheets {
+                let printable = PrintPageGridEngine.printableRect(for: sheet.frame, settings: settings)
+                drawMarginGuide(settings.marginMode.printedStyle, in: printable, context: cgContext)
+                drawPageNumber(sheet.id + 1, in: printable, context: cgContext)
+            }
+
+            cgContext.restoreGState()
+        }
+    }
+
+    private static func drawPrintContent(document: VectrDocument, in context: CGContext) {
+        var viewport = ViewportTransform()
+        viewport.scale = 1
+        viewport.translation = .zero
+        drawPrintStrokes(document: document, in: context, viewport: viewport)
+        drawPrintText(document: document, in: context)
     }
 
     private static func drawPrintStrokes(
