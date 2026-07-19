@@ -36,11 +36,8 @@ enum TiledPDFExporter {
                 drawPrintText(document: document, in: cgContext)
 
                 cgContext.resetClip()
-                for mark in document.registrationMarks where mark.isLocked {
-                    if sheet.frame.contains(mark.position) {
-                        RegistrationMarkRenderer.drawMark(mark, in: cgContext, viewport: viewport)
-                    }
-                }
+                drawMarginGuide(settings.marginMode.printedStyle, in: printable, context: cgContext)
+                drawPageNumber(sheet.id + 1, in: printable, context: cgContext)
 
                 cgContext.restoreGState()
             }
@@ -52,7 +49,7 @@ enum TiledPDFExporter {
         in context: CGContext,
         viewport: ViewportTransform
     ) {
-        for stroke in document.visibleStrokes() {
+        for stroke in document.printLayoutStrokes() {
             let transform = document.effectivePrintTransform(for: stroke.id)
             let path = StrokeRenderer.path(
                 for: stroke,
@@ -92,6 +89,38 @@ enum TiledPDFExporter {
             context.setFillColor(element.cgColor)
             context.fillPath()
         }
+    }
+
+    /// Draws the printable-area outline as a trim/alignment guide when enabled,
+    /// so the margin lines seen on screen also appear on the printed page.
+    private static func drawMarginGuide(_ style: PrintMarginGuideStyle, in printable: CGRect, context: CGContext) {
+        guard style != .off else { return }
+        context.saveGState()
+        context.setStrokeColor(UIColor.black.cgColor)
+        context.setLineWidth(0.75)
+        if style == .dashed {
+            context.setLineDash(phase: 0, lengths: [6, 4])
+        }
+        context.stroke(printable)
+        context.setLineDash(phase: 0, lengths: [])
+        context.restoreGState()
+    }
+
+    /// Draws the page number in the bottom-right corner of the printable area so
+    /// it lands inside what the printer can actually render.
+    private static func drawPageNumber(_ number: Int, in printable: CGRect, context: CGContext) {
+        let text = "\(number)" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 10),
+            .foregroundColor: UIColor.darkGray
+        ]
+        let size = text.size(withAttributes: attributes)
+        let inset: CGFloat = 4
+        let origin = CGPoint(
+            x: printable.maxX - size.width - inset,
+            y: printable.maxY - size.height - inset
+        )
+        text.draw(at: origin, withAttributes: attributes)
     }
 
     private static func strokeColor(for stroke: VectorStroke) -> CGColor {

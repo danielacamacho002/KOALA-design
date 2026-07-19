@@ -25,7 +25,8 @@ enum DocumentCodec {
             referenceImageFrame: document.referenceImageFrame,
             printLayout: document.printLayout,
             printStrokeTransforms: document.printStrokeTransforms,
-            registrationMarks: document.registrationMarks,
+            printPieces: document.printPieces,
+            printHiddenStrokeIDs: document.printHiddenStrokeIDs,
             dimensionOffsets: document.dimensionOffsets
         )
         let encoder = JSONEncoder()

@@ -412,7 +412,6 @@ struct EditorView: View {
         store.document.printSelectedStrokeID = nil
         store.document.printSelectedTextID = nil
         store.document.autoPositionDesignOnPrintGrid()
-        store.document.refreshRegistrationMarkSuggestions()
         centerPrintLayoutWithoutRescaling(in: canvasSize)
         refreshCanvas()
     }
@@ -1270,7 +1269,8 @@ struct EditorView: View {
             referenceImageFrame: store.document.referenceImageFrame,
             printLayout: store.document.printLayout,
             printStrokeTransforms: store.document.printStrokeTransforms,
-            registrationMarks: store.document.registrationMarks
+            printPieces: store.document.printPieces,
+            printHiddenStrokeIDs: store.document.printHiddenStrokeIDs
         )
     }
 

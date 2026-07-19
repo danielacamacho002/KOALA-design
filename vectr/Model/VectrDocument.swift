@@ -96,10 +96,16 @@ final class VectrDocument {
 
     var printLayout: PrintLayoutSettings = PrintLayoutSettings()
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
-    var registrationMarks: [RegistrationMark] = []
     var printSelectedStrokeID: UUID?
     var printSelectedTextID: UUID?
     var printLayoutRevision = 0
+    /// Print-layout-only sliced fragments produced by the Cut tool. Each is a fresh
+    /// polyline in base (design) space; laid over the design strokes and never
+    /// mutating them, so Design mode stays fully intact.
+    var printPieces: [VectorStroke] = []
+    /// Original design strokes that have been cut and are hidden in Print Layout
+    /// (replaced by their `printPieces`). They remain fully intact in Design mode.
+    var printHiddenStrokeIDs: Set<UUID> = []
 
     private var undoStack: [DocumentSnapshot] = []
     private var redoStack: [DocumentSnapshot] = []
@@ -149,11 +155,11 @@ final class VectrDocument {
         referenceImageFrame = snapshot.referenceImageFrame
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
-        registrationMarks = snapshot.registrationMarks
+        printPieces = snapshot.printPieces
+        printHiddenStrokeIDs = snapshot.printHiddenStrokeIDs
         dimensionOffsets = snapshot.dimensionOffsets
         settings.syncCanvasExtentToMaximum()
         syncGridFromSettings()
-        refreshRegistrationMarkSuggestions()
     }
 
     func strokes(for layerID: UUID) -> [VectorStroke] {
@@ -185,6 +191,22 @@ final class VectrDocument {
 
     func stroke(with id: UUID) -> VectorStroke? {
         strokes.first { $0.id == id }
+    }
+
+    /// Single source of truth for what Print Layout renders/selects/exports:
+    /// visible design strokes that have not been cut, followed by print-layout pieces
+    /// (filtered to visible layers). Design mode never uses this.
+    func printLayoutStrokes() -> [VectorStroke] {
+        let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
+        var result = visibleStrokes().filter { !printHiddenStrokeIDs.contains($0.id) }
+        result.append(contentsOf: printPieces.filter { visibleLayerIDs.contains($0.layerID) })
+        return result
+    }
+
+    /// Resolves a print-layout stroke id, preferring pieces over design strokes.
+    func printLayoutStroke(with id: UUID) -> VectorStroke? {
+        if let piece = printPieces.first(where: { $0.id == id }) { return piece }
+        return strokes.first { $0.id == id }
     }
 
     // MARK: - Layers
@@ -1383,6 +1405,12 @@ final class VectrDocument {
         printLayoutRevision += 1
     }
 
+    func clearPrintSelection() {
+        printSelectedStrokeID = nil
+        printSelectedTextID = nil
+        printLayoutRevision += 1
+    }
+
     func effectivePrintTransform(for strokeID: UUID) -> PrintStrokeTransform {
         var transform = printTransform(for: strokeID)
         transform.translation = CGPoint(
@@ -1451,7 +1479,7 @@ final class VectrDocument {
     #endif
 
     func selectPrintStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
-        for stroke in visibleStrokes().reversed() {
+        for stroke in printLayoutStrokes().reversed() {
             let transformed = transformedPrintStroke(stroke)
             if transformed.contains(documentPoint) {
                 printSelectedStrokeID = stroke.id
@@ -1461,7 +1489,7 @@ final class VectrDocument {
 
         var best: VectorStroke?
         var bestDistance = threshold
-        for stroke in visibleStrokes().reversed() {
+        for stroke in printLayoutStrokes().reversed() {
             let transformed = transformedPrintStroke(stroke)
             let distance = transformed.distance(to: documentPoint)
             if distance < bestDistance {
@@ -1476,41 +1504,12 @@ final class VectrDocument {
     func updatePrintLayout(_ settings: PrintLayoutSettings, recordUndo: Bool = true) {
         if recordUndo { pushUndo() }
         printLayout = settings
-        refreshRegistrationMarkSuggestions()
-        printLayoutRevision += 1
-    }
-
-    func refreshRegistrationMarkSuggestions() {
-        let locked = registrationMarks.filter(\.isLocked)
-        registrationMarks = PrintPageGridEngine.refreshRegistrationMarks(
-            locked: locked,
-            settings: printLayout
-        )
-    }
-
-    func lockRegistrationMark(_ mark: RegistrationMark) {
-        pushUndo()
-        if let index = registrationMarks.firstIndex(where: { $0.id == mark.id }) {
-            registrationMarks[index].isLocked = true
-        } else {
-            var locked = mark
-            locked.isLocked = true
-            registrationMarks.append(locked)
-        }
-        printLayoutRevision += 1
-    }
-
-    func removeRegistrationMark(id: UUID) {
-        guard registrationMarks.contains(where: { $0.id == id }) else { return }
-        pushUndo()
-        registrationMarks.removeAll { $0.id == id }
-        refreshRegistrationMarkSuggestions()
         printLayoutRevision += 1
     }
 
     func allPrintLayoutPoints() -> [CGPoint] {
         var points: [CGPoint] = []
-        for stroke in visibleStrokes() {
+        for stroke in printLayoutStrokes() {
             points.append(contentsOf: ShapeGeometry.renderPoints(for: transformedPrintStroke(stroke)))
         }
         for element in visibleTextElements() {
@@ -1525,6 +1524,100 @@ final class VectrDocument {
             CGPoint(x: gridBounds.maxX, y: gridBounds.maxY)
         ])
         return points
+    }
+
+    /// Cut tool: slices every print-layout stroke that crosses the printable-margin
+    /// line nearest `point` (in document/print-grid space) into independent pieces.
+    /// Print-layout-only — the underlying design strokes are hidden, not mutated.
+    @discardableResult
+    func cutAlongNearestPrintBorder(near point: CGPoint, threshold: CGFloat) -> Bool {
+        let rects = PrintPageGridEngine.printableRects(for: printLayout)
+        guard !rects.isEmpty else { return false }
+
+        let coordinateEpsilon: CGFloat = 0.5
+        func dedupe(_ values: [CGFloat]) -> [CGFloat] {
+            var result: [CGFloat] = []
+            for value in values.sorted() {
+                if let last = result.last, abs(last - value) <= coordinateEpsilon { continue }
+                result.append(value)
+            }
+            return result
+        }
+        let verticals = dedupe(rects.flatMap { [$0.minX, $0.maxX] })
+        let horizontals = dedupe(rects.flatMap { [$0.minY, $0.maxY] })
+
+        var bestAxis: PrintSliceEngine.Axis?
+        var bestCoordinate: CGFloat = 0
+        var bestDistance = threshold
+        for x in verticals where abs(x - point.x) < bestDistance {
+            bestDistance = abs(x - point.x)
+            bestAxis = .vertical
+            bestCoordinate = x
+        }
+        for y in horizontals where abs(y - point.y) < bestDistance {
+            bestDistance = abs(y - point.y)
+            bestAxis = .horizontal
+            bestCoordinate = y
+        }
+        guard let axis = bestAxis else { return false }
+        let coordinate = bestCoordinate
+
+        var newPieces: [VectorStroke] = []
+        var hideIDs: [UUID] = []
+        var removePieceIDs: [UUID] = []
+
+        for stroke in printLayoutStrokes() {
+            let strokeInP = transformedPrintStroke(stroke)
+            guard let fragments = PrintSliceEngine.slice(strokeInP, axis: axis, coordinate: coordinate) else {
+                continue
+            }
+            // Convert each fragment from print-grid space back to base space so that
+            // `effectivePrintTransform` (identity per-piece + contentOffset) re-places it
+            // exactly where the sliced portion was — no visual jump.
+            let offset = printLayout.contentOffset
+            let basePieces = fragments.map { piece -> VectorStroke in
+                var copy = piece
+                copy.points = piece.points.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
+                if !copy.cutoutPoints.isEmpty {
+                    copy.cutoutPoints = copy.cutoutPoints.map { contour in
+                        contour.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
+                    }
+                }
+                return copy
+            }
+            if strokes.contains(where: { $0.id == stroke.id }) {
+                hideIDs.append(stroke.id)
+            } else {
+                removePieceIDs.append(stroke.id)
+            }
+            newPieces.append(contentsOf: basePieces)
+        }
+
+        guard !newPieces.isEmpty else { return false }
+
+        pushUndo()
+
+        for id in hideIDs {
+            printHiddenStrokeIDs.insert(id)
+        }
+        if !removePieceIDs.isEmpty {
+            let removeSet = Set(removePieceIDs)
+            printPieces.removeAll { removeSet.contains($0.id) }
+            for id in removePieceIDs {
+                printStrokeTransforms.removeValue(forKey: id)
+                if printSelectedStrokeID == id { printSelectedStrokeID = nil }
+            }
+        }
+        printPieces.append(contentsOf: newPieces)
+
+        var settings = printLayout
+        settings.activeTool = .select
+        printLayout = settings
+        printSelectedStrokeID = nil
+        printSelectedTextID = nil
+        printLayoutRevision += 1
+        geometryRevision += 1
+        return true
     }
 
     func undo() {
@@ -1583,7 +1676,8 @@ final class VectrDocument {
             referenceImageFrame: referenceImageFrame,
             printLayout: printLayout,
             printStrokeTransforms: printStrokeTransforms,
-            registrationMarks: registrationMarks,
+            printPieces: printPieces,
+            printHiddenStrokeIDs: printHiddenStrokeIDs,
             dimensionOffsets: dimensionOffsets
         )
     }
@@ -1603,7 +1697,8 @@ final class VectrDocument {
         referenceImageFrame = snapshot.referenceImageFrame
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
-        registrationMarks = snapshot.registrationMarks
+        printPieces = snapshot.printPieces
+        printHiddenStrokeIDs = snapshot.printHiddenStrokeIDs
         dimensionOffsets = snapshot.dimensionOffsets
         settings.syncCanvasExtentToMaximum()
         syncGridFromSettings()
@@ -1627,6 +1722,7 @@ struct DocumentSnapshot: Codable {
     var referenceImageFrame: CGRect?
     var printLayout: PrintLayoutSettings = PrintLayoutSettings()
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
-    var registrationMarks: [RegistrationMark] = []
+    var printPieces: [VectorStroke] = []
+    var printHiddenStrokeIDs: Set<UUID> = []
     var dimensionOffsets: [String: CGPoint] = [:]
 }

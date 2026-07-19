@@ -12,6 +12,8 @@ enum PrintLayoutExportKind {
 
 struct PrintLayoutToolbarView: View {
     @Bindable var document: VectrDocument
+    @Binding var isPaperPanelOpen: Bool
+    @Binding var isMarginPanelOpen: Bool
     var canUndo: Bool
     var canRedo: Bool
     var onBack: () -> Void
@@ -42,9 +44,9 @@ struct PrintLayoutToolbarView: View {
             ToolPaletteSeparator()
                 .padding(.horizontal, 8)
 
-            paperSizeButton
+            paperButton
 
-            gridControls
+            marginsButton
 
             ToolPaletteSeparator()
                 .padding(.horizontal, 8)
@@ -89,61 +91,28 @@ struct PrintLayoutToolbarView: View {
         .buttonStyle(.plain)
     }
 
-    private var paperSizeButton: some View {
-        Menu {
-            ForEach(PaperSize.allCases) { size in
-                Button(size.label) {
-                    var settings = document.printLayout
-                    settings.paperSize = size
-                    document.updatePrintLayout(settings)
-                    onSettingsChanged()
-                }
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "doc")
-                Text(document.printLayout.paperSize.label)
-                    .font(.caption.weight(.medium))
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+    private var paperButton: some View {
+        StudioIconButton(
+            systemImage: "doc",
+            isActive: isPaperPanelOpen,
+            size: iconSize
+        ) {
+            isPaperPanelOpen.toggle()
+            if isPaperPanelOpen { isMarginPanelOpen = false }
         }
+        .accessibilityLabel("Paper & Grid")
     }
 
-    private var gridControls: some View {
-        HStack(spacing: 8) {
-            gridStepper(label: "Cols", value: document.printLayout.columns) { newValue in
-                var settings = document.printLayout
-                settings.columns = newValue
-                document.updatePrintLayout(settings)
-                onSettingsChanged()
-            }
-            gridStepper(label: "Rows", value: document.printLayout.rows) { newValue in
-                var settings = document.printLayout
-                settings.rows = newValue
-                document.updatePrintLayout(settings)
-                onSettingsChanged()
-            }
+    private var marginsButton: some View {
+        StudioIconButton(
+            systemImage: "rectangle.dashed",
+            isActive: isMarginPanelOpen || document.printLayout.marginMode.showsOverlay,
+            size: iconSize
+        ) {
+            isMarginPanelOpen.toggle()
+            if isMarginPanelOpen { isPaperPanelOpen = false }
         }
-        .padding(.leading, 8)
-    }
-
-    private func gridStepper(label: String, value: Int, onChange: @escaping (Int) -> Void) -> some View {
-        HStack(spacing: 4) {
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Stepper("\(value)", onIncrement: {
-                onChange(min(value + 1, 10))
-            }, onDecrement: {
-                onChange(max(value - 1, 1))
-            })
-            .labelsHidden()
-            Text("\(value)")
-                .font(.caption.monospacedDigit())
-                .frame(width: 16)
-        }
+        .accessibilityLabel("Margins & Print Border")
     }
 
     private var toolButtons: some View {
@@ -151,18 +120,11 @@ struct PrintLayoutToolbarView: View {
             ForEach(PrintLayoutTool.allCases, id: \.self) { tool in
                 StudioIconButton(
                     systemImage: tool.systemImage,
-                    isActive: isToolActive(tool),
+                    isActive: document.printLayout.activeTool == tool,
                     size: iconSize
                 ) {
                     var settings = document.printLayout
-                    if tool == .printBorder {
-                        settings.isPrintBorderVisible.toggle()
-                    } else {
-                        settings.activeTool = tool
-                        if tool == .registrationMark {
-                            settings.showRegistrationSuggestions = true
-                        }
-                    }
+                    settings.activeTool = tool
                     document.updatePrintLayout(settings, recordUndo: false)
                     onSettingsChanged()
                 }
@@ -174,15 +136,6 @@ struct PrintLayoutToolbarView: View {
         .background {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.primary.opacity(0.05))
-        }
-    }
-
-    private func isToolActive(_ tool: PrintLayoutTool) -> Bool {
-        switch tool {
-        case .printBorder:
-            return document.printLayout.isPrintBorderVisible
-        default:
-            return document.printLayout.activeTool == tool
         }
     }
 
