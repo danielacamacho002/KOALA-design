@@ -19,8 +19,6 @@ struct LayersPanelView: View {
     @State private var renameText = ""
     @FocusState private var renameFieldFocused: Bool
 
-    @AppStorage(AppearanceSettings.panelColorKey) private var panelColorHex = AppearanceSettings.defaultPanelHex
-
     private let panelWidth: CGFloat = 248
     private let rowHeight: CGFloat = 44
     private let maxListHeight: CGFloat = 308
@@ -68,7 +66,7 @@ struct LayersPanelView: View {
         }
         .padding(10)
         .frame(width: panelWidth)
-        .background(Rectangle().fill(Color(hex: panelColorHex)))
+        .background(Rectangle().fill(Color(hex: AppearanceSettings.panelHex)))
         .overlay(Rectangle().stroke(Color.primary.opacity(0.08), lineWidth: 1))
     }
 

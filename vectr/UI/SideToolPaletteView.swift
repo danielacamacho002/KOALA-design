@@ -51,8 +51,6 @@ struct ScaleToolPanelView: View {
     @Bindable var document: VectrDocument
     var onVariantSelected: () -> Void
 
-    @AppStorage(AppearanceSettings.panelColorKey) private var panelColorHex = AppearanceSettings.defaultPanelHex
-
     private let options = ["Uniform", "Free"]
 
     var body: some View {
@@ -73,7 +71,7 @@ struct ScaleToolPanelView: View {
                 }
             }
         }
-        .toolPanelChrome(width: 150, fill: Color(hex: panelColorHex))
+        .toolPanelChrome(width: 150)
     }
 
     private var selectedIndex: Int {

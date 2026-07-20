@@ -13,11 +13,8 @@ enum AppearanceSettings {
 
     static let canvasPresets: [String] = ["F6F3E4", "FEFDF7"]
 
-    static let panelColorKey = "appearance.panelColorHex"
-
-    static let defaultPanelHex = "A3A390"
-
-    static let panelPresets: [String] = ["A3A390", "969696", "DDDCD5"]
+    /// Fixed panel color (not user-configurable).
+    static let panelHex = "DDDCD5"
 
     /// Fixed toolbar color (not user-configurable).
     static let toolbarHex = "4D4D4D"

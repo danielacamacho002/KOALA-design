@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 struct ProjectGalleryView: View {
     @State private var library = ProjectLibrary()
     @AppStorage("galleryViewMode") private var viewModeRaw = GalleryViewMode.grid.rawValue
+    @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
     @State private var isSelectionMode = false
     @State private var selectedIDs: Set<UUID> = []
     @State private var showImportPicker = false
@@ -20,6 +21,8 @@ struct ProjectGalleryView: View {
     @State private var navigationPath = NavigationPath()
 
     private let gridColumns = [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 16)]
+
+    private var canvasColor: Color { Color(hex: canvasColorHex) }
 
     private var viewMode: GalleryViewMode {
         get { GalleryViewMode(rawValue: viewModeRaw) ?? .grid }
@@ -41,16 +44,23 @@ struct ProjectGalleryView: View {
                         ForEach(library.projects) { project in
                             projectButton(project)
                                 .padding(.horizontal, 20)
-                            Divider().padding(.leading, 88)
+                            Divider()
+                                .overlay(Color(hex: AppearanceSettings.toolbarHex).opacity(0.12))
+                                .padding(.leading, 88)
                         }
                     }
                     .padding(.vertical, 12)
                 }
             }
-            .background(Color(white: 0.16))
+            .scrollContentBackground(.hidden)
+            .background(canvasColor.ignoresSafeArea())
             .navigationTitle(isSelectionMode ? "\(selectedIDs.count) Selected" : "vectr")
             .navigationBarTitleDisplayMode(.large)
             .toolbar { galleryToolbar }
+            .toolbarBackground(canvasColor, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.light, for: .navigationBar)
+            .tint(Color(hex: AppearanceSettings.toolbarHex))
             .navigationDestination(for: UUID.self) { projectID in
                 if let record = library.projects.first(where: { $0.id == projectID }) {
                     EditorView(projectURL: record.fileURL, projectLibrary: library)
