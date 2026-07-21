@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct ProjectGalleryView: View {
@@ -211,14 +212,31 @@ struct ProjectGalleryView: View {
               let record = library.projects.first(where: { $0.id == id }) else { return }
         do {
             let document = try DocumentCodec.read(from: record.fileURL)
-            let tempURL = try ExportRouter.temporaryExportURL(
-                document: document,
-                name: record.name,
-                format: exportFormat,
-                quality: exportQuality
-            )
-            shareItems = [tempURL]
-            showShareSheet = true
+            if exportFormat == .jpeg {
+                let image = try JPEGExporter.renderImage(document: document, quality: exportQuality)
+                let tempURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("\(record.name).jpg")
+                if FileManager.default.fileExists(atPath: tempURL.path) {
+                    try FileManager.default.removeItem(at: tempURL)
+                }
+                guard let data = image.jpegData(compressionQuality: exportQuality.jpegCompression) else {
+                    throw JPEGExporter.ExportError.renderFailed
+                }
+                try data.write(to: tempURL, options: .atomic)
+                shareItems = [JPEGShareItem(image: image, fileURL: tempURL)]
+            } else {
+                let tempURL = try ExportRouter.temporaryExportURL(
+                    document: document,
+                    name: record.name,
+                    format: exportFormat,
+                    quality: exportQuality
+                )
+                shareItems = [tempURL]
+            }
+            showShareSheet = false
+            DispatchQueue.main.async {
+                showShareSheet = true
+            }
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct EditorView: View {
@@ -472,24 +473,14 @@ struct EditorView: View {
         return rect
     }
 
-    private func preparePrintExport(_ kind: PrintLayoutExportKind) {
+    private func preparePrintExport() {
         do {
-            let suffix: String
-            switch kind {
-            case .tiledPDF: suffix = "-tiled"
-            case .singlePDF: suffix = ""
-            }
             let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(store.fileName)\(suffix).pdf")
+                .appendingPathComponent("\(store.fileName)-tiled.pdf")
             if FileManager.default.fileExists(atPath: tempURL.path) {
                 try FileManager.default.removeItem(at: tempURL)
             }
-            switch kind {
-            case .tiledPDF:
-                try TiledPDFExporter.write(document: store.document, to: tempURL)
-            case .singlePDF:
-                try TiledPDFExporter.writeSinglePage(document: store.document, to: tempURL)
-            }
+            try TiledPDFExporter.write(document: store.document, to: tempURL)
             presentShare(url: tempURL)
         } catch {
             errorMessage = error.localizedDescription
@@ -778,20 +769,45 @@ struct EditorView: View {
         saveDocument()
     }
 
-    private func presentShare(url: URL) {
-        shareItems = [url]
-        showShareSheet = true
+    private func presentShare(url: URL, image: UIImage? = nil) {
+        if let image {
+            shareItems = [JPEGShareItem(image: image, fileURL: url)]
+        } else {
+            shareItems = [url]
+        }
+        // Reset first so a second export can present again.
+        showShareSheet = false
+        DispatchQueue.main.async {
+            showShareSheet = true
+        }
     }
 
     private func presentDesignShare() {
         do {
-            let tempURL = try ExportRouter.temporaryExportURL(
-                document: store.document,
-                name: store.fileName,
-                format: exportFormat,
-                quality: exportQuality
-            )
-            presentShare(url: tempURL)
+            if exportFormat == .jpeg {
+                let image = try JPEGExporter.renderImage(
+                    document: store.document,
+                    quality: exportQuality
+                )
+                let tempURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("\(store.fileName).jpg")
+                if FileManager.default.fileExists(atPath: tempURL.path) {
+                    try FileManager.default.removeItem(at: tempURL)
+                }
+                guard let data = image.jpegData(compressionQuality: exportQuality.jpegCompression) else {
+                    throw JPEGExporter.ExportError.renderFailed
+                }
+                try data.write(to: tempURL, options: .atomic)
+                presentShare(url: tempURL, image: image)
+            } else {
+                let tempURL = try ExportRouter.temporaryExportURL(
+                    document: store.document,
+                    name: store.fileName,
+                    format: exportFormat,
+                    quality: exportQuality
+                )
+                presentShare(url: tempURL)
+            }
         } catch {
             errorMessage = error.localizedDescription
         }

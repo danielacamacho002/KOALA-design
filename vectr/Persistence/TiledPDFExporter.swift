@@ -40,39 +40,6 @@ enum TiledPDFExporter {
         }
     }
 
-    /// Writes the full print grid onto a single PDF page (print transforms + margins).
-    static func writeSinglePage(document: VectrDocument, to url: URL) throws {
-        let settings = document.printLayout
-        let gridBounds = PrintPageGridEngine.gridBounds(for: settings)
-        let pageSize = CGSize(
-            width: max(gridBounds.width, 1),
-            height: max(gridBounds.height, 1)
-        )
-        let pageRect = CGRect(origin: .zero, size: pageSize)
-        let sheets = PrintPageGridEngine.sheets(for: settings)
-
-        let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
-        try renderer.writePDF(to: url) { context in
-            context.beginPage(withBounds: pageRect, pageInfo: [:])
-            let cgContext = context.cgContext
-
-            cgContext.saveGState()
-            cgContext.setFillColor(UIColor.white.cgColor)
-            cgContext.fill(pageRect)
-            cgContext.translateBy(x: -gridBounds.origin.x, y: -gridBounds.origin.y)
-
-            drawPrintContent(document: document, in: cgContext)
-
-            for sheet in sheets {
-                let printable = PrintPageGridEngine.printableRect(for: sheet.frame, settings: settings)
-                drawMarginGuide(settings.marginMode.printedStyle, in: printable, context: cgContext)
-                drawPageNumber(sheet.id + 1, in: printable, context: cgContext)
-            }
-
-            cgContext.restoreGState()
-        }
-    }
-
     private static func drawPrintContent(document: VectrDocument, in context: CGContext) {
         var viewport = ViewportTransform()
         viewport.scale = 1

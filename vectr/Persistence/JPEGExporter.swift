@@ -11,14 +11,25 @@ enum JPEGExporter {
         to url: URL,
         quality: ExportQuality = .medium
     ) throws {
+        let image = try renderImage(document: document, quality: quality)
+        guard let data = image.jpegData(compressionQuality: quality.jpegCompression) else {
+            throw ExportError.renderFailed
+        }
+        try data.write(to: url, options: .atomic)
+    }
+
+    static func renderImage(
+        document: VectrDocument,
+        quality: ExportQuality = .medium
+    ) throws -> UIImage {
         let size = renderSize(for: document, quality: quality)
         guard let image = DocumentRenderer.renderImage(
             document: document,
             options: DocumentRenderer.Options(size: size, drawGrid: false)
-        ), let data = image.jpegData(compressionQuality: quality.jpegCompression) else {
+        ) else {
             throw ExportError.renderFailed
         }
-        try data.write(to: url, options: .atomic)
+        return image
     }
 
     private static func renderSize(for document: VectrDocument, quality: ExportQuality) -> CGSize {
