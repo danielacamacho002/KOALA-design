@@ -57,10 +57,10 @@ struct ProjectGalleryView: View {
             .navigationTitle(isSelectionMode ? "\(selectedIDs.count) Selected" : "vectr")
             .navigationBarTitleDisplayMode(.large)
             .toolbar { galleryToolbar }
-            .toolbarBackground(canvasColor, for: .navigationBar)
+            .toolbarBackground(Color(hex: AppearanceSettings.toolbarHex), for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
-            .toolbarColorScheme(.light, for: .navigationBar)
-            .tint(Color(hex: AppearanceSettings.toolbarHex))
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .tint(.white)
             .navigationDestination(for: UUID.self) { projectID in
                 if let record = library.projects.first(where: { $0.id == projectID }) {
                     EditorView(projectURL: record.fileURL, projectLibrary: library)
