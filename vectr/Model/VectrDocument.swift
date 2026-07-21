@@ -852,6 +852,26 @@ final class VectrDocument {
         return best
     }
 
+    /// Topmost stroke whose outline is within `threshold` of the point, ignoring fill.
+    /// Used by the Delete tool to distinguish an edge/line tap from an interior fill tap.
+    func strokeOutlineHit(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
+        var best: VectorStroke?
+        var bestDistance = threshold
+        for stroke in selectableStrokes().reversed() {
+            let distance = stroke.distance(to: documentPoint)
+            if distance < bestDistance {
+                bestDistance = distance
+                best = stroke
+            }
+        }
+        return best
+    }
+
+    /// Topmost closed stroke whose filled interior contains the point, ignoring outline proximity.
+    func strokeFillHit(at documentPoint: CGPoint) -> VectorStroke? {
+        selectableStrokes().reversed().first { $0.contains(documentPoint) }
+    }
+
     /// Non-mutating topmost element hit (text preferred over strokes).
     func elementHit(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
         if let text = textElement(at: documentPoint) { return .text(text.id) }
@@ -1366,6 +1386,59 @@ final class VectrDocument {
         pushUndo()
         strokes.removeAll { $0.id == id }
         pruneGroups()
+        if selectedStrokeID == id {
+            clearToolSelections()
+            selectedStrokeID = nil
+        }
+    }
+
+    /// Interior fill tap for the Delete tool: when the topmost filled shape under
+    /// `documentPoint` overlaps a closed shape beneath it, subtracts the top shape
+    /// (Boolean: base MINUS target) to punch a hole in the base and removes the top
+    /// shape. Returns `true` when a subtraction was performed.
+    @discardableResult
+    func punchOverlapHole(at documentPoint: CGPoint) -> Bool {
+        let candidates = selectableStrokes()
+        guard let targetIndex = candidates.lastIndex(where: {
+            $0.isClosed && !$0.isConstruction && $0.contains(documentPoint)
+        }) else { return false }
+
+        let target = candidates[targetIndex]
+        let targetContour = ShapeGeometry.renderPoints(for: target)
+        guard targetContour.count >= 3 else { return false }
+
+        // Search shapes beneath the target (front-to-back below it) for an overlap.
+        for index in stride(from: targetIndex - 1, through: 0, by: -1) {
+            let base = candidates[index]
+            guard base.id != target.id, base.isClosed, !base.isConstruction else { continue }
+            let baseContour = ShapeGeometry.renderPoints(for: base)
+            guard baseContour.count >= 3 else { continue }
+            guard let cutouts = ShapeBooleanEngine.subtractionCutouts(
+                baseContour: baseContour,
+                targetContour: targetContour
+            ) else { continue }
+            guard let baseArrayIndex = strokes.firstIndex(where: { $0.id == base.id }) else { continue }
+
+            pushUndo()
+            var updatedBase = strokes[baseArrayIndex]
+            updatedBase.cutoutPoints.append(contentsOf: cutouts)
+            strokes[baseArrayIndex] = updatedBase
+            strokes.removeAll { $0.id == target.id }
+            pruneGroups()
+            deselectStrokeAfterMutation(target.id)
+            geometryRevision += 1
+            return true
+        }
+        return false
+    }
+
+    /// Removes a stroke id from every selection set after it has been deleted/consumed.
+    private func deselectStrokeAfterMutation(_ id: UUID) {
+        if selectedStrokeIDs.contains(id) {
+            var remaining = selectedStrokeIDs
+            remaining.remove(id)
+            setElementSelection(strokeIDs: remaining, textIDs: selectedTextIDs)
+        }
         if selectedStrokeID == id {
             clearToolSelections()
             selectedStrokeID = nil

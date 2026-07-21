@@ -1033,10 +1033,25 @@ struct EditorView: View {
                 return
             }
             let threshold = store.document.viewport.viewToDocument(distance: 24)
-            if let stroke = store.document.selectStroke(near: documentPoint, threshold: threshold) {
-                store.document.removeStroke(id: stroke.id)
+            // 1. Edge/line tap: tapping on or near an outline deletes that shape entirely.
+            if let outline = store.document.strokeOutlineHit(near: documentPoint, threshold: threshold) {
+                store.document.removeStroke(id: outline.id)
                 refreshCanvas()
-            } else if let selected = store.document.selectedStrokeID {
+                return
+            }
+            // 2. Interior fill tap over an overlap: punch a hole (base MINUS target).
+            if store.document.punchOverlapHole(at: documentPoint) {
+                refreshCanvas()
+                return
+            }
+            // 3. Interior fill tap with nothing beneath: delete the filled shape.
+            if let fill = store.document.strokeFillHit(at: documentPoint) {
+                store.document.removeStroke(id: fill.id)
+                refreshCanvas()
+                return
+            }
+            // 4. Fall back to the current selection.
+            if let selected = store.document.selectedStrokeID {
                 store.document.removeStroke(id: selected)
                 refreshCanvas()
             } else if let selectedText = store.document.selectedTextID {
