@@ -11,6 +11,12 @@ struct ProjectCardView: View {
     var isSelectionMode: Bool = false
     var compact: Bool = false
 
+    @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
+
+    private var canvasColor: Color { Color(hex: canvasColorHex) }
+    private var panelColor: Color { Color(hex: AppearanceSettings.panelHex) }
+    private var cornerRadius: CGFloat { compact ? 6 : 10 }
+
     var body: some View {
         if compact {
             listRow
@@ -24,7 +30,11 @@ struct ProjectCardView: View {
             ZStack(alignment: .topTrailing) {
                 thumbnail
                     .frame(height: 140)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    )
 
                 if isSelectionMode {
                     selectionBadge
@@ -34,12 +44,13 @@ struct ProjectCardView: View {
 
             Text(record.name)
                 .font(.subheadline.weight(.medium))
+                .foregroundStyle(.white)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .center)
 
             Text(record.dimensionsLabel)
                 .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.white)
         }
     }
 
@@ -51,22 +62,27 @@ struct ProjectCardView: View {
 
             thumbnail
                 .frame(width: 56, height: 42)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(record.name)
                     .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white)
                     .lineLimit(1)
                 Text(record.dimensionsLabel)
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white)
             }
 
             Spacer()
 
             Text(record.modifiedAt, style: .date)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.white)
         }
         .padding(.vertical, 4)
     }
@@ -77,14 +93,14 @@ struct ProjectCardView: View {
             Image(uiImage: uiImage)
                 .resizable()
                 .scaledToFill()
-                .background(Color(.secondarySystemBackground))
+                .background(canvasColor)
         } else {
-            RoundedRectangle(cornerRadius: compact ? 6 : 10)
-                .fill(Color(.secondarySystemBackground))
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .fill(panelColor.opacity(0.35))
                 .overlay {
                     Image(systemName: "scribble.variable")
                         .font(.title2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.white)
                 }
         }
     }
@@ -92,7 +108,7 @@ struct ProjectCardView: View {
     private var selectionBadge: some View {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
             .font(.title3)
-            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary.opacity(0.5))
+            .foregroundStyle(isSelected ? Color.accentColor : Color.white)
             .symbolRenderingMode(.hierarchical)
     }
 }

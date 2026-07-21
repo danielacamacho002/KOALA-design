@@ -21,6 +21,8 @@ struct ProjectGalleryView: View {
 
     private let gridColumns = [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 16)]
 
+    private var toolbarColor: Color { Color(hex: AppearanceSettings.toolbarHex) }
+
     private var viewMode: GalleryViewMode {
         get { GalleryViewMode(rawValue: viewModeRaw) ?? .grid }
         nonmutating set { viewModeRaw = newValue.rawValue }
@@ -29,6 +31,13 @@ struct ProjectGalleryView: View {
     var body: some View {
         NavigationStack(path: $navigationPath) {
             ScrollView {
+                if !isSelectionMode {
+                    galleryTitle
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                        .padding(.bottom, 4)
+                }
+
                 if viewMode == .grid {
                     LazyVGrid(columns: gridColumns, spacing: 20) {
                         ForEach(library.projects) { project in
@@ -41,22 +50,32 @@ struct ProjectGalleryView: View {
                         ForEach(library.projects) { project in
                             projectButton(project)
                                 .padding(.horizontal, 20)
-                            Divider().padding(.leading, 88)
+                            Divider()
+                                .overlay(Color.white.opacity(0.12))
+                                .padding(.leading, 88)
                         }
                     }
                     .padding(.vertical, 12)
                 }
             }
-            .background(Color(white: 0.16))
-            .navigationTitle(isSelectionMode ? "\(selectedIDs.count) Selected" : "vectr")
-            .navigationBarTitleDisplayMode(.large)
+            .scrollContentBackground(.hidden)
+            .background(toolbarColor)
+            .foregroundStyle(.white)
+            .navigationTitle(isSelectionMode ? "\(selectedIDs.count) Selected" : "")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar { galleryToolbar }
+            .toolbarBackground(toolbarColor, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .tint(.white)
             .navigationDestination(for: UUID.self) { projectID in
                 if let record = library.projects.first(where: { $0.id == projectID }) {
                     EditorView(projectURL: record.fileURL, projectLibrary: library)
                 }
             }
         }
+        .background(toolbarColor.ignoresSafeArea())
+        .preferredColorScheme(navigationPath.isEmpty ? .dark : nil)
         .onAppear { library.refresh() }
         .fileImporter(
             isPresented: $showImportPicker,
@@ -87,6 +106,14 @@ struct ProjectGalleryView: View {
         } message: {
             Text(errorMessage ?? "")
         }
+    }
+
+    private var galleryTitle: some View {
+        Text("myda")
+            .font(.custom("CourierNewPSMT", size: 34))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("myda")
     }
 
     @ToolbarContentBuilder

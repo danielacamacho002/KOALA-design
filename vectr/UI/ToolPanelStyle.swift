@@ -19,26 +19,23 @@ extension Color {
 
 extension View {
     /// Applies the standard tool panel chrome: sharp rectangle fill with a hairline
-    /// stroke and consistent padding. Defaults to the shared, user-configurable panel
-    /// color so every tool panel (shape, manipulation, dropdowns) stays unified.
+    /// stroke and consistent padding. Defaults to the shared panel color so every
+    /// tool panel (shape, manipulation, dropdowns) stays unified.
     func toolPanelChrome(width: CGFloat? = nil, fill: Color? = nil) -> some View {
         modifier(ToolPanelChrome(width: width, fillOverride: fill))
     }
 }
 
-/// Shared chrome for floating tool panels. Reads the shared panel color so drawing
-/// and manipulation tools match the shape command panel by default.
+/// Shared chrome for floating tool panels.
 private struct ToolPanelChrome: ViewModifier {
     var width: CGFloat?
     var fillOverride: Color?
-
-    @AppStorage(AppearanceSettings.panelColorKey) private var panelColorHex = AppearanceSettings.defaultPanelHex
 
     func body(content: Content) -> some View {
         content
             .padding(8)
             .frame(width: width)
-            .background(Rectangle().fill(fillOverride ?? Color(hex: panelColorHex)))
+            .background(Rectangle().fill(fillOverride ?? Color(hex: AppearanceSettings.panelHex)))
             .overlay(Rectangle().stroke(Color.primary.opacity(0.08), lineWidth: 1))
     }
 }
