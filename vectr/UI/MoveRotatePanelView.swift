@@ -144,12 +144,6 @@ struct MoveRotatePanelView: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
-        if document.canJoinSelection {
-            ToolPanelLabelButton(title: "Join paths", prominent: true, fullWidth: true) {
-                if document.joinSelectedPaths() { onApply() }
-            }
-        }
-
         HStack(spacing: 4) {
             ToolPanelLabelButton(
                 title: "Group",
@@ -169,6 +163,20 @@ struct MoveRotatePanelView: View {
                 onApply()
             }
         }
+
+        ToolPanelLabelButton(
+            title: "Join",
+            prominent: true,
+            isDisabled: !document.canJoinSelection,
+            fullWidth: true
+        ) {
+            if document.joinSelectedShapes() { onApply() }
+        }
+
+        Text("Join permanently fuses the selected shapes into one. Group only moves shapes together.")
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
