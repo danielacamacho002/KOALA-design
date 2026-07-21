@@ -9,7 +9,6 @@ import UniformTypeIdentifiers
 struct ProjectGalleryView: View {
     @State private var library = ProjectLibrary()
     @AppStorage("galleryViewMode") private var viewModeRaw = GalleryViewMode.grid.rawValue
-    @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
     @State private var isSelectionMode = false
     @State private var selectedIDs: Set<UUID> = []
     @State private var showImportPicker = false
@@ -22,7 +21,7 @@ struct ProjectGalleryView: View {
 
     private let gridColumns = [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 16)]
 
-    private var canvasColor: Color { Color(hex: canvasColorHex) }
+    private var toolbarColor: Color { Color(hex: AppearanceSettings.toolbarHex) }
 
     private var viewMode: GalleryViewMode {
         get { GalleryViewMode(rawValue: viewModeRaw) ?? .grid }
@@ -32,6 +31,13 @@ struct ProjectGalleryView: View {
     var body: some View {
         NavigationStack(path: $navigationPath) {
             ScrollView {
+                if !isSelectionMode {
+                    galleryTitle
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                        .padding(.bottom, 4)
+                }
+
                 if viewMode == .grid {
                     LazyVGrid(columns: gridColumns, spacing: 20) {
                         ForEach(library.projects) { project in
@@ -45,7 +51,7 @@ struct ProjectGalleryView: View {
                             projectButton(project)
                                 .padding(.horizontal, 20)
                             Divider()
-                                .overlay(Color(hex: AppearanceSettings.toolbarHex).opacity(0.12))
+                                .overlay(Color.white.opacity(0.12))
                                 .padding(.leading, 88)
                         }
                     }
@@ -53,11 +59,12 @@ struct ProjectGalleryView: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(canvasColor.ignoresSafeArea())
-            .navigationTitle(isSelectionMode ? "\(selectedIDs.count) Selected" : "vectr")
-            .navigationBarTitleDisplayMode(.large)
+            .background(toolbarColor)
+            .foregroundStyle(.white)
+            .navigationTitle(isSelectionMode ? "\(selectedIDs.count) Selected" : "")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar { galleryToolbar }
-            .toolbarBackground(Color(hex: AppearanceSettings.toolbarHex), for: .navigationBar)
+            .toolbarBackground(toolbarColor, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .tint(.white)
@@ -67,6 +74,8 @@ struct ProjectGalleryView: View {
                 }
             }
         }
+        .background(toolbarColor.ignoresSafeArea())
+        .preferredColorScheme(navigationPath.isEmpty ? .dark : nil)
         .onAppear { library.refresh() }
         .fileImporter(
             isPresented: $showImportPicker,
@@ -97,6 +106,14 @@ struct ProjectGalleryView: View {
         } message: {
             Text(errorMessage ?? "")
         }
+    }
+
+    private var galleryTitle: some View {
+        Text("myda")
+            .font(.custom("CourierNewPSMT", size: 34))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("myda")
     }
 
     @ToolbarContentBuilder
