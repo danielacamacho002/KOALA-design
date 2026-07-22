@@ -213,17 +213,12 @@ struct ProjectGalleryView: View {
         do {
             let document = try DocumentCodec.read(from: record.fileURL)
             if exportFormat == .jpeg {
-                let image = try JPEGExporter.renderImage(document: document, quality: exportQuality)
-                let tempURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("\(record.name).jpg")
-                if FileManager.default.fileExists(atPath: tempURL.path) {
-                    try FileManager.default.removeItem(at: tempURL)
-                }
-                guard let data = image.jpegData(compressionQuality: exportQuality.jpegCompression) else {
-                    throw JPEGExporter.ExportError.renderFailed
-                }
-                try data.write(to: tempURL, options: .atomic)
-                shareItems = [JPEGShareItem(image: image, fileURL: tempURL)]
+                let prepared = try JPEGExporter.prepareForSharing(
+                    document: document,
+                    named: record.name,
+                    quality: exportQuality
+                )
+                shareItems = [JPEGShareItem(image: prepared.image, fileURL: prepared.fileURL)]
             } else {
                 let tempURL = try ExportRouter.temporaryExportURL(
                     document: document,
@@ -234,7 +229,7 @@ struct ProjectGalleryView: View {
                 shareItems = [tempURL]
             }
             showShareSheet = false
-            DispatchQueue.main.async {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 showShareSheet = true
             }
         } catch {

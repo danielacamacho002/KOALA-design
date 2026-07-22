@@ -3,6 +3,7 @@
 //  vectr
 //
 
+import LinkPresentation
 import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
@@ -26,53 +27,68 @@ struct ShareSheetPresenter: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
         if isPresented {
             guard !context.coordinator.isPresenting else { return }
-            guard uiViewController.presentedViewController == nil else { return }
             guard !items.isEmpty else { return }
 
             context.coordinator.isPresenting = true
-            let activity = UIActivityViewController(activityItems: items, applicationActivities: nil)
-            activity.completionWithItemsHandler = { _, _, _, _ in
-                context.coordinator.isPresenting = false
-                isPresented = false
-                onComplete?()
-            }
-            if let popover = activity.popoverPresentationController,
-               let view = uiViewController.view {
-                popover.sourceView = view
-                popover.sourceRect = CGRect(
-                    x: view.bounds.midX,
-                    y: view.bounds.midY,
-                    width: 0,
-                    height: 0
-                )
-                popover.permittedArrowDirections = []
-            }
+            let items = self.items
+            let onComplete = self.onComplete
 
             DispatchQueue.main.async {
                 let presenter = Self.presentationAnchor(from: uiViewController)
-                guard presenter.presentedViewController == nil else {
-                    context.coordinator.isPresenting = false
+                // Wait out any just-dismissed sheet before presenting.
+                if presenter.presentedViewController != nil {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        self.presentActivity(
+                            from: Self.presentationAnchor(from: uiViewController),
+                            items: items,
+                            context: context,
+                            onComplete: onComplete
+                        )
+                    }
                     return
                 }
-                if let popover = activity.popoverPresentationController,
-                   let view = presenter.view {
-                    popover.sourceView = view
-                    popover.sourceRect = CGRect(
-                        x: view.bounds.midX,
-                        y: view.bounds.midY,
-                        width: 0,
-                        height: 0
-                    )
-                    popover.permittedArrowDirections = []
-                }
-                presenter.present(activity, animated: true)
+                self.presentActivity(
+                    from: presenter,
+                    items: items,
+                    context: context,
+                    onComplete: onComplete
+                )
             }
         } else {
             context.coordinator.isPresenting = false
-            if let presented = uiViewController.presentedViewController {
-                presented.dismiss(animated: true)
-            }
         }
+    }
+
+    private func presentActivity(
+        from presenter: UIViewController,
+        items: [Any],
+        context: Context,
+        onComplete: (() -> Void)?
+    ) {
+        guard presenter.presentedViewController == nil else {
+            context.coordinator.isPresenting = false
+            isPresented = false
+            return
+        }
+
+        let activity = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        activity.completionWithItemsHandler = { _, _, _, _ in
+            context.coordinator.isPresenting = false
+            isPresented = false
+            onComplete?()
+        }
+        if let popover = activity.popoverPresentationController,
+           let view = presenter.view {
+            popover.sourceView = view
+            popover.sourceRect = CGRect(
+                x: view.bounds.midX,
+                y: view.bounds.midY,
+                width: 0,
+                height: 0
+            )
+            popover.permittedArrowDirections = []
+        }
+        presenter.present(activity, animated: true)
     }
 
     private static func presentationAnchor(from controller: UIViewController) -> UIViewController {
@@ -109,20 +125,24 @@ struct ShareSheetPresenter: UIViewControllerRepresentable {
     }
 }
 
-/// Shares a JPEG so the system offers image actions (Save Image) while still
-/// providing a named `.jpg` file for AirDrop / Files.
+/// Shares a JPEG as a real image so the sheet offers Save Image / Photos,
+/// while still handing a named `.jpg` file to AirDrop and Save to Files.
 final class JPEGShareItem: NSObject, UIActivityItemSource {
     let image: UIImage
     let fileURL: URL
+    let title: String
 
     init(image: UIImage, fileURL: URL) {
         self.image = image
         self.fileURL = fileURL
+        self.title = fileURL.deletingPathExtension().lastPathComponent
+        super.init()
     }
 
     func activityViewControllerPlaceholderItem(
         _ activityViewController: UIActivityViewController
     ) -> Any {
+        // Must be UIImage so the sheet classifies this as an image activity.
         image
     }
 
@@ -130,12 +150,14 @@ final class JPEGShareItem: NSObject, UIActivityItemSource {
         _ activityViewController: UIActivityViewController,
         itemForActivityType activityType: UIActivity.ActivityType?
     ) -> Any? {
-        switch activityType {
-        case .saveToCameraRoll, .message, .mail, .postToFacebook, .postToTwitter, .copyToPasteboard:
-            return image
-        default:
+        // Critical: when activityType is nil the system is probing available
+        // activities. Returning a file URL here hides Save Image.
+        guard let activityType else { return image }
+
+        if activityType == .airDrop || Self.isSaveToFiles(activityType) {
             return fileURL
         }
+        return image
     }
 
     func activityViewController(
@@ -149,7 +171,7 @@ final class JPEGShareItem: NSObject, UIActivityItemSource {
         _ activityViewController: UIActivityViewController,
         subjectForActivityType activityType: UIActivity.ActivityType?
     ) -> String {
-        fileURL.deletingPathExtension().lastPathComponent
+        title
     }
 
     func activityViewController(
@@ -158,5 +180,21 @@ final class JPEGShareItem: NSObject, UIActivityItemSource {
         suggestedSize size: CGSize
     ) -> UIImage? {
         image
+    }
+
+    func activityViewControllerLinkMetadata(
+        _ activityViewController: UIActivityViewController
+    ) -> LPLinkMetadata? {
+        let metadata = LPLinkMetadata()
+        metadata.title = title
+        metadata.originalURL = fileURL
+        metadata.url = fileURL
+        metadata.imageProvider = NSItemProvider(object: image)
+        metadata.iconProvider = NSItemProvider(object: image)
+        return metadata
+    }
+
+    private static func isSaveToFiles(_ activityType: UIActivity.ActivityType) -> Bool {
+        activityType.rawValue == "com.apple.DocumentManagerUICore.SaveToFiles"
     }
 }

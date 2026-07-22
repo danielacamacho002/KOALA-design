@@ -775,9 +775,10 @@ struct EditorView: View {
         } else {
             shareItems = [url]
         }
-        // Reset first so a second export can present again.
+        // Reset first so a second export can present again. Delay past any
+        // just-dismissed format sheet so UIActivityViewController can present.
         showShareSheet = false
-        DispatchQueue.main.async {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             showShareSheet = true
         }
     }
@@ -785,20 +786,12 @@ struct EditorView: View {
     private func presentDesignShare() {
         do {
             if exportFormat == .jpeg {
-                let image = try JPEGExporter.renderImage(
+                let prepared = try JPEGExporter.prepareForSharing(
                     document: store.document,
+                    named: store.fileName,
                     quality: exportQuality
                 )
-                let tempURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("\(store.fileName).jpg")
-                if FileManager.default.fileExists(atPath: tempURL.path) {
-                    try FileManager.default.removeItem(at: tempURL)
-                }
-                guard let data = image.jpegData(compressionQuality: exportQuality.jpegCompression) else {
-                    throw JPEGExporter.ExportError.renderFailed
-                }
-                try data.write(to: tempURL, options: .atomic)
-                presentShare(url: tempURL, image: image)
+                presentShare(url: prepared.fileURL, image: prepared.image)
             } else {
                 let tempURL = try ExportRouter.temporaryExportURL(
                     document: store.document,
