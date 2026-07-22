@@ -14,7 +14,7 @@ struct PrintLayoutView: View {
     var onRedo: () -> Void
     var onSave: () -> Void
     var onSwitchToDesign: () -> Void
-    var onExport: (PrintLayoutExportKind) -> Void
+    var onExport: () -> Void
     var onChanged: () -> Void
     var onLayoutReady: (CGSize) -> Void
     var onFitToGrid: (CGSize) -> Void

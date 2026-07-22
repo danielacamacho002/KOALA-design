@@ -6,6 +6,7 @@
 import UIKit
 
 enum TiledPDFExporter {
+    /// Writes one PDF page per print-layout sheet.
     static func write(document: VectrDocument, to url: URL) throws {
         let settings = document.printLayout
         let pageSize = PrintPageGridEngine.pageSize(for: settings)
@@ -25,15 +26,10 @@ enum TiledPDFExporter {
                 // Map document coordinates onto this page.
                 cgContext.translateBy(x: -sheet.frame.origin.x, y: -sheet.frame.origin.y)
 
-                var viewport = ViewportTransform()
-                viewport.scale = 1
-                viewport.translation = .zero
-
                 let printable = PrintPageGridEngine.printableRect(for: sheet.frame, settings: settings)
                 cgContext.clip(to: printable)
 
-                drawPrintStrokes(document: document, in: cgContext, viewport: viewport)
-                drawPrintText(document: document, in: cgContext)
+                drawPrintContent(document: document, in: cgContext)
 
                 cgContext.resetClip()
                 drawMarginGuide(settings.marginMode.printedStyle, in: printable, context: cgContext)
@@ -42,6 +38,14 @@ enum TiledPDFExporter {
                 cgContext.restoreGState()
             }
         }
+    }
+
+    private static func drawPrintContent(document: VectrDocument, in context: CGContext) {
+        var viewport = ViewportTransform()
+        viewport.scale = 1
+        viewport.translation = .zero
+        drawPrintStrokes(document: document, in: context, viewport: viewport)
+        drawPrintText(document: document, in: context)
     }
 
     private static func drawPrintStrokes(

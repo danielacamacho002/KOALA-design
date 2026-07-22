@@ -5,11 +5,6 @@
 
 import SwiftUI
 
-enum PrintLayoutExportKind {
-    case tiledPDF
-    case singlePDF
-}
-
 struct PrintLayoutToolbarView: View {
     @Bindable var document: VectrDocument
     @Binding var isPaperPanelOpen: Bool
@@ -21,7 +16,7 @@ struct PrintLayoutToolbarView: View {
     var onRedo: () -> Void
     var onSave: () -> Void
     var onSwitchToDesign: () -> Void
-    var onExport: (PrintLayoutExportKind) -> Void
+    var onExport: () -> Void
     var onSettingsChanged: () -> Void
 
     private let toolbarHeight: CGFloat = 48
@@ -140,20 +135,15 @@ struct PrintLayoutToolbarView: View {
     }
 
     private var exportMenu: some View {
-        Menu {
-            Button("Export Tiled PDF") {
-                onExport(.tiledPDF)
-            }
-            Button("Export Single PDF") {
-                onExport(.singlePDF)
-            }
-        } label: {
+        Button(action: onExport) {
             Label("Export", systemImage: "square.and.arrow.up")
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Export Tiled PDF")
     }
 
     private func toolbarIconButton(_ systemImage: String, disabled: Bool = false, action: @escaping () -> Void) -> some View {
