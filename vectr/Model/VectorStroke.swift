@@ -169,9 +169,17 @@ struct VectorStroke: Identifiable, Codable, Equatable {
 
     func cgPath() -> CGPath {
         let path = CGMutablePath()
-        // Curves are stored as sparse anchors; expand to the smoothed geometry so
-        // exported/extruded paths match what is drawn on screen.
-        let pathPoints = shapeType == .curve ? ShapeGeometry.renderPoints(for: self) : points
+        // Curves, arcs, circles and ellipses are stored as sparse/parametric anchors;
+        // expand to the resolved geometry so exported/extruded paths match what is drawn
+        // on screen instead of connecting the raw anchors with straight segments.
+        let usesSparseStorage: Bool
+        switch shapeType {
+        case .curve, .arc, .circle, .ellipse:
+            usesSparseStorage = true
+        default:
+            usesSparseStorage = false
+        }
+        let pathPoints = usesSparseStorage ? ShapeGeometry.renderPoints(for: self) : points
         guard let first = pathPoints.first else { return path }
         path.move(to: first)
         for point in pathPoints.dropFirst() {

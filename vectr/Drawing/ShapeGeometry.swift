@@ -217,10 +217,11 @@ enum ShapeGeometry {
                     shapeType: .construction
                 )
             case .arc:
-                guard controlPoints.count >= 3 else { return nil }
+                guard controlPoints.count >= 3,
+                      let anchors = arcAnchorPoints(points) else { return nil }
                 return VectorStroke(
                     layerID: layerID,
-                    points: points,
+                    points: anchors,
                     strokeWidth: strokeWidth,
                     strokeColor: strokeColor,
                     isClosed: false,
@@ -287,6 +288,8 @@ enum ShapeGeometry {
                 )
             }
             return stroke.points
+        case .arc:
+            return arcAnchorPoints(stroke.points) ?? stroke.points
         case .rectangle:
             return stroke.points
         default:
@@ -494,6 +497,14 @@ enum ShapeGeometry {
             }
             return stroke.points
         case .arc:
+            if let anchors = arcAnchorPoints(stroke.points) {
+                return arcPointsThrough(
+                    start: anchors[0],
+                    end: anchors[2],
+                    through: anchors[1],
+                    segments: 64
+                )
+            }
             return stroke.points
         case .curve:
             if let handles = stroke.curveHandles, handles.count == stroke.points.count {
@@ -1143,6 +1154,81 @@ enum ShapeGeometry {
 
     private static func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
         CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+    }
+
+    /// The three defining anchors of an arc stroke: start, mid-curve, and end.
+    /// Arcs are stored as exactly these three points. This also normalizes any
+    /// legacy arc that was persisted as a dense tessellation by collapsing it back
+    /// to its start / angular-midpoint / end samples.
+    static func arcAnchorPoints(_ points: [CGPoint]) -> [CGPoint]? {
+        guard points.count >= 3 else { return nil }
+        return [points.first!, points[points.count / 2], points.last!]
+    }
+
+    /// Cubic Bezier handles that approximate the circular arc through `start`, `mid`,
+    /// and `end` as two segments (`start→mid`, `mid→end`). Used when an arc is joined
+    /// into a `.curve` stroke so the circular geometry survives as editable tangents.
+    static func curveHandlesApproximatingArc(
+        start: CGPoint,
+        mid: CGPoint,
+        end: CGPoint
+    ) -> [CurveHandle]? {
+        guard let circle = arcCenter(start: start, end: end, through: mid) else { return nil }
+        var handles = [CurveHandle(), CurveHandle(), CurveHandle()]
+        let first = circularArcHandleOffsets(
+            from: start,
+            to: mid,
+            center: circle.center,
+            radius: circle.radius,
+            through: mid
+        )
+        handles[0].outOffset = first.outFromStart
+        handles[1].inOffset = first.inToEnd
+        let second = circularArcHandleOffsets(
+            from: mid,
+            to: end,
+            center: circle.center,
+            radius: circle.radius,
+            through: end
+        )
+        handles[1].outOffset = second.outFromStart
+        handles[2].inOffset = second.inToEnd
+        return handles
+    }
+
+    /// Standard cubic approximation of a circular arc: κ = 4/3 · tan(θ/4).
+    private static func circularArcHandleOffsets(
+        from start: CGPoint,
+        to end: CGPoint,
+        center: CGPoint,
+        radius: CGFloat,
+        through: CGPoint
+    ) -> (outFromStart: CGPoint, inToEnd: CGPoint) {
+        let startAngle = atan2(start.y - center.y, start.x - center.x)
+        let endAngle = atan2(end.y - center.y, end.x - center.x)
+        var sweep = endAngle - startAngle
+        var testSweep = atan2(through.y - center.y, through.x - center.x) - startAngle
+        while testSweep > .pi { testSweep -= 2 * .pi }
+        while testSweep < -.pi { testSweep += 2 * .pi }
+        while sweep > .pi { sweep -= 2 * .pi }
+        while sweep < -.pi { sweep += 2 * .pi }
+        // When `through` is the segment end itself, keep the short-arc sweep.
+        if through != end, (testSweep > 0) != (sweep > 0) {
+            sweep = testSweep > 0 ? sweep + 2 * .pi : sweep - 2 * .pi
+        }
+        guard abs(sweep) > 0.0001, radius > 0.001 else {
+            return (.zero, .zero)
+        }
+        let kappa = (4.0 / 3.0) * tan(sweep / 4.0) * radius
+        let outFromStart = CGPoint(
+            x: -sin(startAngle) * kappa,
+            y: cos(startAngle) * kappa
+        )
+        let inToEnd = CGPoint(
+            x: sin(endAngle) * kappa,
+            y: -cos(endAngle) * kappa
+        )
+        return (outFromStart, inToEnd)
     }
 
     private static func arcControlCenter(from arcPoints: [CGPoint]) -> CGPoint? {
