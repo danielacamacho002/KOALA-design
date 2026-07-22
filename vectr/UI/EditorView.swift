@@ -872,9 +872,9 @@ struct EditorView: View {
             commandSession.cancel()
             store.document.clearToolSelections()
             if store.document.selectedStrokeID == nil {
-                statusMessage = "Tap a shape to select it"
+                statusMessage = "Tap a shape to select it, then tap the portion to trim away"
             } else {
-                statusMessage = "Tap a red side marker to remove that edge, or a corner to delete the point"
+                statusMessage = "Tap the portion to trim away (circle quadrants, or spans between intersections)"
             }
         case .fillet:
             commandSession.cancel()
@@ -1053,18 +1053,13 @@ struct EditorView: View {
             }
         case .trim:
             let threshold = store.document.viewport.viewToDocument(distance: 16)
-            if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
-                if let pointIndex = StrokeEditor.nearestHandleIndex(in: stroke, point: documentPoint, threshold: threshold) {
-                    store.document.deleteStrokePoint(at: pointIndex)
-                    refreshCanvas()
-                } else if stroke.shapeType != .circle, stroke.shapeType != .ellipse,
-                          let edgeIndex = StrokeEditor.nearestEdgeIndex(in: stroke, point: documentPoint, threshold: threshold) {
-                    store.document.deleteStrokeEdge(at: edgeIndex)
-                    refreshCanvas()
-                }
-            } else {
+            if store.document.trimAt(documentPoint, threshold: threshold) {
+                refreshCanvas()
+            } else if store.document.selectedStrokeID == nil {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
                 refreshCanvas()
+            } else {
+                statusMessage = "Tap a span between cut points (quadrants or intersections) to trim it"
             }
         case .addAnchor:
             let threshold = store.document.viewport.viewToDocument(distance: 28)
