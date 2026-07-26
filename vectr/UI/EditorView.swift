@@ -45,6 +45,10 @@ struct EditorView: View {
     @State private var patternSettings = PatternSettings()
     @State private var patternPreviewStrokes: [VectorStroke] = []
     @State private var autoSaveTask: Task<Void, Never>?
+    @State private var designOnboarding = OnboardingController(
+        tour: .design,
+        completedKey: OnboardingSettings.designTourCompletedKey
+    )
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
 
     init(projectURL: URL? = nil, projectLibrary: ProjectLibrary? = nil) {
@@ -375,6 +379,7 @@ struct EditorView: View {
                         }
                 }
             }
+            .onboardingTourOverlay(controller: designOnboarding)
             .onAppear {
                 canvasSize = geometry.size
                 updateChromeInsets()

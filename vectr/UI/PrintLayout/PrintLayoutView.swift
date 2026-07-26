@@ -23,6 +23,10 @@ struct PrintLayoutView: View {
     @State private var showPaperPanel = false
     @State private var showMarginPanel = false
     @State private var printRotateMode = false
+    @State private var printOnboarding = OnboardingController(
+        tour: .printLayout,
+        completedKey: OnboardingSettings.printTourCompletedKey
+    )
 
     private var hasPrintSelection: Bool {
         document.printSelectedStrokeID != nil || document.printSelectedTextID != nil
@@ -107,6 +111,7 @@ struct PrintLayoutView: View {
                         }
                 }
             }
+            .onboardingTourOverlay(controller: printOnboarding)
             .onAppear {
                 onLayoutReady(geometry.size)
             }
