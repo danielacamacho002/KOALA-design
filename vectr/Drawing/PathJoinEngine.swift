@@ -65,9 +65,25 @@ enum PathJoinEngine {
 
     /// Converts a stroke into an editable anchor path. Uses the same handle
     /// points the UI exposes (so rectangles and circles join by their corners /
-    /// cardinals). Curve handles are kept when the stroke is already a curve.
+    /// cardinals). Curve handles are kept when the stroke is already a curve, and
+    /// arcs are approximated with Bezier handles so their curvature survives joins.
     private static func normalized(_ stroke: VectorStroke) -> Path {
         let points = ShapeGeometry.handlePoints(for: stroke)
+
+        // Arcs: rebuild the circular geometry as cubic Bezier handles through the
+        // (start, mid, end) anchors so a joined arc stays curved instead of
+        // collapsing into a straight three-point polyline.
+        if stroke.shapeType == .arc,
+           let anchors = ShapeGeometry.arcAnchorPoints(stroke.points),
+           anchors.count == 3,
+           let handles = ShapeGeometry.curveHandlesApproximatingArc(
+               start: anchors[0],
+               mid: anchors[1],
+               end: anchors[2]
+           ) {
+            return Path(points: anchors, handles: handles, isClosed: false, isCurve: true)
+        }
+
         let isCurve = stroke.shapeType == .curve
         if isCurve, let handles = stroke.curveHandles, handles.count == stroke.points.count,
            stroke.points.count == points.count {
