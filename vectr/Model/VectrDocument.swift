@@ -918,31 +918,28 @@ final class VectrDocument {
 
     // MARK: - Multi-element operations
 
-    /// Point-based strokes whose anchors can be welded. Parametric shapes
-    /// (circles, ellipses, rectangles) and construction guides are excluded
-    /// because they have no editable per-anchor geometry to weld. Both open and
-    /// closed contours qualify so closed shapes can be merged where anchors touch.
+    /// Any non-construction stroke with editable anchors (open or closed,
+    /// including rectangles / circles via their handle points).
     private func isJoinable(_ stroke: VectorStroke) -> Bool {
-        !stroke.isConstruction
-            && stroke.points.count >= 2
-            && (stroke.shapeType == .polyline || stroke.shapeType == .curve || stroke.shapeType == .arc)
+        !stroke.isConstruction && ShapeGeometry.handlePoints(for: stroke).count >= 2
     }
 
     private var joinableSelectedStrokes: [VectorStroke] {
         strokes.filter { selectedStrokeIDs.contains($0.id) && isJoinable($0) }
     }
 
-    /// True when the selection has at least two weldable strokes. Unlike Group,
-    /// Join permanently fuses the selection, so it stays enabled whenever there
-    /// is more than one anchor-based shape to weld.
+    /// True when two selected shapes have anchors within snap tolerance of each
+    /// other. Open vs closed does not matter — Join appears exactly when a weld
+    /// is possible.
     var canJoinSelection: Bool {
-        joinableSelectedStrokes.count >= 2
+        let selected = joinableSelectedStrokes
+        guard selected.count >= 2 else { return false }
+        return PathJoinEngine.hasTouchingAnchors(selected, tolerance: grid.spacing * 0.5)
     }
 
-    /// Permanently welds the selected shapes together at their coincident
-    /// anchors, chaining open paths that meet into single continuous paths.
-    /// Distinct from grouping: the underlying geometry is fused, not just moved
-    /// together. Undoable, but there is no dedicated "unjoin".
+    /// Permanently welds selected shapes that share touching anchors into one
+    /// (or fewer) paths. Distinct from grouping: geometry is fused, not just
+    /// moved together. Undoable, but there is no dedicated "unjoin".
     @discardableResult
     func joinSelectedShapes() -> Bool {
         let selected = joinableSelectedStrokes

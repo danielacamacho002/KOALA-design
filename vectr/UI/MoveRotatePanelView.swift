@@ -164,19 +164,20 @@ struct MoveRotatePanelView: View {
             }
         }
 
-        ToolPanelLabelButton(
-            title: "Join",
-            prominent: true,
-            isDisabled: !document.canJoinSelection,
-            fullWidth: true
-        ) {
-            if document.joinSelectedShapes() { onApply() }
-        }
+        if document.canJoinSelection {
+            ToolPanelLabelButton(
+                title: "Join",
+                prominent: true,
+                fullWidth: true
+            ) {
+                if document.joinSelectedShapes() { onApply() }
+            }
 
-        Text("Join permanently fuses the selected shapes into one. Group only moves shapes together.")
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            Text("Welds touching anchors into one shape. Unlike Group, this is permanent.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     @ViewBuilder
