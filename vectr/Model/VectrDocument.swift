@@ -637,6 +637,7 @@ final class VectrDocument {
               let updated = StrokeEditor.deletePoint(stroke, at: pointIndex) else { return }
         pushUndo()
         updateStroke(updated, recordUndo: false)
+        ClosedShapeDetector.reconcile(document: self)
     }
 
     func deleteStrokeEdge(at edgeIndex: Int) {
@@ -645,6 +646,34 @@ final class VectrDocument {
               let updated = StrokeEditor.deleteEdge(stroke, edgeIndex: edgeIndex) else { return }
         pushUndo()
         updateStroke(updated, recordUndo: false)
+        ClosedShapeDetector.reconcile(document: self)
+    }
+
+    /// CAD-style trim: remove the contour span between cut points that bounds `documentPoint`.
+    @discardableResult
+    func trimAt(_ documentPoint: CGPoint, threshold: CGFloat) -> Bool {
+        guard let result = TrimEngine.trim(
+            at: documentPoint,
+            threshold: threshold,
+            strokes: strokes,
+            preferredStrokeID: selectedStrokeID
+        ) else { return false }
+
+        pushUndo()
+        if let index = strokes.firstIndex(where: { $0.id == result.strokeID }) {
+            strokes[index] = result.stroke
+        }
+        var affected: Set<UUID> = [result.stroke.id]
+        if let additional = result.additionalStroke {
+            strokes.append(additional)
+            affected.insert(additional.id)
+        }
+        selectedStrokeID = result.stroke.id
+        reconcileIntersectionAnchors(around: affected)
+        ClosedShapeDetector.reconcile(document: self)
+        DonutDetector.reconcile(document: self)
+        geometryRevision += 1
+        return true
     }
 
     func currentAnchorCount(for stroke: VectorStroke) -> Int {
