@@ -318,6 +318,9 @@ enum ShapeGeometry {
             return circleFromCardinalPoints(stroke.points)?.center
         case .ellipse:
             return ellipseFromCardinalPoints(stroke.points)?.center
+        case .arc:
+            // Geometric circle center — not the bbox midpoint, which drifts for partial arcs.
+            return arcCircle(for: stroke)?.center
         case .rectangle:
             if stroke.points.count == 4 {
                 return CGPoint(
@@ -1233,17 +1236,20 @@ enum ShapeGeometry {
 
     private static func arcControlCenter(from arcPoints: [CGPoint]) -> CGPoint? {
         guard arcPoints.count >= 3 else { return nil }
-        if let fitted = fitCircle(from: arcPoints) {
-            return fitted.center
-        }
         let start = arcPoints.first!
         let end = arcPoints.last!
         let through = arcPoints[arcPoints.count / 2]
+        // Circumcenter of start/mid/end — stable for partial arcs. Do not use the
+        // sample centroid (`fitCircle`), which shifts toward the remaining sweep.
         if let arc = arcCenter(start: start, end: end, through: through) {
             return arc.center
         }
-        if let bbox = VectorStroke(layerID: UUID(), points: arcPoints).boundingBox() {
-            return CGPoint(x: bbox.midX, y: bbox.midY)
+        if let fitted = fitCircle(from: arcPoints), arcPoints.count >= 24 {
+            // Dense near-full contours only; centroid is usable when coverage is high.
+            let span = hypot(end.x - start.x, end.y - start.y)
+            if span <= fitted.radius * 0.35 {
+                return fitted.center
+            }
         }
         return nil
     }
