@@ -14,8 +14,6 @@ struct FontPickerView: View {
     @State private var showImporter = false
     @State private var importError: String?
 
-    @AppStorage(AppearanceSettings.panelColorKey) private var panelColorHex = AppearanceSettings.defaultPanelHex
-
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ToolPanelHeader("Font")
@@ -50,7 +48,7 @@ struct FontPickerView: View {
                 showImporter = true
             }
         }
-        .toolPanelChrome(width: 200, fill: Color(hex: panelColorHex))
+        .toolPanelChrome(width: 200)
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: Self.fontContentTypes,
