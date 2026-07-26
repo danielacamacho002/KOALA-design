@@ -248,8 +248,12 @@ enum PathJoinEngine {
     /// Guarantees a single path so the weld is permanent.
     private static func stitchPaths(_ paths: [Path], tolerance: CGFloat) -> Path {
         var remaining = paths
-        // Start from the path with the most anchors for a more stable host.
-        remaining.sort { $0.points.count > $1.points.count }
+        // Prefer a closed path as the host so its loop survives the weld, then
+        // fall back to the path with the most anchors for a stable host.
+        remaining.sort { lhs, rhs in
+            if lhs.isClosed != rhs.isClosed { return lhs.isClosed }
+            return lhs.points.count > rhs.points.count
+        }
         var host = remaining.removeFirst()
 
         while !remaining.isEmpty {
@@ -297,7 +301,9 @@ enum PathJoinEngine {
 
     /// Inserts `guest` into `host` at a shared anchor. Closed guests are walked
     /// as a loop that returns to the join point; open guests become a spur that
-    /// doubles back when the join is mid-path.
+    /// doubles back when the join is mid-path. Curve handles are carried through
+    /// the walk so arcs and curves keep their shape, and the host's closedness is
+    /// preserved so welding a spur onto a closed shape leaves it closed.
     private static func splice(
         _ host: Path,
         _ guest: Path,
@@ -310,36 +316,77 @@ enum PathJoinEngine {
             return append(host, guest, tolerance: tolerance)
         }
 
-        let guestWalk: [CGPoint]
+        let guestHandles = guest.handles.count == guest.points.count
+            ? guest.handles
+            : Array(repeating: CurveHandle(), count: guest.points.count)
+
+        // Walking an anchor in reverse swaps its incoming/outgoing tangents.
+        func flip(_ handle: CurveHandle) -> CurveHandle {
+            CurveHandle(inOffset: handle.outOffset, outOffset: handle.inOffset)
+        }
+
+        var walkPoints: [CGPoint] = []
+        var walkHandles: [CurveHandle] = []
+        // Tangent leaving the shared anchor into the guest walk, so the first
+        // spliced segment keeps its curvature at the weld.
+        var junctionOut = CGPoint.zero
+
         if guest.isClosed {
-            // Rotate so the shared point is first, then walk the full loop and
-            // return to it (caller already has the shared point in host).
-            var rotated = Array(guest.points[guestIndex...]) + Array(guest.points[..<guestIndex])
-            // Drop the leading shared point; keep the trailing return-to-shared
-            // so the spur closes before continuing along the host.
-            if rotated.count > 1 { rotated.removeFirst() }
-            guestWalk = rotated + [shared]
+            // Walk the whole loop starting just after the shared anchor and ending
+            // back on it, so the spur closes before continuing along the host.
+            junctionOut = guestHandles[guestIndex].outOffset
+            let order = Array((guestIndex + 1)..<guest.points.count) + Array(0...guestIndex)
+            for i in order {
+                walkPoints.append(guest.points[i])
+                walkHandles.append(guestHandles[i])
+            }
         } else if guestIndex == 0 {
-            guestWalk = Array(guest.points.dropFirst())
+            junctionOut = guestHandles[0].outOffset
+            for i in 1..<guest.points.count {
+                walkPoints.append(guest.points[i])
+                walkHandles.append(guestHandles[i])
+            }
         } else if guestIndex == guest.points.count - 1 {
-            guestWalk = Array(guest.points.dropLast().reversed())
+            junctionOut = guestHandles[guestIndex].inOffset
+            for i in stride(from: guest.points.count - 2, through: 0, by: -1) {
+                walkPoints.append(guest.points[i])
+                walkHandles.append(flip(guestHandles[i]))
+            }
         } else {
-            // Mid-path join: walk to the far end and double back to the join,
+            junctionOut = guestHandles[guestIndex].inOffset
+            // Mid-path join: walk to one far end and double back through the join,
             // then walk the other side and return — covers every guest edge.
-            let left = Array(guest.points[..<guestIndex].reversed())
-            let right = Array(guest.points[(guestIndex + 1)...])
-            guestWalk = left + [shared] + right + [shared]
+            for i in stride(from: guestIndex - 1, through: 0, by: -1) {
+                walkPoints.append(guest.points[i])
+                walkHandles.append(flip(guestHandles[i]))
+            }
+            walkPoints.append(shared)
+            walkHandles.append(CurveHandle())
+            for i in (guestIndex + 1)..<guest.points.count {
+                walkPoints.append(guest.points[i])
+                walkHandles.append(guestHandles[i])
+            }
+            walkPoints.append(shared)
+            walkHandles.append(CurveHandle())
         }
 
         var points = host.points
-        points.insert(contentsOf: guestWalk, at: hostIndex + 1)
+        var handles = host.handles.count == host.points.count
+            ? host.handles
+            : Array(repeating: CurveHandle(), count: host.points.count)
+        // Only steer the host's junction tangent when the guest actually curves,
+        // so a straight guest never flattens a curved host at the weld.
+        if guest.isCurve {
+            handles[hostIndex].outOffset = junctionOut
+        }
+        points.insert(contentsOf: walkPoints, at: hostIndex + 1)
+        handles.insert(contentsOf: walkHandles, at: hostIndex + 1)
 
-        // Curve handles can't survive an arbitrary splice; fall back to polyline.
         return Path(
             points: points,
-            handles: Array(repeating: CurveHandle(), count: points.count),
-            isClosed: host.isClosed && guest.isClosed,
-            isCurve: false
+            handles: handles,
+            isClosed: host.isClosed,
+            isCurve: host.isCurve || guest.isCurve
         )
     }
 
