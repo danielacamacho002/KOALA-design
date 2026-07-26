@@ -415,6 +415,7 @@ struct PathSnapEngine {
         within radius: CGFloat,
         strokes: [VectorStroke],
         excludedStrokeID: UUID? = nil,
+        excludedStrokeIDs: Set<UUID> = [],
         enabledKinds: Set<SnapKind>,
         referenceStarts: [CGPoint] = []
     ) -> SnapCandidate? {
@@ -448,6 +449,7 @@ struct PathSnapEngine {
         nearby.reserveCapacity(strokes.count)
         for stroke in strokes {
             if let excludedStrokeID, stroke.id == excludedStrokeID { continue }
+            if excludedStrokeIDs.contains(stroke.id) { continue }
             guard let box = stroke.boundingBox(padding: radius), box.intersects(zone) else { continue }
             nearby.append(stroke)
         }
@@ -524,7 +526,19 @@ final class SnapInteractionSession {
         let didLock: Bool
     }
 
+    struct TranslationUpdate {
+        /// The candidate a moving anchor is currently locked to, or `nil` if free.
+        let candidate: SnapCandidate?
+        /// Vector to add to the raw move delta so the locked anchor lands on the candidate.
+        let correction: CGPoint
+        /// `true` only on the frame a moving anchor newly locks onto a candidate (haptic trigger).
+        let didLock: Bool
+    }
+
     private(set) var lockedCandidate: SnapCandidate?
+    /// The moving anchor origin (pre-translation) associated with `lockedCandidate` during a
+    /// whole-object translation, so the correction can be recomputed each frame.
+    private var lockedOrigin: CGPoint?
     private var lastPoint: CGPoint?
     private var lastTimestamp: TimeInterval?
 
@@ -593,9 +607,79 @@ final class SnapInteractionSession {
         return Update(candidate: nil, didLock: false)
     }
 
+    /// Resolve snapping for a rigid whole-object translation.
+    ///
+    /// Unlike `update` (which snaps a single reference point), this treats *every* moving anchor
+    /// as a candidate reference. Because the move is a pure translation by `rawDelta`, snapping
+    /// anchor origin `o_i` onto target `c` yields `delta = c - o_i`. We pick the `(o_i, c)` pair
+    /// with the smallest gap within the snap radius, then return the correction that lands that
+    /// anchor exactly on the candidate. Distance hysteresis keeps the lock sticky.
+    ///
+    /// All distances are in document units.
+    func updateTranslation(
+        origins: [CGPoint],
+        rawDelta: CGPoint,
+        engine: PathSnapEngine,
+        strokes: [VectorStroke],
+        enabledKinds: Set<SnapKind>,
+        snapRadius: CGFloat,
+        breakawayRadius: CGFloat,
+        excludedStrokeIDs: Set<UUID>
+    ) -> TranslationUpdate {
+        // 1. Stay locked (hysteresis): keep the current candidate glued while the associated
+        //    anchor's projected position stays within the outer radius.
+        if let current = lockedCandidate, let origin = lockedOrigin {
+            let projected = CGPoint(x: origin.x + rawDelta.x, y: origin.y + rawDelta.y)
+            let distance = hypot(projected.x - current.point.x, projected.y - current.point.y)
+            if distance <= breakawayRadius {
+                let correction = CGPoint(x: current.point.x - projected.x, y: current.point.y - projected.y)
+                return TranslationUpdate(candidate: current, correction: correction, didLock: false)
+            }
+            lockedCandidate = nil
+            lockedOrigin = nil
+        }
+
+        // 2. Acquire: find the moving anchor whose projected position is nearest to a candidate.
+        var best: SnapCandidate?
+        var bestOrigin: CGPoint?
+        var bestDistanceSquared = snapRadius * snapRadius
+        for origin in origins {
+            let projected = CGPoint(x: origin.x + rawDelta.x, y: origin.y + rawDelta.y)
+            guard let candidate = engine.closestCandidate(
+                to: projected,
+                within: snapRadius,
+                strokes: strokes,
+                excludedStrokeIDs: excludedStrokeIDs,
+                enabledKinds: enabledKinds
+            ) else { continue }
+            let dx = candidate.point.x - projected.x
+            let dy = candidate.point.y - projected.y
+            let distanceSquared = dx * dx + dy * dy
+            if distanceSquared < bestDistanceSquared {
+                bestDistanceSquared = distanceSquared
+                best = candidate
+                bestOrigin = origin
+            }
+        }
+
+        if let best, let bestOrigin {
+            let isNewLock = best != lockedCandidate
+            lockedCandidate = best
+            lockedOrigin = bestOrigin
+            let projected = CGPoint(x: bestOrigin.x + rawDelta.x, y: bestOrigin.y + rawDelta.y)
+            let correction = CGPoint(x: best.point.x - projected.x, y: best.point.y - projected.y)
+            return TranslationUpdate(candidate: best, correction: correction, didLock: isNewLock)
+        }
+
+        lockedCandidate = nil
+        lockedOrigin = nil
+        return TranslationUpdate(candidate: nil, correction: .zero, didLock: false)
+    }
+
     /// Clears all lock/velocity state. Call when a gesture ends or is cancelled.
     func reset() {
         lockedCandidate = nil
+        lockedOrigin = nil
         lastPoint = nil
         lastTimestamp = nil
     }
