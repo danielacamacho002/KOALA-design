@@ -157,10 +157,20 @@ enum IntersectionAnchorEngine {
     }
 
     /// Open lines/polylines are never subdivided — repositioning a line should never carve
-    /// extra anchors into it. Closed shapes (rectangles, closed polygons, circles, …) still
-    /// gain anchors where other geometry crosses them.
+    /// extra anchors into it. Parametric shapes (circles, ellipses, arcs) are also left
+    /// untouched: a circle/ellipse must always keep exactly its 4 cardinal quadrant anchors and
+    /// an arc must always keep exactly its 3 (start / mid / end) anchors. The only way to add
+    /// anchors to any of these is through the Add Anchor tool. Other closed shapes (rectangles,
+    /// closed polygons) still gain anchors where other geometry crosses them.
     private static func acceptsInsertedAnchors(_ stroke: VectorStroke) -> Bool {
-        !(stroke.shapeType == .polyline && !stroke.isClosed)
+        switch stroke.shapeType {
+        case .circle, .ellipse, .arc:
+            return false
+        case .polyline:
+            return stroke.isClosed
+        default:
+            return true
+        }
     }
 
     private static func segmentCount(for stroke: VectorStroke, points: [CGPoint]) -> Int {

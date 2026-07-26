@@ -102,7 +102,7 @@ struct MidpointSnapProvider: SnapCandidateProvider {
         case .polyline, .rectangle, .construction:
             return SnapGeometry.segmentMidpoints(for: stroke)
         case .arc:
-            return SnapGeometry.arcLengthMidpoint(of: stroke.points).map { [$0] } ?? []
+            return SnapGeometry.arcLengthMidpoint(of: ShapeGeometry.renderPoints(for: stroke)).map { [$0] } ?? []
         case .curve:
             return SnapGeometry.arcLengthMidpoint(of: ShapeGeometry.renderPoints(for: stroke)).map { [$0] } ?? []
         case .circle, .ellipse:

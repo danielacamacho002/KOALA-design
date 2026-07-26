@@ -311,7 +311,7 @@ enum AnchorPointEngine {
     /// Dense path used for edge projection and arc-length placement.
     private static func pathPoints(for stroke: VectorStroke) -> [CGPoint] {
         switch stroke.shapeType {
-        case .circle, .ellipse:
+        case .circle, .ellipse, .arc:
             return ShapeGeometry.renderPoints(for: stroke)
         default:
             return dedupedHandlePoints(for: stroke)
@@ -321,7 +321,7 @@ enum AnchorPointEngine {
     /// Stroke used for mutations; converts parametric shapes to editable polylines when needed.
     private static func editableStroke(for stroke: VectorStroke) -> VectorStroke {
         switch stroke.shapeType {
-        case .circle, .ellipse:
+        case .circle, .ellipse, .arc:
             let rendered = ShapeGeometry.renderPoints(for: stroke)
             guard rendered.count >= 3 else { return stroke }
             return VectorStroke(
