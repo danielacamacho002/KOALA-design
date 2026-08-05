@@ -161,10 +161,11 @@ struct IntersectionSnapProvider: RelationalSnapCandidateProvider {
 
 // MARK: - Center plugin
 
-/// Emits the exact mathematical origin of curved geometry:
+/// Emits the center of any geometry:
 /// - circles / ellipses: the parametric center,
-/// - arcs: the center of the circle the arc lies on.
-/// Straight geometry has no meaningful "center" here and is skipped.
+/// - arcs: the center of the circle the arc lies on,
+/// - rectangles / polylines / lines / curves: the shape center (same point used by the
+///   cyan center handle), so a shape or line can be snapped by/to its middle.
 struct CenterSnapProvider: SnapCandidateProvider {
     let kind: SnapKind = .center
 
@@ -177,7 +178,7 @@ struct CenterSnapProvider: SnapCandidateProvider {
         case .arc:
             return ShapeGeometry.arcCircle(for: stroke).map { [$0.center] } ?? []
         case .polyline, .rectangle, .construction, .curve:
-            return []
+            return ShapeGeometry.shapeCenter(for: stroke).map { [$0] } ?? []
         }
     }
 }
@@ -415,6 +416,7 @@ struct PathSnapEngine {
         within radius: CGFloat,
         strokes: [VectorStroke],
         excludedStrokeID: UUID? = nil,
+        excludedStrokeIDs: Set<UUID> = [],
         enabledKinds: Set<SnapKind>,
         referenceStarts: [CGPoint] = []
     ) -> SnapCandidate? {
@@ -448,6 +450,7 @@ struct PathSnapEngine {
         nearby.reserveCapacity(strokes.count)
         for stroke in strokes {
             if let excludedStrokeID, stroke.id == excludedStrokeID { continue }
+            if excludedStrokeIDs.contains(stroke.id) { continue }
             guard let box = stroke.boundingBox(padding: radius), box.intersects(zone) else { continue }
             nearby.append(stroke)
         }
@@ -524,7 +527,19 @@ final class SnapInteractionSession {
         let didLock: Bool
     }
 
+    struct TranslationUpdate {
+        /// The candidate a moving anchor is currently locked to, or `nil` if free.
+        let candidate: SnapCandidate?
+        /// Vector to add to the raw move delta so the locked anchor lands on the candidate.
+        let correction: CGPoint
+        /// `true` only on the frame a moving anchor newly locks onto a candidate (haptic trigger).
+        let didLock: Bool
+    }
+
     private(set) var lockedCandidate: SnapCandidate?
+    /// The moving anchor origin (pre-translation) associated with `lockedCandidate` during a
+    /// whole-object translation, so the correction can be recomputed each frame.
+    private var lockedOrigin: CGPoint?
     private var lastPoint: CGPoint?
     private var lastTimestamp: TimeInterval?
 
@@ -593,9 +608,103 @@ final class SnapInteractionSession {
         return Update(candidate: nil, didLock: false)
     }
 
+    /// Resolve snapping for a rigid whole-object translation.
+    ///
+    /// Unlike `update` (which snaps a single reference point), this treats *every* moving anchor
+    /// as a candidate reference. Because the move is a pure translation by `rawDelta`, snapping
+    /// anchor origin `o_i` onto target `c` yields `delta = c - o_i`. We pick the `(o_i, c)` pair
+    /// with the smallest gap within the snap radius, then return the correction that lands that
+    /// anchor exactly on the candidate. Distance hysteresis keeps the lock sticky.
+    ///
+    /// `centerOrigins` are the moving object's center point(s). They get a dedicated priority
+    /// pass so a moving center reliably locks onto another object's center (center-to-center)
+    /// even when a perimeter vertex happens to be a little closer to some other feature.
+    ///
+    /// All distances are in document units.
+    func updateTranslation(
+        origins: [CGPoint],
+        centerOrigins: [CGPoint] = [],
+        rawDelta: CGPoint,
+        engine: PathSnapEngine,
+        strokes: [VectorStroke],
+        enabledKinds: Set<SnapKind>,
+        snapRadius: CGFloat,
+        breakawayRadius: CGFloat,
+        excludedStrokeIDs: Set<UUID>
+    ) -> TranslationUpdate {
+        // Finds the moving origin whose projected position is nearest a candidate of `kinds`.
+        func bestPair(origins: [CGPoint], kinds: Set<SnapKind>) -> (SnapCandidate, CGPoint)? {
+            guard !kinds.isEmpty else { return nil }
+            var best: SnapCandidate?
+            var bestOrigin: CGPoint?
+            var bestDistanceSquared = snapRadius * snapRadius
+            for origin in origins {
+                let projected = CGPoint(x: origin.x + rawDelta.x, y: origin.y + rawDelta.y)
+                guard let candidate = engine.closestCandidate(
+                    to: projected,
+                    within: snapRadius,
+                    strokes: strokes,
+                    excludedStrokeIDs: excludedStrokeIDs,
+                    enabledKinds: kinds
+                ) else { continue }
+                let dx = candidate.point.x - projected.x
+                let dy = candidate.point.y - projected.y
+                let distanceSquared = dx * dx + dy * dy
+                if distanceSquared < bestDistanceSquared {
+                    bestDistanceSquared = distanceSquared
+                    best = candidate
+                    bestOrigin = origin
+                }
+            }
+            if let best, let bestOrigin { return (best, bestOrigin) }
+            return nil
+        }
+
+        func lock(_ candidate: SnapCandidate, _ origin: CGPoint) -> TranslationUpdate {
+            let isNewLock = candidate != lockedCandidate
+            lockedCandidate = candidate
+            lockedOrigin = origin
+            let projected = CGPoint(x: origin.x + rawDelta.x, y: origin.y + rawDelta.y)
+            let correction = CGPoint(x: candidate.point.x - projected.x, y: candidate.point.y - projected.y)
+            return TranslationUpdate(candidate: candidate, correction: correction, didLock: isNewLock)
+        }
+
+        // A moving center snapping onto another object's center. This has priority and can even
+        // take over a lower-priority lock, so aligning two centers is always reachable — a line's
+        // endpoints, for example, no longer grab an endpoint lock that blocks center alignment.
+        let centerMatch = bestPair(origins: centerOrigins, kinds: enabledKinds.intersection([.center]))
+
+        // 1. Stay locked (hysteresis): keep the current candidate glued while the associated
+        //    anchor's projected position stays within the outer radius — unless a center-to-center
+        //    match is now available and we're not already on it (priority upgrade).
+        if let current = lockedCandidate, let origin = lockedOrigin {
+            let projected = CGPoint(x: origin.x + rawDelta.x, y: origin.y + rawDelta.y)
+            let distance = hypot(projected.x - current.point.x, projected.y - current.point.y)
+            if distance <= breakawayRadius {
+                if let (best, bestOrigin) = centerMatch, best != current {
+                    return lock(best, bestOrigin)
+                }
+                let correction = CGPoint(x: current.point.x - projected.x, y: current.point.y - projected.y)
+                return TranslationUpdate(candidate: current, correction: correction, didLock: false)
+            }
+            lockedCandidate = nil
+            lockedOrigin = nil
+        }
+
+        // 2a. Priority: center-to-center. 2b. Fallback: any moving anchor onto any enabled candidate.
+        if let (best, bestOrigin) = centerMatch ?? bestPair(origins: origins, kinds: enabledKinds) {
+            return lock(best, bestOrigin)
+        }
+
+        lockedCandidate = nil
+        lockedOrigin = nil
+        return TranslationUpdate(candidate: nil, correction: .zero, didLock: false)
+    }
+
     /// Clears all lock/velocity state. Call when a gesture ends or is cancelled.
     func reset() {
         lockedCandidate = nil
+        lockedOrigin = nil
         lastPoint = nil
         lastTimestamp = nil
     }

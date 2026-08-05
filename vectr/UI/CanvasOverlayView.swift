@@ -23,6 +23,10 @@ struct CanvasOverlayView: View {
     @State private var scaleDragOriginCorner: CGPoint = .zero
     @State private var scaleDragOriginCornerDist: CGFloat = 1
     @State private var centerDragOriginPoints: [CGPoint] = []
+    /// Anchor snap references (handle points) captured when a center-handle drag begins.
+    @State private var centerDragSnapOrigins: [CGPoint] = []
+    /// The shape center captured when a center-handle drag begins (center-to-center priority).
+    @State private var centerDragSnapCenter: CGPoint?
     @State private var filletDragStrokeID: UUID?
     @State private var filletDragCornerIndex: Int?
     @State private var filletDragCornerPoint: CGPoint = .zero
@@ -55,6 +59,11 @@ struct CanvasOverlayView: View {
     @State private var dragIsMarquee = false
     @State private var groupMoveStrokeOrigins: [UUID: VectorStroke] = [:]
     @State private var groupMoveTextOrigins: [UUID: CGPoint] = [:]
+    /// Anchor reference points (document space) of every group member, captured at the
+    /// start of a group move so whole-group translation can snap onto other geometry.
+    @State private var groupMoveSnapOrigins: [CGPoint] = []
+    /// Center reference points of every group member (center-to-center priority).
+    @State private var groupMoveSnapCenters: [CGPoint] = []
     @State private var groupRotateStrokeOrigins: [UUID: VectorStroke] = [:]
     @State private var groupRotateTextOrigins: [UUID: TextElement] = [:]
     @State private var groupRotatePivot: CGPoint = .zero
@@ -403,6 +412,10 @@ struct CanvasOverlayView: View {
 
             pivotMarker(at: center)
             groupRotationHandle(pivot: center)
+
+            if let activeSnap {
+                snapMarker(activeSnap)
+            }
         }
     }
 
@@ -435,9 +448,16 @@ struct CanvasOverlayView: View {
         // a partial selection never translates one child independently.
         document.expandSelectionToGroupsIfNeeded()
         groupMoveStrokeOrigins = [:]
+        groupMoveSnapOrigins = []
+        groupMoveSnapCenters = []
         for id in document.selectedStrokeIDs {
             if let stroke = document.stroke(with: id) {
                 groupMoveStrokeOrigins[id] = stroke
+                groupMoveSnapOrigins.append(contentsOf: ShapeGeometry.handlePoints(for: stroke))
+                if let center = ShapeGeometry.shapeCenter(for: stroke) {
+                    groupMoveSnapOrigins.append(center)
+                    groupMoveSnapCenters.append(center)
+                }
             }
         }
         groupMoveTextOrigins = [:]
@@ -446,10 +466,18 @@ struct CanvasOverlayView: View {
                 groupMoveTextOrigins[id] = position
             }
         }
+        snapHaptics.prepare()
         document.beginInteractiveEdit()
     }
 
-    private func applyGroupMove(delta: CGPoint) {
+    private func applyGroupMove(delta rawDelta: CGPoint) {
+        // Snap the whole group when any member's anchor/center lands on other geometry.
+        let delta = translationSnappedDelta(
+            origins: groupMoveSnapOrigins,
+            centerOrigins: groupMoveSnapCenters,
+            rawDelta: rawDelta,
+            excluding: Set(groupMoveStrokeOrigins.keys)
+        )
         // Translate each child independently from its captured origin. Overlapping
         // anchors may coincide visually but are never welded or merged.
         for (_, origin) in groupMoveStrokeOrigins {
@@ -483,6 +511,9 @@ struct CanvasOverlayView: View {
     private func finishGroupMove() {
         groupMoveStrokeOrigins = [:]
         groupMoveTextOrigins = [:]
+        groupMoveSnapOrigins = []
+        groupMoveSnapCenters = []
+        clearMoveSnap()
         // Skip intersection-anchor reconciliation so overlapping vertices inside a
         // group stay independent (no weld/merge of coordinate arrays).
         onChanged()
@@ -970,6 +1001,20 @@ struct CanvasOverlayView: View {
             return rawDelta
         }
 
+        // Whole-object move: snap using every anchor (plus center) as a reference so the shape
+        // locks on when any of its own points lands on other geometry.
+        if anchorIndex == nil, document.selectedAnchorIndices.isEmpty {
+            let center = ShapeGeometry.shapeCenter(for: stroke)
+            var origins = moveDragOriginPoints
+            if let center { origins.append(center) }
+            return translationSnappedDelta(
+                origins: origins,
+                centerOrigins: center.map { [$0] } ?? [],
+                rawDelta: rawDelta,
+                excluding: [strokeID]
+            )
+        }
+
         let raw: CGPoint
         if let anchorIndex, moveDragOriginPoints.indices.contains(anchorIndex) {
             let origin = moveDragOriginPoints[anchorIndex]
@@ -1070,6 +1115,36 @@ struct CanvasOverlayView: View {
         }
         activeSnap = nil
         return raw
+    }
+
+    /// Corrects a raw translation delta so any anchor (or center) of the moving object(s)
+    /// magnetically locks onto a nearby snap point of other geometry. Drives the indicator and
+    /// haptics. Returns the delta unchanged when snapping is disabled or nothing is in range.
+    private func translationSnappedDelta(
+        origins: [CGPoint],
+        centerOrigins: [CGPoint] = [],
+        rawDelta: CGPoint,
+        excluding excludedStrokeIDs: Set<UUID>
+    ) -> CGPoint {
+        guard !document.enabledSnapKinds.isEmpty, !(origins.isEmpty && centerOrigins.isEmpty) else {
+            activeSnap = nil
+            return rawDelta
+        }
+        let scale = max(document.viewport.scale, 0.0001)
+        let update = snapSession.updateTranslation(
+            origins: origins,
+            centerOrigins: centerOrigins,
+            rawDelta: rawDelta,
+            engine: snapEngine,
+            strokes: document.strokes,
+            enabledKinds: document.enabledSnapKinds,
+            snapRadius: SnapTuning.snapRadiusPoints / scale,
+            breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
+            excludedStrokeIDs: excludedStrokeIDs
+        )
+        activeSnap = update.candidate
+        if update.didLock { snapHaptics.play() }
+        return CGPoint(x: rawDelta.x + update.correction.x, y: rawDelta.y + update.correction.y)
     }
 
     private func clearMoveSnap() {
@@ -1467,10 +1542,26 @@ struct CanvasOverlayView: View {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
             .onChanged { value in
                 if centerDragOriginPoints.isEmpty {
-                    centerDragOriginPoints = document.stroke(with: strokeID)?.points ?? []
+                    let stroke = document.stroke(with: strokeID)
+                    centerDragOriginPoints = stroke?.points ?? []
+                    if let stroke {
+                        centerDragSnapCenter = ShapeGeometry.shapeCenter(for: stroke)
+                        var origins = ShapeGeometry.handlePoints(for: stroke)
+                        if let center = centerDragSnapCenter {
+                            origins.append(center)
+                        }
+                        centerDragSnapOrigins = origins
+                    }
+                    snapHaptics.prepare()
                     document.beginInteractiveEdit()
                 }
-                let delta = documentDelta(from: value.translation)
+                let rawDelta = documentDelta(from: value.translation)
+                let delta = translationSnappedDelta(
+                    origins: centerDragSnapOrigins,
+                    centerOrigins: centerDragSnapCenter.map { [$0] } ?? [],
+                    rawDelta: rawDelta,
+                    excluding: [strokeID]
+                )
                 let moved = centerDragOriginPoints.map {
                     CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
                 }
@@ -1480,6 +1571,9 @@ struct CanvasOverlayView: View {
             .onEnded { _ in
                 let didEdit = !centerDragOriginPoints.isEmpty
                 centerDragOriginPoints = []
+                centerDragSnapOrigins = []
+                centerDragSnapCenter = nil
+                clearMoveSnap()
                 guard didEdit else { return }
                 document.reconcileIntersectionAnchors(around: [strokeID])
                 onChanged()
