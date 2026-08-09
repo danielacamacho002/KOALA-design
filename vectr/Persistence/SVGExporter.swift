@@ -22,7 +22,7 @@ enum SVGExporter {
             let pathData = pathData(from: points, closed: stroke.isClosed)
             let color = stroke.strokeColor
             let strokeHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
-            let fill = stroke.isClosed && !stroke.isConstruction ? " fill=\"#CCCCCC\" fill-opacity=\"0.25\"" : " fill=\"none\""
+            let fill = stroke.isClosed && !stroke.isConstruction ? " fill=\"#CCCCCC\" fill-opacity=\"\(stroke.resolvedFillOpacity)\"" : " fill=\"none\""
             svg += "  <path d=\"\(pathData)\" stroke=\"\(strokeHex)\" stroke-width=\"\(stroke.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"\(fill)/>\n"
         }
 

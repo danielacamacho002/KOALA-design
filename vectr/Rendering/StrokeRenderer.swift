@@ -203,7 +203,7 @@ enum StrokeRenderer {
 
     private static func fillColor(for stroke: VectorStroke) -> CGColor {
         if stroke.isClosed, !stroke.isConstruction {
-            return UIColor.systemGray.withAlphaComponent(0.25).cgColor
+            return UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor
         }
         return UIColor.clear.cgColor
     }
