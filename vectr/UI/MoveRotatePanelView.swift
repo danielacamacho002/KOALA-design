@@ -144,12 +144,6 @@ struct MoveRotatePanelView: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
-        if document.canJoinSelection {
-            ToolPanelLabelButton(title: "Join paths", prominent: true, fullWidth: true) {
-                if document.joinSelectedPaths() { onApply() }
-            }
-        }
-
         HStack(spacing: 4) {
             ToolPanelLabelButton(
                 title: "Group",
@@ -168,6 +162,21 @@ struct MoveRotatePanelView: View {
                 document.ungroupSelectedElements()
                 onApply()
             }
+        }
+
+        if document.canJoinSelection {
+            ToolPanelLabelButton(
+                title: "Join",
+                prominent: true,
+                fullWidth: true
+            ) {
+                if document.joinSelectedShapes() { onApply() }
+            }
+
+            Text("Welds touching anchors into one shape. Unlike Group, this is permanent.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

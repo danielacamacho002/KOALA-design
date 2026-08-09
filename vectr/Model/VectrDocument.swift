@@ -967,34 +967,46 @@ final class VectrDocument {
 
     // MARK: - Multi-element operations
 
+    /// Any non-construction stroke with editable anchors (open or closed,
+    /// including rectangles / circles via their handle points).
     private func isJoinable(_ stroke: VectorStroke) -> Bool {
-        !stroke.isClosed
-            && !stroke.isConstruction
-            && stroke.points.count >= 2
-            && (stroke.shapeType == .polyline || stroke.shapeType == .curve || stroke.shapeType == .arc)
+        !stroke.isConstruction && ShapeGeometry.handlePoints(for: stroke).count >= 2
     }
 
-    /// True when the current selection has at least two joinable open paths.
+    private var joinableSelectedStrokes: [VectorStroke] {
+        strokes.filter { selectedStrokeIDs.contains($0.id) && isJoinable($0) }
+    }
+
+    /// True when two selected shapes have anchors within snap tolerance of each
+    /// other. Open vs closed does not matter — Join appears exactly when a weld
+    /// is possible.
     var canJoinSelection: Bool {
-        strokes.filter { selectedStrokeIDs.contains($0.id) && isJoinable($0) }.count >= 2
+        let selected = joinableSelectedStrokes
+        guard selected.count >= 2 else { return false }
+        return PathJoinEngine.hasTouchingAnchors(selected, tolerance: grid.spacing * 0.5)
     }
 
-    /// Welds the selected open paths into a single continuous path.
+    /// Permanently welds selected shapes that share touching anchors into one
+    /// (or fewer) paths. Distinct from grouping: geometry is fused, not just
+    /// moved together. Undoable, but there is no dedicated "unjoin".
     @discardableResult
-    func joinSelectedPaths() -> Bool {
-        let selected = strokes.filter { selectedStrokeIDs.contains($0.id) && isJoinable($0) }
+    func joinSelectedShapes() -> Bool {
+        let selected = joinableSelectedStrokes
         guard selected.count >= 2 else { return false }
         let tolerance = grid.spacing * 0.5
-        guard let joined = PathJoinEngine.join(selected, tolerance: tolerance) else { return false }
+        guard let joined = PathJoinEngine.join(selected, tolerance: tolerance), !joined.isEmpty else {
+            return false
+        }
         pushUndo()
         let removeIDs = Set(selected.map(\.id))
         strokes.removeAll { removeIDs.contains($0.id) }
-        strokes.append(joined)
+        strokes.append(contentsOf: joined)
         pruneGroups()
         ClosedShapeDetector.reconcile(document: self)
-        reconcileIntersectionAnchors(around: [joined.id])
+        let joinedIDs = Set(joined.map(\.id))
+        reconcileIntersectionAnchors(around: joinedIDs)
         geometryRevision += 1
-        setElementSelection(strokeIDs: [joined.id], textIDs: [])
+        setElementSelection(strokeIDs: joinedIDs, textIDs: [])
         return true
     }
 
