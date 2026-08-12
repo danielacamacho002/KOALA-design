@@ -54,7 +54,7 @@ enum LayerThumbnailRenderer {
                     context.setLineDash(phase: 0, lengths: [3, 2])
                 }
                 if stroke.isClosed, !stroke.isConstruction {
-                    context.setFillColor(UIColor.systemGray.withAlphaComponent(0.25).cgColor)
+                    context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
                     let fillMode: CGPathDrawingMode = stroke.cutoutPoints.isEmpty ? .fillStroke : .eoFillStroke
                     context.drawPath(using: fillMode)
                 } else {

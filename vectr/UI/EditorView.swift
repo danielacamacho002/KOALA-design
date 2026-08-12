@@ -261,7 +261,10 @@ struct EditorView: View {
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .move,
                           !store.document.selectionIsEmpty {
-                    MoveRotatePanelView(document: store.document) {
+                    MoveRotatePanelView(
+                        document: store.document,
+                        units: store.document.settings.units
+                    ) {
                         refreshCanvas()
                     }
                     .transition(.opacity.combined(with: .move(edge: .leading)))

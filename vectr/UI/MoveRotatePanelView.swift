@@ -7,9 +7,15 @@ import SwiftUI
 
 struct MoveRotatePanelView: View {
     @Bindable var document: VectrDocument
+    var units: MeasurementUnit
     var onApply: () -> Void
 
+    /// Thickness step in document points so behavior is consistent across measurement units.
+    private static let thicknessStepPoints: CGFloat = 0.5
+
     @State private var degreesText = ""
+    @State private var thicknessText = ""
+    @State private var fillOpacity: Double = Double(VectorStroke.defaultFillOpacity)
 
     private var selectedStroke: VectorStroke? {
         guard let id = document.selectedStrokeID else { return nil }
@@ -43,6 +49,16 @@ struct MoveRotatePanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             rotateSection
 
+            if !document.selectedStrokeIDs.isEmpty {
+                Divider()
+                thicknessSection
+            }
+
+            if document.hasClosedFillableSelection {
+                Divider()
+                fillOpacitySection
+            }
+
             if document.usesGroupTransform {
                 Divider()
                 multiSelectionSection
@@ -55,16 +71,90 @@ struct MoveRotatePanelView: View {
         .toolPanelChrome(width: 172)
         .onChange(of: document.selectedStrokeID) { _, _ in
             syncDegreesField()
+            syncThicknessText()
+            syncFillOpacity()
+        }
+        .onChange(of: document.selectedStrokeIDs) { _, _ in
+            syncThicknessText()
+            syncFillOpacity()
         }
         .onChange(of: document.selectedTextID) { _, _ in
             syncDegreesField()
         }
         .onChange(of: document.geometryRevision) { _, _ in
             syncDegreesFieldFromCurrent()
+            syncThicknessTextIfNeeded()
         }
         .onAppear {
             syncDegreesField()
+            syncThicknessText()
+            syncFillOpacity()
         }
+    }
+
+    @ViewBuilder
+    private var thicknessSection: some View {
+        ToolPanelHeader("Thickness")
+
+        HStack(spacing: 4) {
+            Text("Current:")
+            Text(currentThicknessText)
+                .fontWeight(.semibold)
+                .monospacedDigit()
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+
+        HStack(spacing: 4) {
+            ToolPanelIconButton(systemImage: "minus") {
+                stepThickness(by: -Self.thicknessStepPoints)
+            }
+
+            FingerOnlyTextField(
+                placeholder: units.shortLabel,
+                text: $thicknessText,
+                keyboardType: .decimalPad,
+                fontSize: 12,
+                cornerRadius: 0,
+                onSubmit: applyThickness
+            )
+            .frame(height: 28)
+
+            ToolPanelIconButton(systemImage: "plus") {
+                stepThickness(by: Self.thicknessStepPoints)
+            }
+        }
+
+        ToolPanelLabelButton(title: "Apply", fullWidth: true) {
+            applyThickness()
+        }
+    }
+
+    @ViewBuilder
+    private var fillOpacitySection: some View {
+        ToolPanelHeader("Fill opacity")
+
+        HStack(spacing: 4) {
+            Text("Current:")
+            Text(currentFillOpacityText)
+                .fontWeight(.semibold)
+                .monospacedDigit()
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+
+        Slider(
+            value: fillOpacityBinding,
+            in: 0...1,
+            onEditingChanged: { editing in
+                if editing {
+                    // Snapshot once at drag start so the whole drag is a single undo step.
+                    document.beginInteractiveEdit()
+                } else {
+                    onApply()
+                }
+            }
+        )
     }
 
     @ViewBuilder
@@ -204,6 +294,96 @@ struct MoveRotatePanelView: View {
             ToolPanelLabelButton(title: "Flip V", fullWidth: true) {
                 document.flipSelection(horizontal: false)
                 onApply()
+            }
+        }
+    }
+
+    private var currentThicknessText: String {
+        switch document.selectedStrokeWidthSummary() {
+        case .none:
+            return "—"
+        case .mixed:
+            return "Mixed"
+        case .uniform(let width):
+            return "\(displayString(units.fromDocumentUnits(width))) \(units.shortLabel)"
+        }
+    }
+
+    /// Formats a display-unit value with just enough precision (tiny units like inches need more).
+    private func displayString(_ value: CGFloat) -> String {
+        var text = String(format: "%.4f", value)
+        while text.contains(".") && (text.hasSuffix("0") || text.hasSuffix(".")) {
+            text.removeLast()
+        }
+        return text.isEmpty ? "0" : text
+    }
+
+    private func syncThicknessText() {
+        if case .uniform(let width) = document.selectedStrokeWidthSummary() {
+            thicknessText = displayString(units.fromDocumentUnits(width))
+        } else if let width = document.representativeSelectedStrokeWidth() {
+            thicknessText = displayString(units.fromDocumentUnits(width))
+        }
+    }
+
+    private func syncThicknessTextIfNeeded() {
+        guard thicknessText.isEmpty
+            || Double(thicknessText.trimmingCharacters(in: .whitespaces)) == nil else { return }
+        syncThicknessText()
+    }
+
+    private func applyThickness() {
+        let cleaned = thicknessText
+            .replacingOccurrences(of: units.shortLabel, with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let value = Double(cleaned), value > 0 else {
+            syncThicknessText()
+            return
+        }
+        let docWidth = units.toDocumentUnits(CGFloat(value))
+        document.setSelectedStrokesWidth(docWidth)
+        syncThicknessText()
+        onApply()
+    }
+
+    private func stepThickness(by deltaDocPoints: CGFloat) {
+        let base = document.representativeSelectedStrokeWidth() ?? document.strokeWidth
+        document.setSelectedStrokesWidth(base + deltaDocPoints)
+        syncThicknessText()
+        onApply()
+    }
+
+    private var currentFillOpacityText: String {
+        switch document.selectedFillOpacitySummary() {
+        case .none:
+            return "—"
+        case .mixed:
+            return "Mixed"
+        case .uniform(let value):
+            return "\(Int((value * 100).rounded()))%"
+        }
+    }
+
+    /// Writing goes through this binding only for user drags; programmatic sync sets the
+    /// `fillOpacity` state directly so it never rewrites the selected shapes.
+    private var fillOpacityBinding: Binding<Double> {
+        Binding(
+            get: { fillOpacity },
+            set: { newValue in
+                fillOpacity = newValue
+                document.setSelectedStrokesFillOpacity(CGFloat(newValue), recordUndo: false)
+                onApply()
+            }
+        )
+    }
+
+    private func syncFillOpacity() {
+        switch document.selectedFillOpacitySummary() {
+        case .uniform(let value):
+            fillOpacity = Double(value)
+        case .mixed, .none:
+            if let representative = document.representativeSelectedFillOpacity() {
+                fillOpacity = Double(representative)
             }
         }
     }

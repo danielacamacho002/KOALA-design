@@ -1381,6 +1381,119 @@ final class VectrDocument {
         return .uniform(value)
     }
 
+    // MARK: - Stroke thickness editing
+
+    /// Shared stroke width of the currently selected strokes, for display in the move panel.
+    enum StrokeWidthSelection: Equatable {
+        case none
+        case uniform(CGFloat)
+        case mixed
+    }
+
+    func selectedStrokeWidthSummary() -> StrokeWidthSelection {
+        let ids = selectedStrokeIDs
+        guard !ids.isEmpty else { return .none }
+        var value: CGFloat?
+        for id in ids {
+            guard let stroke = stroke(with: id) else { continue }
+            let width = stroke.strokeWidth
+            if let existing = value {
+                if abs(existing - width) > 0.0001 { return .mixed }
+            } else {
+                value = width
+            }
+        }
+        guard let value else { return .none }
+        return .uniform(value)
+    }
+
+    /// Representative width used to seed stepping/editing when the selection is mixed.
+    func representativeSelectedStrokeWidth() -> CGFloat? {
+        for id in selectedStrokeIDs {
+            if let stroke = stroke(with: id) { return stroke.strokeWidth }
+        }
+        return nil
+    }
+
+    /// Sets the line thickness (document points) on every selected stroke.
+    @discardableResult
+    func setSelectedStrokesWidth(_ width: CGFloat, recordUndo: Bool = true) -> Bool {
+        let ids = selectedStrokeIDs
+        guard !ids.isEmpty else { return false }
+        let clamped = max(0.1, width)
+        let willChange = ids.contains { id in
+            guard let stroke = stroke(with: id) else { return false }
+            return abs(stroke.strokeWidth - clamped) > 0.0001
+        }
+        guard willChange else { return false }
+        if recordUndo { pushUndo() }
+        for id in ids {
+            guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
+            strokes[index].strokeWidth = clamped
+        }
+        geometryRevision += 1
+        return true
+    }
+
+    // MARK: - Fill opacity editing
+
+    /// Selected strokes that are closed planes (and therefore have an editable fill).
+    func closedFillableSelectedStrokeIDs() -> [UUID] {
+        selectedStrokeIDs.compactMap { id in
+            guard let stroke = stroke(with: id), stroke.isClosed, !stroke.isConstruction else { return nil }
+            return id
+        }
+    }
+
+    var hasClosedFillableSelection: Bool {
+        !closedFillableSelectedStrokeIDs().isEmpty
+    }
+
+    /// Shared fill opacity of the selected closed shapes, for display in the move panel.
+    func selectedFillOpacitySummary() -> StrokeWidthSelection {
+        let ids = closedFillableSelectedStrokeIDs()
+        guard !ids.isEmpty else { return .none }
+        var value: CGFloat?
+        for id in ids {
+            guard let stroke = stroke(with: id) else { continue }
+            let opacity = stroke.resolvedFillOpacity
+            if let existing = value {
+                if abs(existing - opacity) > 0.001 { return .mixed }
+            } else {
+                value = opacity
+            }
+        }
+        guard let value else { return .none }
+        return .uniform(value)
+    }
+
+    func representativeSelectedFillOpacity() -> CGFloat? {
+        for id in closedFillableSelectedStrokeIDs() {
+            if let stroke = stroke(with: id) { return stroke.resolvedFillOpacity }
+        }
+        return nil
+    }
+
+    /// Sets the fill opacity (0...1) on every selected closed shape.
+    @discardableResult
+    func setSelectedStrokesFillOpacity(_ opacity: CGFloat, recordUndo: Bool = true) -> Bool {
+        let ids = closedFillableSelectedStrokeIDs()
+        guard !ids.isEmpty else { return false }
+        let clamped = min(1, max(0, opacity))
+        let willChange = ids.contains { id in
+            guard let stroke = stroke(with: id) else { return false }
+            return abs(stroke.resolvedFillOpacity - clamped) > 0.0001
+        }
+        guard willChange else { return false }
+        if recordUndo { pushUndo() }
+        for id in ids {
+            guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
+            strokes[index].fillOpacity = clamped
+        }
+        geometryRevision += 1
+        return true
+    }
+
     func clearToolSelections() {
         selectedAnchorIndices.removeAll()
         selectedFilletCornerIndices.removeAll()

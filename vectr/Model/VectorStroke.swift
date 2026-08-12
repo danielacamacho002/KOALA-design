@@ -43,6 +43,11 @@ struct VectorStroke: Identifiable, Codable, Equatable {
     /// Editable Bezier tangent handles for `.curve` strokes, one entry per anchor in `points`.
     /// When nil, curves fall back to the auto-computed cardinal spline.
     var curveHandles: [CurveHandle]? = nil
+    /// Fill opacity (0...1) for closed shapes. `nil` falls back to `defaultFillOpacity`.
+    var fillOpacity: CGFloat? = nil
+
+    /// Default plane fill opacity for closed shapes that have never been customized.
+    static let defaultFillOpacity: CGFloat = 0.25
 
     init(
         id: UUID = UUID(),
@@ -60,7 +65,8 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         rotationBasePoints: [CGPoint]? = nil,
         rotationBaseCenter: CGPoint? = nil,
         cutoutPoints: [[CGPoint]] = [],
-        curveHandles: [CurveHandle]? = nil
+        curveHandles: [CurveHandle]? = nil,
+        fillOpacity: CGFloat? = nil
     ) {
         self.id = id
         self.layerID = layerID
@@ -78,10 +84,16 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         self.rotationBaseCenter = rotationBaseCenter
         self.cutoutPoints = cutoutPoints
         self.curveHandles = curveHandles
+        self.fillOpacity = fillOpacity
     }
 
     var resolvedShapeRotation: CGFloat {
         shapeRotation ?? 0
+    }
+
+    /// Effective fill opacity for closed, non-construction shapes, clamped to 0...1.
+    var resolvedFillOpacity: CGFloat {
+        min(1, max(0, fillOpacity ?? VectorStroke.defaultFillOpacity))
     }
 
     var rotationDegrees: Double {
