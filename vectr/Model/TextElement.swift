@@ -36,6 +36,9 @@ enum FontRef: Codable, Equatable {
 /// size, color, rotation) and is converted to vector glyph outlines only at
 /// export time.
 struct TextElement: Identifiable, Codable, Equatable {
+    /// Default stroke weight (document units) for a text element's outline.
+    static let defaultStrokeWidth: CGFloat = 1.5
+
     var id: UUID = UUID()
     var layerID: UUID
     var text: String
@@ -44,7 +47,14 @@ struct TextElement: Identifiable, Codable, Equatable {
     var fontRef: FontRef
     /// Font size in document units.
     var fontSize: CGFloat
+    /// Fill color for the glyphs (used when `isOutline` is `false`).
     var color: CodableColor
+    /// Stroke color for the glyph outlines (used when `isOutline` is `true`).
+    var strokeColor: CodableColor = CodableColor(.primary)
+    /// Stroke weight in document units, applied when rendering as an outline.
+    var strokeWidth: CGFloat = TextElement.defaultStrokeWidth
+    /// When `true`, glyphs render hollow (stroke only, no fill).
+    var isOutline: Bool = false
     /// CCW rotation in radians around the block center.
     var rotation: CGFloat = 0
 
@@ -56,6 +66,9 @@ struct TextElement: Identifiable, Codable, Equatable {
         fontRef: FontRef = .default,
         fontSize: CGFloat = 24,
         color: CodableColor = CodableColor(.primary),
+        strokeColor: CodableColor = CodableColor(.primary),
+        strokeWidth: CGFloat = TextElement.defaultStrokeWidth,
+        isOutline: Bool = false,
         rotation: CGFloat = 0
     ) {
         self.id = id
@@ -65,11 +78,42 @@ struct TextElement: Identifiable, Codable, Equatable {
         self.fontRef = fontRef
         self.fontSize = fontSize
         self.color = color
+        self.strokeColor = strokeColor
+        self.strokeWidth = strokeWidth
+        self.isOutline = isOutline
         self.rotation = rotation
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case id, layerID, text, position, fontRef, fontSize, color
+        case strokeColor, strokeWidth, isOutline, rotation
+    }
+
+    // Custom decoding so documents saved before stroke/outline support (which
+    // lack these keys) still load, falling back to sensible defaults.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        layerID = try container.decode(UUID.self, forKey: .layerID)
+        text = try container.decode(String.self, forKey: .text)
+        position = try container.decode(CGPoint.self, forKey: .position)
+        fontRef = try container.decode(FontRef.self, forKey: .fontRef)
+        fontSize = try container.decode(CGFloat.self, forKey: .fontSize)
+        color = try container.decode(CodableColor.self, forKey: .color)
+        strokeColor = try container.decodeIfPresent(CodableColor.self, forKey: .strokeColor) ?? CodableColor(.primary)
+        strokeWidth = try container.decodeIfPresent(CGFloat.self, forKey: .strokeWidth) ?? TextElement.defaultStrokeWidth
+        isOutline = try container.decodeIfPresent(Bool.self, forKey: .isOutline) ?? false
+        rotation = try container.decodeIfPresent(CGFloat.self, forKey: .rotation) ?? 0
+    }
+
+    /// Fill color as a `CGColor` (used when `isOutline` is `false`).
     var cgColor: CGColor {
         color.platformCGColor
+    }
+
+    /// Stroke color as a `CGColor` (used when `isOutline` is `true`).
+    var strokeCGColor: CGColor {
+        strokeColor.platformCGColor
     }
 }
 

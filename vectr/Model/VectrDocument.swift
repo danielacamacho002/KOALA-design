@@ -372,6 +372,34 @@ final class VectrDocument {
         geometryRevision += 1
     }
 
+    func setTextFillColor(id: UUID, color: CodableColor, recordUndo: Bool = false) {
+        guard let index = textElements.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index].color = color
+        geometryRevision += 1
+    }
+
+    func setTextStrokeColor(id: UUID, color: CodableColor, recordUndo: Bool = false) {
+        guard let index = textElements.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index].strokeColor = color
+        geometryRevision += 1
+    }
+
+    func setTextStrokeWidth(id: UUID, width: CGFloat, recordUndo: Bool = false) {
+        guard let index = textElements.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index].strokeWidth = max(0, width)
+        geometryRevision += 1
+    }
+
+    func setTextOutline(id: UUID, isOutline: Bool, recordUndo: Bool = false) {
+        guard let index = textElements.firstIndex(where: { $0.id == id }) else { return }
+        if recordUndo { pushUndo() }
+        textElements[index].isOutline = isOutline
+        geometryRevision += 1
+    }
+
     /// End point of the most recent open line on the given layer, if any.
     func lastOpenLineEndpoint(on layerID: UUID) -> CGPoint? {
         guard let stroke = strokes.last(where: { stroke in

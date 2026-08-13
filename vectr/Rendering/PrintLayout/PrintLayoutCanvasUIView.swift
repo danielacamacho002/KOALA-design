@@ -190,21 +190,35 @@ final class PrintLayoutCanvasUIView: UIView {
 
             let isSelected = element.id == document.printSelectedTextID
             let opacity = isSelected ? 1 : textOpacity(for: element, transform: printTransform)
+            let lineWidth = document.viewport.documentToView(distance: element.strokeWidth)
 
             if let layer = textLayers[element.id] {
                 layer.path = viewPath
-                layer.fillColor = element.cgColor
+                applyTextStyle(to: layer, element: element, lineWidth: lineWidth)
                 layer.opacity = Float(opacity)
             } else {
                 let layer = CAShapeLayer()
                 layer.fillRule = .nonZero
-                layer.strokeColor = nil
+                layer.lineJoin = .round
+                layer.lineCap = .round
                 layer.path = viewPath
-                layer.fillColor = element.cgColor
+                applyTextStyle(to: layer, element: element, lineWidth: lineWidth)
                 layer.opacity = Float(opacity)
                 artworkLayer.addSublayer(layer)
                 textLayers[element.id] = layer
             }
+        }
+    }
+
+    /// Applies fill vs. outline (stroke-only) styling to a text layer.
+    private func applyTextStyle(to layer: CAShapeLayer, element: TextElement, lineWidth: CGFloat) {
+        if element.isOutline {
+            layer.fillColor = nil
+            layer.strokeColor = element.strokeCGColor
+            layer.lineWidth = lineWidth
+        } else {
+            layer.fillColor = element.cgColor
+            layer.strokeColor = nil
         }
     }
 

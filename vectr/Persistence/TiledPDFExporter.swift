@@ -90,8 +90,16 @@ enum TiledPDFExporter {
             )
             guard let path = TextOutline.path(for: element).copy(using: &transform) else { continue }
             context.addPath(path)
-            context.setFillColor(element.cgColor)
-            context.fillPath()
+            if element.isOutline {
+                context.setStrokeColor(element.strokeCGColor)
+                context.setLineWidth(element.strokeWidth)
+                context.setLineCap(.round)
+                context.setLineJoin(.round)
+                context.strokePath()
+            } else {
+                context.setFillColor(element.cgColor)
+                context.fillPath()
+            }
         }
     }
 

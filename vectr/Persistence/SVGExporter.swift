@@ -30,9 +30,15 @@ enum SVGExporter {
             let outline = TextOutline.path(for: element)
             let data = pathData(from: outline)
             guard !data.isEmpty else { continue }
-            let color = element.color
-            let fillHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
-            svg += "  <path d=\"\(data)\" fill=\"\(fillHex)\" fill-opacity=\"\(color.alpha)\" fill-rule=\"nonzero\"/>\n"
+            if element.isOutline {
+                let color = element.strokeColor
+                let strokeHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
+                svg += "  <path d=\"\(data)\" fill=\"none\" stroke=\"\(strokeHex)\" stroke-opacity=\"\(color.alpha)\" stroke-width=\"\(element.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
+            } else {
+                let color = element.color
+                let fillHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
+                svg += "  <path d=\"\(data)\" fill=\"\(fillHex)\" fill-opacity=\"\(color.alpha)\" fill-rule=\"nonzero\"/>\n"
+            }
         }
 
         svg += "</svg>\n"

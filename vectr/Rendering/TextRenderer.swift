@@ -12,7 +12,8 @@ enum TextRenderer {
     static func makeLayer(for element: TextElement, viewport: ViewportTransform) -> CAShapeLayer {
         let layer = CAShapeLayer()
         layer.fillRule = .nonZero
-        layer.strokeColor = nil
+        layer.lineJoin = .round
+        layer.lineCap = .round
         update(layer, for: element, viewport: viewport)
         return layer
     }
@@ -21,7 +22,14 @@ enum TextRenderer {
         var transform = documentToView(viewport)
         let documentPath = TextOutline.path(for: element)
         layer.path = documentPath.copy(using: &transform) ?? documentPath
-        layer.fillColor = element.cgColor
+        if element.isOutline {
+            layer.fillColor = nil
+            layer.strokeColor = element.strokeCGColor
+            layer.lineWidth = viewport.documentToView(distance: element.strokeWidth)
+        } else {
+            layer.fillColor = element.cgColor
+            layer.strokeColor = nil
+        }
     }
 
     /// Affine map from document space to on-screen view space.
