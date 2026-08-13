@@ -446,7 +446,8 @@ final class DrawingCanvasUIView: UIView {
             point,
             grid: document.grid,
             settings: document.settings,
-            enabled: enabled
+            enabled: enabled,
+            scale: document.viewport.scale
         )
     }
 

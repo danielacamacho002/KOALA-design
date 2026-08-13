@@ -17,14 +17,23 @@ func snapPointToGrid(_ point: CGPoint, gridSpacing: CGFloat) -> CGPoint {
     )
 }
 
+/// Snaps a drawing point to the grid. Pass `scale` (the viewport zoom) for
+/// direct-manipulation input so snapping tightens as you zoom in (hybrid mode);
+/// leave it `nil` for typed/precise entry to use the fixed user snap setting.
 func snapDrawingPoint(
     _ point: CGPoint,
     grid: GridSettings,
     settings: DocumentSettings,
-    enabled: Bool
+    enabled: Bool,
+    scale: CGFloat? = nil
 ) -> CGPoint {
     guard enabled, grid.snapEnabled else { return point }
-    let spacing = grid.effectiveSnapSpacing(for: settings)
+    let spacing: CGFloat
+    if let scale {
+        spacing = grid.adaptiveSnapSpacing(for: settings, scale: scale)
+    } else {
+        spacing = grid.effectiveSnapSpacing(for: settings)
+    }
     return snapPointToGrid(point, gridSpacing: spacing)
 }
 
@@ -33,7 +42,8 @@ func snapDrawingControlPoint(
     projected: CGPoint,
     grid: GridSettings,
     settings: DocumentSettings,
-    enabled: Bool
+    enabled: Bool,
+    scale: CGFloat? = nil
 ) -> CGPoint {
-    snapDrawingPoint(projected, grid: grid, settings: settings, enabled: enabled)
+    snapDrawingPoint(projected, grid: grid, settings: settings, enabled: enabled, scale: scale)
 }
