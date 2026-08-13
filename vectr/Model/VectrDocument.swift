@@ -1435,6 +1435,58 @@ final class VectrDocument {
         return true
     }
 
+    // MARK: - Stroke color editing
+
+    /// Shared line/border color of the currently selected strokes, for display in the move panel.
+    enum StrokeColorSelection: Equatable {
+        case none
+        case uniform(CodableColor)
+        case mixed
+    }
+
+    func selectedStrokeColorSummary() -> StrokeColorSelection {
+        let ids = selectedStrokeIDs
+        guard !ids.isEmpty else { return .none }
+        var value: CodableColor?
+        for id in ids {
+            guard let stroke = stroke(with: id) else { continue }
+            if let existing = value {
+                if existing != stroke.strokeColor { return .mixed }
+            } else {
+                value = stroke.strokeColor
+            }
+        }
+        guard let value else { return .none }
+        return .uniform(value)
+    }
+
+    /// Representative color used to seed the picker when the selection is mixed.
+    func representativeSelectedStrokeColor() -> CodableColor? {
+        for id in selectedStrokeIDs {
+            if let stroke = stroke(with: id) { return stroke.strokeColor }
+        }
+        return nil
+    }
+
+    /// Sets the line/border color on every selected stroke.
+    @discardableResult
+    func setSelectedStrokesColor(_ color: CodableColor, recordUndo: Bool = true) -> Bool {
+        let ids = selectedStrokeIDs
+        guard !ids.isEmpty else { return false }
+        let willChange = ids.contains { id in
+            guard let stroke = stroke(with: id) else { return false }
+            return stroke.strokeColor != color
+        }
+        guard willChange else { return false }
+        if recordUndo { pushUndo() }
+        for id in ids {
+            guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
+            strokes[index].strokeColor = color
+        }
+        geometryRevision += 1
+        return true
+    }
+
     // MARK: - Fill opacity editing
 
     /// Selected strokes that are closed planes (and therefore have an editable fill).
