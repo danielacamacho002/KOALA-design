@@ -706,9 +706,9 @@ struct EditorView: View {
             store.document.viewport.resetToDefaultView(in: canvasSize)
         } else {
             store.document.viewport.fitToPoints(contentPoints, in: canvasSize)
-            store.document.viewport.clampToCanvasExtent(
+            store.document.viewport.clampToCanvasSize(
                 in: canvasSize,
-                canvasExtent: store.document.settings.canvasExtent
+                canvasSize: store.document.settings.canvasSize
             )
         }
         store.needsInitialViewportLayout = false
