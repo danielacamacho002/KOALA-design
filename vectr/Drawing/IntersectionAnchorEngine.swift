@@ -164,7 +164,10 @@ enum IntersectionAnchorEngine {
     /// closed polygons) still gain anchors where other geometry crosses them.
     private static func acceptsInsertedAnchors(_ stroke: VectorStroke) -> Bool {
         switch stroke.shapeType {
-        case .circle, .ellipse, .arc:
+        case .circle, .ellipse, .arc, .curve:
+            // Curves carry editable Bezier handles that a flat polyline rebuild would
+            // destroy (and would resample the smooth shape into dense line segments),
+            // so never subdivide them here — anchors are added via the Add Anchor tool.
             return false
         case .polyline:
             return stroke.isClosed

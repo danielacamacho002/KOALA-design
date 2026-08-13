@@ -22,7 +22,16 @@ final class DrawingCanvasUIView: UIView {
     var activeCategory: ToolCategory = .line {
         didSet {
             if oldValue == .curve, activeCategory != .curve {
+                // Don't discard an in-progress curve when leaving the tool: commit it
+                // so the drawn strokes persist. Deferred to avoid mutating document
+                // state during a SwiftUI view update.
+                let anchors = curveAnchors
                 resetCurve()
+                if anchors.count >= 2 {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onCurveCommitted?(anchors)
+                    }
+                }
             }
         }
     }
@@ -927,7 +936,9 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
         if let tap = gestureRecognizer as? UITapGestureRecognizer {
             if tap.numberOfTapsRequired == 2 {
                 // Double-tap recognizer only finishes curves; inert elsewhere.
-                return activeCategory == .curve && shouldAcceptDrawingTouch(touch)
+                // Accept a finger double-tap too so the curve can always be finished,
+                // even when finger drawing is off and the curve was drawn with a Pencil.
+                return activeCategory == .curve
             }
             if activeCategory == .curve {
                 // Curve points come from Pencil drags; ignore stray single taps.

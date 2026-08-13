@@ -511,9 +511,9 @@ enum ShapeGeometry {
             return stroke.points
         case .curve:
             if let handles = stroke.curveHandles, handles.count == stroke.points.count {
-                return curvePoints(anchors: stroke.points, handles: handles)
+                return curvePoints(anchors: stroke.points, handles: handles, closed: stroke.isClosed)
             }
-            return smoothCurvePoints(anchors: stroke.points)
+            return smoothCurvePoints(anchors: stroke.points, closed: stroke.isClosed)
         default:
             if let smooth = stroke.smoothCornerIndices, !smooth.isEmpty {
                 return smoothedContourPoints(
@@ -792,17 +792,25 @@ enum ShapeGeometry {
     /// The curvature at each anchor is derived from the direction (slope) of the
     /// adjacent drawn lines: gentle turns stay round and flowing, sharp turns
     /// tighten toward a crisp corner.
-    static func smoothCurvePoints(anchors: [CGPoint], samplesPerSegment: Int = 24) -> [CGPoint] {
+    static func smoothCurvePoints(anchors: [CGPoint], closed: Bool = false, samplesPerSegment: Int = 24) -> [CGPoint] {
         guard anchors.count >= 3 else { return anchors }
 
         var result: [CGPoint] = []
         let count = anchors.count
+        let segmentCount = closed ? count : count - 1
 
-        for index in 0..<(count - 1) {
+        for index in 0..<segmentCount {
             let p1 = anchors[index]
-            let p2 = anchors[index + 1]
-            let p0 = index > 0 ? anchors[index - 1] : p1
-            let p3 = index < count - 2 ? anchors[index + 2] : p2
+            let p2 = anchors[(index + 1) % count]
+            let p0: CGPoint
+            let p3: CGPoint
+            if closed {
+                p0 = anchors[(index - 1 + count) % count]
+                p3 = anchors[(index + 2) % count]
+            } else {
+                p0 = index > 0 ? anchors[index - 1] : p1
+                p3 = index < count - 2 ? anchors[index + 2] : p2
+            }
 
             let tension1 = curveTension(prev: p0, cur: p1, next: p2)
             let tension2 = curveTension(prev: p1, cur: p2, next: p3)
@@ -832,23 +840,26 @@ enum ShapeGeometry {
     static func curvePoints(
         anchors: [CGPoint],
         handles: [CurveHandle],
+        closed: Bool = false,
         samplesPerSegment: Int = 24
     ) -> [CGPoint] {
         guard anchors.count >= 2, handles.count == anchors.count else { return anchors }
 
         var result: [CGPoint] = []
         let count = anchors.count
+        let segmentCount = closed ? count : count - 1
 
-        for index in 0..<(count - 1) {
+        for index in 0..<segmentCount {
+            let nextIndex = (index + 1) % count
             let p1 = anchors[index]
-            let p2 = anchors[index + 1]
+            let p2 = anchors[nextIndex]
             let control1 = CGPoint(
                 x: p1.x + handles[index].outOffset.x,
                 y: p1.y + handles[index].outOffset.y
             )
             let control2 = CGPoint(
-                x: p2.x + handles[index + 1].inOffset.x,
-                y: p2.y + handles[index + 1].inOffset.y
+                x: p2.x + handles[nextIndex].inOffset.x,
+                y: p2.y + handles[nextIndex].inOffset.y
             )
 
             let firstStep = index == 0 ? 0 : 1
@@ -863,19 +874,28 @@ enum ShapeGeometry {
 
     /// Derives editable tangent handles from the auto-computed cardinal spline so a
     /// freshly committed curve keeps its current look but becomes reshapeable.
-    static func defaultCurveHandles(anchors: [CGPoint]) -> [CurveHandle] {
+    static func defaultCurveHandles(anchors: [CGPoint], closed: Bool = false) -> [CurveHandle] {
         let count = anchors.count
         guard count >= 2 else {
             return anchors.map { _ in CurveHandle() }
         }
 
         var handles = anchors.map { _ in CurveHandle() }
+        let segmentCount = closed ? count : count - 1
 
-        for index in 0..<(count - 1) {
+        for index in 0..<segmentCount {
+            let nextIndex = (index + 1) % count
             let p1 = anchors[index]
-            let p2 = anchors[index + 1]
-            let p0 = index > 0 ? anchors[index - 1] : p1
-            let p3 = index < count - 2 ? anchors[index + 2] : p2
+            let p2 = anchors[nextIndex]
+            let p0: CGPoint
+            let p3: CGPoint
+            if closed {
+                p0 = anchors[(index - 1 + count) % count]
+                p3 = anchors[(index + 2) % count]
+            } else {
+                p0 = index > 0 ? anchors[index - 1] : p1
+                p3 = index < count - 2 ? anchors[index + 2] : p2
+            }
 
             let tension1 = curveTension(prev: p0, cur: p1, next: p2)
             let tension2 = curveTension(prev: p1, cur: p2, next: p3)
@@ -886,7 +906,7 @@ enum ShapeGeometry {
                 y: (p2.y - p0.y) * tension1 / 6
             )
             // Incoming handle at p2 for this segment.
-            handles[index + 1].inOffset = CGPoint(
+            handles[nextIndex].inOffset = CGPoint(
                 x: -(p3.x - p1.x) * tension2 / 6,
                 y: -(p3.y - p1.y) * tension2 / 6
             )
