@@ -12,16 +12,37 @@ enum GridRenderer {
         viewport: ViewportTransform,
         grid: GridSettings,
         documentSettings: DocumentSettings,
-        canvasExtent: CGFloat? = nil
+        canvasSize: CGSize? = nil
+    ) {
+        // When a canvas rectangle is present, grid lines and axes are clipped to it so the
+        // surrounding pasteboard stays clean. The boundary stroke is drawn afterwards, unclipped.
+        let canvasViewRect: CGRect? = canvasSize.flatMap { size in
+            guard size.width > 0, size.height > 0 else { return nil }
+            return canvasRectInView(viewport: viewport, canvasSize: size)
+        }
+
+        context.saveGState()
+        if let canvasViewRect {
+            context.clip(to: canvasViewRect)
+        }
+        drawGridLines(in: context, bounds: bounds, viewport: viewport, grid: grid, documentSettings: documentSettings)
+        drawAxes(in: context, bounds: bounds, viewport: viewport)
+        context.restoreGState()
+
+        if let canvasSize, canvasSize.width > 0, canvasSize.height > 0 {
+            drawCanvasBoundary(in: context, viewport: viewport, canvasSize: canvasSize)
+        }
+    }
+
+    private static func drawGridLines(
+        in context: CGContext,
+        bounds: CGRect,
+        viewport: ViewportTransform,
+        grid: GridSettings,
+        documentSettings: DocumentSettings
     ) {
         let major = grid.visualSpacing(for: documentSettings)
-        guard major > 0 else {
-            if let extent = canvasExtent, extent > 0 {
-                drawCanvasExtent(in: context, viewport: viewport, extent: extent)
-            }
-            drawAxes(in: context, bounds: bounds, viewport: viewport)
-            return
-        }
+        guard major > 0 else { return }
 
         let snapDiv = max(1, grid.snapSubdivisions)
 
@@ -75,25 +96,24 @@ enum GridRenderer {
         }
 
         context.restoreGState()
-
-        if let extent = canvasExtent, extent > 0 {
-            drawCanvasExtent(in: context, viewport: viewport, extent: extent)
-        }
-
-        drawAxes(in: context, bounds: bounds, viewport: viewport)
     }
 
-    private static func drawCanvasExtent(in context: CGContext, viewport: ViewportTransform, extent: CGFloat) {
-        let half = extent / 2
-        let canvasRect = CGRect(x: -half, y: -half, width: extent, height: extent)
-        let topLeft = viewport.documentToView(canvasRect.origin)
-        let bottomRight = viewport.documentToView(CGPoint(x: canvasRect.maxX, y: canvasRect.maxY))
-        let viewRect = CGRect(
+    /// Canvas rectangle (document space centered on origin) mapped into view space.
+    private static func canvasRectInView(viewport: ViewportTransform, canvasSize: CGSize) -> CGRect {
+        let halfWidth = canvasSize.width / 2
+        let halfHeight = canvasSize.height / 2
+        let topLeft = viewport.documentToView(CGPoint(x: -halfWidth, y: -halfHeight))
+        let bottomRight = viewport.documentToView(CGPoint(x: halfWidth, y: halfHeight))
+        return CGRect(
             x: topLeft.x,
             y: topLeft.y,
             width: bottomRight.x - topLeft.x,
             height: bottomRight.y - topLeft.y
         )
+    }
+
+    private static func drawCanvasBoundary(in context: CGContext, viewport: ViewportTransform, canvasSize: CGSize) {
+        let viewRect = canvasRectInView(viewport: viewport, canvasSize: canvasSize)
         context.saveGState()
         context.setStrokeColor(UIColor.systemOrange.withAlphaComponent(0.45).cgColor)
         context.setLineWidth(1.5)

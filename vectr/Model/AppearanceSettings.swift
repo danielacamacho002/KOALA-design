@@ -18,6 +18,9 @@ enum AppearanceSettings {
 
     /// Fixed toolbar color (not user-configurable).
     static let toolbarHex = "4D4D4D"
+
+    /// Dark grey "pasteboard" shown around the canvas sheet when zoomed out.
+    static let pasteboardHex = "3A3A3A"
 }
 
 extension Color {

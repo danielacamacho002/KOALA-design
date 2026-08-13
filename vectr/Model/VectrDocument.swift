@@ -158,7 +158,6 @@ final class VectrDocument {
         printPieces = snapshot.printPieces
         printHiddenStrokeIDs = snapshot.printHiddenStrokeIDs
         dimensionOffsets = snapshot.dimensionOffsets
-        settings.syncCanvasExtentToMaximum()
         syncGridFromSettings()
     }
 
@@ -1579,11 +1578,17 @@ final class VectrDocument {
     }
 
     /// Applies defaults intended for newly created projects.
-    func applyNewProjectDefaults() {
-        settings.units = .inches
+    /// - Parameters:
+    ///   - canvasSize: Optional canvas dimensions in document points. Defaults to 24" × 18" when nil.
+    ///   - units: Working measurement unit for the new project.
+    func applyNewProjectDefaults(canvasSize: CGSize? = nil, units: MeasurementUnit = .inches) {
+        settings.units = units
         settings.defaultGridSpacing = UnitConversion.pointsPerInch
         settings.allowsFingerDrawing = false
-        settings.syncCanvasExtentToMaximum()
+        if let canvasSize {
+            settings.canvasWidth = canvasSize.width
+            settings.canvasHeight = canvasSize.height
+        }
         syncGridFromSettings()
     }
 
@@ -1979,7 +1984,6 @@ final class VectrDocument {
         printPieces = snapshot.printPieces
         printHiddenStrokeIDs = snapshot.printHiddenStrokeIDs
         dimensionOffsets = snapshot.dimensionOffsets
-        settings.syncCanvasExtentToMaximum()
         syncGridFromSettings()
         printLayoutRevision += 1
     }

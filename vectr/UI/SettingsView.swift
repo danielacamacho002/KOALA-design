@@ -34,7 +34,6 @@ struct SettingsView: View {
                         }
                     }
                     .onChange(of: document.settings.units) { _, _ in
-                        document.settings.syncCanvasExtentToMaximum()
                         reloadDisplayValues()
                         document.syncGridFromSettings()
                     }
@@ -124,7 +123,6 @@ struct SettingsView: View {
             }
             .onAppear {
                 editingName = fileName
-                document.settings.syncCanvasExtentToMaximum()
                 reloadDisplayValues()
             }
         }
