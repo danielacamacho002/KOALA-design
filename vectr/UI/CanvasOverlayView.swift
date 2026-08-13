@@ -147,11 +147,13 @@ struct CanvasOverlayView: View {
     }
 
     private func snapCommandControlPoint(_ raw: CGPoint) -> CGPoint {
+        let scale = document.viewport.scale
         let snapped = snapDrawingPoint(
             raw,
             grid: document.grid,
             settings: document.settings,
-            enabled: drawingSnapEnabled
+            enabled: drawingSnapEnabled,
+            scale: scale
         )
         let projected = ShapeGeometry.projectCommandPoint(
             snapped,
@@ -166,7 +168,8 @@ struct CanvasOverlayView: View {
             projected: projected,
             grid: document.grid,
             settings: document.settings,
-            enabled: drawingSnapEnabled
+            enabled: drawingSnapEnabled,
+            scale: scale
         )
     }
 

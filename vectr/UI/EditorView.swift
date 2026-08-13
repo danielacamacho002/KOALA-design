@@ -516,7 +516,8 @@ struct EditorView: View {
             point,
             grid: store.document.grid,
             settings: store.document.settings,
-            enabled: drawingSnapEnabled
+            enabled: drawingSnapEnabled,
+            scale: store.document.viewport.scale
         )
     }
 
@@ -527,7 +528,8 @@ struct EditorView: View {
             projected: projected,
             grid: store.document.grid,
             settings: store.document.settings,
-            enabled: drawingSnapEnabled
+            enabled: drawingSnapEnabled,
+            scale: store.document.viewport.scale
         )
     }
 
