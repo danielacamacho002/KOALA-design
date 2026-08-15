@@ -69,6 +69,9 @@ final class VectrDocument {
     var dimensionsVisible: Bool = false
     // Document-space offsets of dragged dimension labels, keyed by "<strokeID>:<dimensionID>".
     var dimensionOffsets: [String: CGPoint] = [:]
+    // Dimensions whose edge is pinned, keyed the same way. A pinned edge stays put when
+    // the perpendicular dimension is edited.
+    var dimensionLocks: Set<String> = []
     var scaleUniform: Bool = true
     var selectedAnchorIndices: Set<Int> = []
     var selectedFilletCornerIndices: Set<Int> = []
@@ -162,6 +165,7 @@ final class VectrDocument {
         printPieces = snapshot.printPieces
         printHiddenStrokeIDs = snapshot.printHiddenStrokeIDs
         dimensionOffsets = snapshot.dimensionOffsets
+        dimensionLocks = snapshot.dimensionLocks ?? []
         syncGridFromSettings()
         normalizeLayerGrouping()
     }
@@ -735,6 +739,20 @@ final class VectrDocument {
             dimensionOffsets[key] = offset
         } else {
             dimensionOffsets.removeValue(forKey: key)
+        }
+        geometryRevision += 1
+    }
+
+    func isDimensionLocked(key: String) -> Bool {
+        dimensionLocks.contains(key)
+    }
+
+    func toggleDimensionLock(key: String, recordUndo: Bool = true) {
+        if recordUndo { pushUndo() }
+        if dimensionLocks.contains(key) {
+            dimensionLocks.remove(key)
+        } else {
+            dimensionLocks.insert(key)
         }
         geometryRevision += 1
     }
@@ -2173,7 +2191,8 @@ final class VectrDocument {
             printStrokeTransforms: printStrokeTransforms,
             printPieces: printPieces,
             printHiddenStrokeIDs: printHiddenStrokeIDs,
-            dimensionOffsets: dimensionOffsets
+            dimensionOffsets: dimensionOffsets,
+            dimensionLocks: dimensionLocks
         )
     }
 
@@ -2196,6 +2215,7 @@ final class VectrDocument {
         printPieces = snapshot.printPieces
         printHiddenStrokeIDs = snapshot.printHiddenStrokeIDs
         dimensionOffsets = snapshot.dimensionOffsets
+        dimensionLocks = snapshot.dimensionLocks ?? []
         syncGridFromSettings()
         printLayoutRevision += 1
     }
@@ -2221,4 +2241,7 @@ struct DocumentSnapshot: Codable {
     var printPieces: [VectorStroke] = []
     var printHiddenStrokeIDs: Set<UUID> = []
     var dimensionOffsets: [String: CGPoint] = [:]
+    /// Optional rather than defaulted: synthesized Codable throws on a missing key even
+    /// when a default exists, so projects saved before locks shipped would fail to open.
+    var dimensionLocks: Set<String>?
 }

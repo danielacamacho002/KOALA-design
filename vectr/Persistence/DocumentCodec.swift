@@ -28,7 +28,8 @@ enum DocumentCodec {
             printStrokeTransforms: document.printStrokeTransforms,
             printPieces: document.printPieces,
             printHiddenStrokeIDs: document.printHiddenStrokeIDs,
-            dimensionOffsets: document.dimensionOffsets
+            dimensionOffsets: document.dimensionOffsets,
+            dimensionLocks: document.dimensionLocks
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

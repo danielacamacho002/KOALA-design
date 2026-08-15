@@ -1021,6 +1021,37 @@ enum ShapeGeometry {
         }
     }
 
+    /// Which side of the axis being resized stays put. `.nearEdge` keeps the corner
+    /// at the rectangle's local origin fixed; `.farEdge` keeps the opposite side fixed.
+    enum DimensionAnchor {
+        case nearEdge
+        case farEdge
+    }
+
+    /// Distance in document units between a dimension's anchor point on the shape and
+    /// its resting label position.
+    private static let labelStandoff: CGFloat = 20
+
+    /// A rectangle's local frame: origin corner plus orthogonal unit axes and extents.
+    /// Derived from the stored corner order so rotated rectangles resize correctly.
+    private static func rectangleFrame(
+        _ points: [CGPoint]
+    ) -> (origin: CGPoint, u: CGPoint, v: CGPoint, width: CGFloat, height: CGFloat)? {
+        guard points.count == 4 else { return nil }
+        let uVector = CGPoint(x: points[1].x - points[0].x, y: points[1].y - points[0].y)
+        let vVector = CGPoint(x: points[3].x - points[0].x, y: points[3].y - points[0].y)
+        let width = hypot(uVector.x, uVector.y)
+        let height = hypot(vVector.x, vVector.y)
+        guard width > 0.001, height > 0.001 else { return nil }
+        return (
+            origin: points[0],
+            u: CGPoint(x: uVector.x / width, y: uVector.y / width),
+            v: CGPoint(x: vVector.x / height, y: vVector.y / height),
+            width: width,
+            height: height
+        )
+    }
+
     static func semanticDimensions(for stroke: VectorStroke) -> [SemanticDimension] {
         switch stroke.shapeType {
         case .circle:
@@ -1055,20 +1086,33 @@ enum ShapeGeometry {
                 )
             ]
         case .rectangle:
-            guard stroke.points.count == 4 else { return [] }
-            return (0..<4).map { index in
-                let start = stroke.points[index]
-                let end = stroke.points[(index + 1) % 4]
-                let length = hypot(end.x - start.x, end.y - start.y)
-                return SemanticDimension(
-                    id: "side-\(index)",
-                    label: String(format: "%.3f", length),
-                    midPoint: midpoint(start, end),
-                    value: length,
-                    kind: .segmentLength(segmentIndex: index),
-                    anchor: midpoint(start, end)
+            guard let frame = rectangleFrame(stroke.points) else { return [] }
+            let widthAnchor = midpoint(stroke.points[2], stroke.points[3])
+            let heightAnchor = midpoint(stroke.points[1], stroke.points[2])
+            return [
+                SemanticDimension(
+                    id: "width",
+                    label: String(format: "%.3f", frame.width),
+                    midPoint: CGPoint(
+                        x: widthAnchor.x + frame.v.x * labelStandoff,
+                        y: widthAnchor.y + frame.v.y * labelStandoff
+                    ),
+                    value: frame.width,
+                    kind: .rectangleWidth,
+                    anchor: widthAnchor
+                ),
+                SemanticDimension(
+                    id: "height",
+                    label: String(format: "%.3f", frame.height),
+                    midPoint: CGPoint(
+                        x: heightAnchor.x + frame.u.x * labelStandoff,
+                        y: heightAnchor.y + frame.u.y * labelStandoff
+                    ),
+                    value: frame.height,
+                    kind: .rectangleHeight,
+                    anchor: heightAnchor
                 )
-            }
+            ]
         default:
             let points = stroke.points
             guard points.count >= 2 else { return [] }
@@ -1089,7 +1133,12 @@ enum ShapeGeometry {
         }
     }
 
-    static func applyDimension(_ dimension: SemanticDimension, newValue: CGFloat, to stroke: VectorStroke) -> VectorStroke? {
+    static func applyDimension(
+        _ dimension: SemanticDimension,
+        newValue: CGFloat,
+        to stroke: VectorStroke,
+        anchor: DimensionAnchor = .nearEdge
+    ) -> VectorStroke? {
         var updated = stroke
         switch dimension.kind {
         case .circleDiameter:
@@ -1102,16 +1151,30 @@ enum ShapeGeometry {
         case .ellipseRY:
             guard let ellipse = ellipseFromCardinalPoints(stroke.points) else { return nil }
             updated.points = ellipseCardinalPoints(center: ellipse.center, rx: ellipse.rx, ry: max(0.001, newValue))
-        case .rectangleWidth:
-            guard stroke.points.count == 4 else { return nil }
-            let center = CGPoint(x: (stroke.points[0].x + stroke.points[2].x) / 2, y: (stroke.points[0].y + stroke.points[2].y) / 2)
-            let halfH = abs(stroke.points[2].y - center.y)
-            updated.points = rectangleFromCenterDistances(center, halfWidth: max(0.001, newValue / 2), halfHeight: halfH)
-        case .rectangleHeight:
-            guard stroke.points.count == 4 else { return nil }
-            let center = CGPoint(x: (stroke.points[0].x + stroke.points[2].x) / 2, y: (stroke.points[0].y + stroke.points[2].y) / 2)
-            let halfW = abs(stroke.points[1].x - center.x)
-            updated.points = rectangleFromCenterDistances(center, halfWidth: halfW, halfHeight: max(0.001, newValue / 2))
+        case .rectangleWidth, .rectangleHeight:
+            guard let frame = rectangleFrame(stroke.points) else { return nil }
+            let isWidth: Bool
+            if case .rectangleWidth = dimension.kind { isWidth = true } else { isWidth = false }
+            let width = isWidth ? max(0.001, newValue) : frame.width
+            let height = isWidth ? frame.height : max(0.001, newValue)
+
+            // Holding the far edge means sliding the origin by the amount the axis shrank,
+            // which leaves that edge exactly where it was.
+            var origin = frame.origin
+            if anchor == .farEdge {
+                let axis = isWidth ? frame.u : frame.v
+                let delta = isWidth ? frame.width - width : frame.height - height
+                origin = CGPoint(x: origin.x + axis.x * delta, y: origin.y + axis.y * delta)
+            }
+            updated.points = [
+                origin,
+                CGPoint(x: origin.x + frame.u.x * width, y: origin.y + frame.u.y * width),
+                CGPoint(
+                    x: origin.x + frame.u.x * width + frame.v.x * height,
+                    y: origin.y + frame.u.y * width + frame.v.y * height
+                ),
+                CGPoint(x: origin.x + frame.v.x * height, y: origin.y + frame.v.y * height)
+            ]
         case .segmentLength(let segmentIndex):
             let points = stroke.points
             guard points.count >= 2 else { return nil }

@@ -18,6 +18,7 @@ struct DimensionOverlayView: View {
     @State private var editText = ""
     @State private var draggingID: String?
     @State private var dragTranslation: CGSize = .zero
+    @FocusState private var editorFocused: Bool
 
     var body: some View {
         ZStack {
@@ -111,37 +112,117 @@ struct DimensionOverlayView: View {
             leader(from: anchorPoint, to: labelPoint)
         }
 
-        if editingID == dimension.id {
-            TextField("", text: $editText)
-                .font(.caption.weight(.semibold).monospacedDigit())
-                .multilineTextAlignment(.center)
-                .frame(width: 88)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color(.systemBackground), in: Capsule())
-                .overlay(Capsule().stroke(Color.accentColor, lineWidth: 1.5))
-                .position(labelPoint)
-                .onSubmit { commitEdit(dimension: dimension, strokeID: strokeID) }
-                .onAppear {
-                    let display = document.settings.units.fromDocumentUnits(dimension.value)
-                    editText = DimensionFormat.edit(Double(display))
-                }
-        } else {
-            Text(labelText(for: dimension))
-                .font(.caption.weight(.semibold).monospacedDigit())
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color(.systemBackground), in: Capsule())
-                .overlay(Capsule().stroke(Color.accentColor.opacity(0.35), lineWidth: 1))
-                .contentShape(Capsule())
-                .position(labelPoint)
-                .onTapGesture {
-                    editingID = dimension.id
-                    let display = document.settings.units.fromDocumentUnits(dimension.value)
-                    editText = DimensionFormat.edit(Double(display))
-                }
-                .gesture(dragGesture(dimension: dimension, strokeID: strokeID))
+        HStack(spacing: 4) {
+            if editingID == dimension.id {
+                editorField(dimension: dimension, strokeID: strokeID)
+            } else {
+                valueCapsule(dimension: dimension, strokeID: strokeID)
+            }
+
+            if supportsLock(dimension) {
+                lockButton(dimension: dimension, strokeID: strokeID)
+            }
         }
+        .position(labelPoint)
+    }
+
+    private func editorField(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
+        TextField("", text: $editText)
+            .font(.caption.weight(.semibold).monospacedDigit())
+            .multilineTextAlignment(.center)
+            .frame(width: 88)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(Color(.systemBackground), in: Capsule())
+            .overlay(Capsule().stroke(Color.accentColor, lineWidth: 1.5))
+            .focused($editorFocused)
+            .submitLabel(.done)
+            .onSubmit { commitEdit(dimension: dimension, strokeID: strokeID) }
+            .onChange(of: editorFocused) { _, focused in
+                // Tapping elsewhere should commit rather than strand the editor.
+                if !focused { commitEdit(dimension: dimension, strokeID: strokeID) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UITextField.textDidBeginEditingNotification)) { note in
+                (note.object as? UITextField)?.selectAll(nil)
+            }
+            .onAppear {
+                editText = editTextValue(for: dimension)
+                editorFocused = true
+            }
+    }
+
+    private func valueCapsule(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
+        let locked = isLocked(dimension, strokeID: strokeID)
+        return Text(labelText(for: dimension))
+            .font(.caption.weight(.semibold).monospacedDigit())
+            .foregroundStyle(locked ? Color.secondary : Color.primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(.systemBackground), in: Capsule())
+            .overlay(
+                Capsule().stroke(
+                    locked ? Color.secondary.opacity(0.35) : Color.accentColor.opacity(0.35),
+                    lineWidth: 1
+                )
+            )
+            .contentShape(Capsule())
+            .onTapGesture {
+                guard !locked else { return }
+                editingID = dimension.id
+                editText = editTextValue(for: dimension)
+            }
+            .gesture(dragGesture(dimension: dimension, strokeID: strokeID))
+    }
+
+    private func lockButton(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
+        let locked = isLocked(dimension, strokeID: strokeID)
+        return Button {
+            let key = VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
+            document.toggleDimensionLock(key: key)
+            onChanged()
+        } label: {
+            Image(systemName: locked ? "lock.fill" : "lock.open")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(locked ? Color.accentColor : Color.secondary)
+                .frame(width: 26, height: 26)
+                .background(Color(.systemBackground), in: Circle())
+                .overlay(
+                    Circle().stroke(
+                        locked ? Color.accentColor : Color.secondary.opacity(0.35),
+                        lineWidth: locked ? 1.5 : 1
+                    )
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(locked ? "Unpin" : "Pin") \(axisName(for: dimension)) edge")
+    }
+
+    private func axisName(for dimension: ShapeGeometry.SemanticDimension) -> String {
+        switch dimension.kind {
+        case .rectangleWidth: return "length"
+        case .rectangleHeight: return "height"
+        default: return "dimension"
+        }
+    }
+
+    /// Pinning only has meaning where two dimensions share a shape and one can be held
+    /// while the other is resized.
+    private func supportsLock(_ dimension: ShapeGeometry.SemanticDimension) -> Bool {
+        switch dimension.kind {
+        case .rectangleWidth, .rectangleHeight: return true
+        default: return false
+        }
+    }
+
+    private func isLocked(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
+        document.isDimensionLocked(
+            key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
+        )
+    }
+
+    private func editTextValue(for dimension: ShapeGeometry.SemanticDimension) -> String {
+        let display = document.settings.units.fromDocumentUnits(dimension.value)
+        return DimensionFormat.edit(Double(display))
     }
 
     private func leader(from start: CGPoint, to end: CGPoint) -> some View {
@@ -180,13 +261,39 @@ struct DimensionOverlayView: View {
     }
 
     private func commitEdit(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) {
+        // Submitting drops focus, so both paths land here; only the first should apply.
+        guard editingID == dimension.id else { return }
         editingID = nil
         guard let value = Double(editText.trimmingCharacters(in: .whitespaces)),
+              value.isFinite,
+              value > 0,
               let stroke = document.stroke(with: strokeID) else { return }
         let docValue = document.settings.units.toDocumentUnits(CGFloat(value))
-        guard let updated = ShapeGeometry.applyDimension(dimension, newValue: docValue, to: stroke) else { return }
+        guard let updated = ShapeGeometry.applyDimension(
+            dimension,
+            newValue: docValue,
+            to: stroke,
+            anchor: anchor(for: dimension, strokeID: strokeID)
+        ) else { return }
         document.updateStroke(updated)
         onChanged()
+    }
+
+    /// A pinned dimension holds the edge its own pill sits on, which is the far edge of
+    /// the perpendicular axis. With nothing pinned the shape grows away from its origin
+    /// corner so it never recenters.
+    private func anchor(
+        for dimension: ShapeGeometry.SemanticDimension,
+        strokeID: UUID
+    ) -> ShapeGeometry.DimensionAnchor {
+        let counterpartID: String
+        switch dimension.kind {
+        case .rectangleWidth: counterpartID = "height"
+        case .rectangleHeight: counterpartID = "width"
+        default: return .nearEdge
+        }
+        let key = VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: counterpartID)
+        return document.isDimensionLocked(key: key) ? .farEdge : .nearEdge
     }
 
     private func labelText(for dimension: ShapeGeometry.SemanticDimension) -> String {
@@ -201,6 +308,10 @@ struct DimensionOverlayView: View {
             prefix = "rx "
         case .ellipseRY:
             prefix = "ry "
+        case .rectangleWidth:
+            prefix = "L "
+        case .rectangleHeight:
+            prefix = "H "
         default:
             prefix = ""
         }
