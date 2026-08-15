@@ -1030,6 +1030,58 @@ enum ShapeGeometry {
         case farEdge
     }
 
+    /// A rectangle edge in the shape's local frame; raw values match the pill ids
+    /// emitted by `semanticDimensions`.
+    enum RectangleEdge: String {
+        case top = "width-top"
+        case bottom = "width-bottom"
+        case left = "height-left"
+        case right = "height-right"
+    }
+
+    /// Resizes a single edge about its own midpoint, leaving the opposite edge exactly
+    /// where it is. Used when the opposite edge is pinned so the two can differ; the
+    /// result is generally a trapezoid, so the stroke is demoted to a closed polyline
+    /// once its opposite edges stop matching.
+    static func applyEdgeLength(_ edge: RectangleEdge, newValue: CGFloat, to stroke: VectorStroke) -> VectorStroke? {
+        guard stroke.shapeType == .rectangle, let frame = rectangleFrame(stroke.points) else { return nil }
+        let half = max(0.001, newValue) / 2
+        var p = stroke.points
+        switch edge {
+        case .top:
+            let m = midpoint(p[0], p[1])
+            p[0] = CGPoint(x: m.x - frame.u.x * half, y: m.y - frame.u.y * half)
+            p[1] = CGPoint(x: m.x + frame.u.x * half, y: m.y + frame.u.y * half)
+        case .bottom:
+            let m = midpoint(p[3], p[2])
+            p[3] = CGPoint(x: m.x - frame.u.x * half, y: m.y - frame.u.y * half)
+            p[2] = CGPoint(x: m.x + frame.u.x * half, y: m.y + frame.u.y * half)
+        case .left:
+            let m = midpoint(p[0], p[3])
+            p[0] = CGPoint(x: m.x - frame.v.x * half, y: m.y - frame.v.y * half)
+            p[3] = CGPoint(x: m.x + frame.v.x * half, y: m.y + frame.v.y * half)
+        case .right:
+            let m = midpoint(p[1], p[2])
+            p[1] = CGPoint(x: m.x - frame.v.x * half, y: m.y - frame.v.y * half)
+            p[2] = CGPoint(x: m.x + frame.v.x * half, y: m.y + frame.v.y * half)
+        }
+
+        var updated = stroke
+        updated.points = p
+        let topLength = hypot(p[1].x - p[0].x, p[1].y - p[0].y)
+        let bottomLength = hypot(p[2].x - p[3].x, p[2].y - p[3].y)
+        let leftLength = hypot(p[3].x - p[0].x, p[3].y - p[0].y)
+        let rightLength = hypot(p[2].x - p[1].x, p[2].y - p[1].y)
+        let stillRectangle = abs(topLength - bottomLength) < 0.01 && abs(leftLength - rightLength) < 0.01
+        if !stillRectangle {
+            updated.shapeType = .polyline
+            updated.shapeRotation = nil
+            updated.rotationBasePoints = nil
+            updated.rotationBaseCenter = nil
+        }
+        return updated
+    }
+
     /// Distance in document units between a dimension's anchor point on the shape and
     /// its resting label position.
     private static let labelStandoff: CGFloat = 20

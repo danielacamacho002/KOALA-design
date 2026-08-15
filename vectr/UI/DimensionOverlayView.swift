@@ -152,7 +152,7 @@ struct DimensionOverlayView: View {
     }
 
     private func valueCapsule(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
-        let locked = isAxisLocked(dimension, strokeID: strokeID)
+        let locked = isEdgePinned(dimension, strokeID: strokeID)
         return Text(labelText(for: dimension))
             .font(.caption.weight(.semibold).monospacedDigit())
             .foregroundStyle(locked ? Color.secondary : Color.primary)
@@ -225,17 +225,18 @@ struct DimensionOverlayView: View {
         dimensionID.split(separator: "-").last.map(String.init) ?? "shape"
     }
 
-    /// Whether this specific edge is pinned; drives the lock button state.
+    /// Whether this specific edge is pinned. A pinned edge is frozen in place and its
+    /// pill refuses edits; the opposite pill stays editable so the two edges can hold
+    /// different values.
     private func isEdgePinned(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
         document.isDimensionLocked(
             key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
         )
     }
 
-    /// Whether either edge of this dimension's axis is pinned; a pinned axis has its
-    /// value frozen, so both of its pills render locked and refuse edits.
-    private func isAxisLocked(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
-        if isEdgePinned(dimension, strokeID: strokeID) { return true }
+    /// Whether the parallel edge across the shape is pinned, which switches edits of
+    /// this pill from whole-axis resizing to reshaping just this edge.
+    private func isOppositeEdgePinned(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
         guard let opposite = oppositeEdgeID(for: dimension.id) else { return false }
         return document.isDimensionLocked(
             key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: opposite)
@@ -291,12 +292,21 @@ struct DimensionOverlayView: View {
               value > 0,
               let stroke = document.stroke(with: strokeID) else { return }
         let docValue = document.settings.units.toDocumentUnits(CGFloat(value))
-        guard let updated = ShapeGeometry.applyDimension(
-            dimension,
-            newValue: docValue,
-            to: stroke,
-            anchor: anchor(for: dimension, strokeID: strokeID)
-        ) else { return }
+        let updated: VectorStroke?
+        if let edge = ShapeGeometry.RectangleEdge(rawValue: dimension.id),
+           isOppositeEdgePinned(dimension, strokeID: strokeID) {
+            // The parallel edge is pinned, so reshape just this edge; opposite edges
+            // may then differ and the shape becomes a free quad.
+            updated = ShapeGeometry.applyEdgeLength(edge, newValue: docValue, to: stroke)
+        } else {
+            updated = ShapeGeometry.applyDimension(
+                dimension,
+                newValue: docValue,
+                to: stroke,
+                anchor: anchor(for: dimension, strokeID: strokeID)
+            )
+        }
+        guard let updated else { return }
         document.updateStroke(updated)
         onChanged()
     }
