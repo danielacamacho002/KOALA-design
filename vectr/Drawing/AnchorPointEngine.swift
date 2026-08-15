@@ -535,7 +535,7 @@ enum AnchorPointEngine {
         // A curve's anchor count changed, so rebuild its tangent handles to stay in
         // sync; otherwise the move tool can't show/edit the beziers after editing.
         let curveHandles = shapeType == .curve
-            ? ShapeGeometry.defaultCurveHandles(anchors: points)
+            ? ShapeGeometry.defaultCurveHandles(anchors: points, closed: true)
             : nil
         return VectorStroke(
             id: stroke.id,
