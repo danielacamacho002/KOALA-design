@@ -1021,9 +1021,11 @@ enum ShapeGeometry {
         }
     }
 
-    /// Which side of the axis being resized stays put. `.nearEdge` keeps the corner
-    /// at the rectangle's local origin fixed; `.farEdge` keeps the opposite side fixed.
+    /// What stays put when a rectangle dimension changes. `.center` grows both sides
+    /// equally; `.nearEdge` holds the side at the rectangle's local origin; `.farEdge`
+    /// holds the opposite side.
     enum DimensionAnchor {
+        case center
         case nearEdge
         case farEdge
     }
@@ -1087,32 +1089,28 @@ enum ShapeGeometry {
             ]
         case .rectangle:
             guard let frame = rectangleFrame(stroke.points) else { return [] }
-            let widthAnchor = midpoint(stroke.points[2], stroke.points[3])
-            let heightAnchor = midpoint(stroke.points[1], stroke.points[2])
-            return [
-                SemanticDimension(
-                    id: "width",
-                    label: String(format: "%.3f", frame.width),
-                    midPoint: CGPoint(
-                        x: widthAnchor.x + frame.v.x * labelStandoff,
-                        y: widthAnchor.y + frame.v.y * labelStandoff
-                    ),
-                    value: frame.width,
-                    kind: .rectangleWidth,
-                    anchor: widthAnchor
-                ),
-                SemanticDimension(
-                    id: "height",
-                    label: String(format: "%.3f", frame.height),
-                    midPoint: CGPoint(
-                        x: heightAnchor.x + frame.u.x * labelStandoff,
-                        y: heightAnchor.y + frame.u.y * labelStandoff
-                    ),
-                    value: frame.height,
-                    kind: .rectangleHeight,
-                    anchor: heightAnchor
-                )
+            let p = stroke.points
+            // One editable pill on each edge: the value is shared per axis, the id
+            // identifies the edge so labels and pins can be placed per edge.
+            let edges: [(id: String, anchor: CGPoint, outward: CGPoint, value: CGFloat, kind: SemanticDimension.Kind)] = [
+                ("width-top", midpoint(p[0], p[1]), CGPoint(x: -frame.v.x, y: -frame.v.y), frame.width, .rectangleWidth),
+                ("width-bottom", midpoint(p[2], p[3]), frame.v, frame.width, .rectangleWidth),
+                ("height-left", midpoint(p[0], p[3]), CGPoint(x: -frame.u.x, y: -frame.u.y), frame.height, .rectangleHeight),
+                ("height-right", midpoint(p[1], p[2]), frame.u, frame.height, .rectangleHeight)
             ]
+            return edges.map { edge in
+                SemanticDimension(
+                    id: edge.id,
+                    label: String(format: "%.3f", edge.value),
+                    midPoint: CGPoint(
+                        x: edge.anchor.x + edge.outward.x * labelStandoff,
+                        y: edge.anchor.y + edge.outward.y * labelStandoff
+                    ),
+                    value: edge.value,
+                    kind: edge.kind,
+                    anchor: edge.anchor
+                )
+            }
         default:
             let points = stroke.points
             guard points.count >= 2 else { return [] }
@@ -1137,7 +1135,7 @@ enum ShapeGeometry {
         _ dimension: SemanticDimension,
         newValue: CGFloat,
         to stroke: VectorStroke,
-        anchor: DimensionAnchor = .nearEdge
+        anchor: DimensionAnchor = .center
     ) -> VectorStroke? {
         var updated = stroke
         switch dimension.kind {
@@ -1158,12 +1156,17 @@ enum ShapeGeometry {
             let width = isWidth ? max(0.001, newValue) : frame.width
             let height = isWidth ? frame.height : max(0.001, newValue)
 
-            // Holding the far edge means sliding the origin by the amount the axis shrank,
-            // which leaves that edge exactly where it was.
+            // Sliding the origin by the amount the axis shrank keeps the far edge in
+            // place; half of it keeps the center in place.
             var origin = frame.origin
-            if anchor == .farEdge {
-                let axis = isWidth ? frame.u : frame.v
-                let delta = isWidth ? frame.width - width : frame.height - height
+            let axis = isWidth ? frame.u : frame.v
+            let delta = isWidth ? frame.width - width : frame.height - height
+            switch anchor {
+            case .nearEdge:
+                break
+            case .center:
+                origin = CGPoint(x: origin.x + axis.x * delta / 2, y: origin.y + axis.y * delta / 2)
+            case .farEdge:
                 origin = CGPoint(x: origin.x + axis.x * delta, y: origin.y + axis.y * delta)
             }
             updated.points = [

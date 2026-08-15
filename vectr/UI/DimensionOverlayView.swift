@@ -152,7 +152,7 @@ struct DimensionOverlayView: View {
     }
 
     private func valueCapsule(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
-        let locked = isLocked(dimension, strokeID: strokeID)
+        let locked = isAxisLocked(dimension, strokeID: strokeID)
         return Text(labelText(for: dimension))
             .font(.caption.weight(.semibold).monospacedDigit())
             .foregroundStyle(locked ? Color.secondary : Color.primary)
@@ -175,10 +175,13 @@ struct DimensionOverlayView: View {
     }
 
     private func lockButton(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
-        let locked = isLocked(dimension, strokeID: strokeID)
+        let locked = isEdgePinned(dimension, strokeID: strokeID)
         return Button {
             let key = VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
-            document.toggleDimensionLock(key: key)
+            let opposite = oppositeEdgeID(for: dimension.id).map {
+                VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: $0)
+            }
+            document.toggleDimensionLock(key: key, unlocking: opposite)
             onChanged()
         } label: {
             Image(systemName: locked ? "lock.fill" : "lock.open")
@@ -194,15 +197,7 @@ struct DimensionOverlayView: View {
                 )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(locked ? "Unpin" : "Pin") \(axisName(for: dimension)) edge")
-    }
-
-    private func axisName(for dimension: ShapeGeometry.SemanticDimension) -> String {
-        switch dimension.kind {
-        case .rectangleWidth: return "length"
-        case .rectangleHeight: return "height"
-        default: return "dimension"
-        }
+        .accessibilityLabel("\(locked ? "Unpin" : "Pin") \(edgeName(for: dimension.id)) edge")
     }
 
     /// Pinning only has meaning where two dimensions share a shape and one can be held
@@ -214,9 +209,36 @@ struct DimensionOverlayView: View {
         }
     }
 
-    private func isLocked(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
+    /// The pill on the parallel edge showing the same value. Pinning one edge releases
+    /// the other so an axis can never be pinned on both sides.
+    private func oppositeEdgeID(for dimensionID: String) -> String? {
+        switch dimensionID {
+        case "width-top": return "width-bottom"
+        case "width-bottom": return "width-top"
+        case "height-left": return "height-right"
+        case "height-right": return "height-left"
+        default: return nil
+        }
+    }
+
+    private func edgeName(for dimensionID: String) -> String {
+        dimensionID.split(separator: "-").last.map(String.init) ?? "shape"
+    }
+
+    /// Whether this specific edge is pinned; drives the lock button state.
+    private func isEdgePinned(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
         document.isDimensionLocked(
             key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
+        )
+    }
+
+    /// Whether either edge of this dimension's axis is pinned; a pinned axis has its
+    /// value frozen, so both of its pills render locked and refuse edits.
+    private func isAxisLocked(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
+        if isEdgePinned(dimension, strokeID: strokeID) { return true }
+        guard let opposite = oppositeEdgeID(for: dimension.id) else { return false }
+        return document.isDimensionLocked(
+            key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: opposite)
         )
     }
 
@@ -279,21 +301,32 @@ struct DimensionOverlayView: View {
         onChanged()
     }
 
-    /// A pinned dimension holds the edge its own pill sits on, which is the far edge of
-    /// the perpendicular axis. With nothing pinned the shape grows away from its origin
-    /// corner so it never recenters.
+    /// A pinned edge stays put when the perpendicular axis is edited; with nothing
+    /// pinned the shape resizes about its center. Near/far follow the local frame:
+    /// the near width edge is the left one, the near height edge is the top one.
     private func anchor(
         for dimension: ShapeGeometry.SemanticDimension,
         strokeID: UUID
     ) -> ShapeGeometry.DimensionAnchor {
-        let counterpartID: String
+        let nearEdgeID: String
+        let farEdgeID: String
         switch dimension.kind {
-        case .rectangleWidth: counterpartID = "height"
-        case .rectangleHeight: counterpartID = "width"
-        default: return .nearEdge
+        case .rectangleWidth:
+            nearEdgeID = "height-left"
+            farEdgeID = "height-right"
+        case .rectangleHeight:
+            nearEdgeID = "width-top"
+            farEdgeID = "width-bottom"
+        default:
+            return .center
         }
-        let key = VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: counterpartID)
-        return document.isDimensionLocked(key: key) ? .farEdge : .nearEdge
+        if document.isDimensionLocked(key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: nearEdgeID)) {
+            return .nearEdge
+        }
+        if document.isDimensionLocked(key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: farEdgeID)) {
+            return .farEdge
+        }
+        return .center
     }
 
     private func labelText(for dimension: ShapeGeometry.SemanticDimension) -> String {
@@ -308,10 +341,6 @@ struct DimensionOverlayView: View {
             prefix = "rx "
         case .ellipseRY:
             prefix = "ry "
-        case .rectangleWidth:
-            prefix = "L "
-        case .rectangleHeight:
-            prefix = "H "
         default:
             prefix = ""
         }

@@ -747,12 +747,17 @@ final class VectrDocument {
         dimensionLocks.contains(key)
     }
 
-    func toggleDimensionLock(key: String, recordUndo: Bool = true) {
+    /// Toggles a pin. `unlocking` names the opposite edge, released in the same undo
+    /// step so both edges of an axis can never be pinned at once.
+    func toggleDimensionLock(key: String, unlocking: String? = nil, recordUndo: Bool = true) {
         if recordUndo { pushUndo() }
         if dimensionLocks.contains(key) {
             dimensionLocks.remove(key)
         } else {
             dimensionLocks.insert(key)
+            if let unlocking {
+                dimensionLocks.remove(unlocking)
+            }
         }
         geometryRevision += 1
     }
