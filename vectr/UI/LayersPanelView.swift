@@ -7,7 +7,8 @@ import SwiftUI
 
 /// Collapsible layers panel (Procreate-style toggle, Illustrator-style ordering).
 /// Collapsed it is a single icon button; expanded it shows the layer stack with
-/// the frontmost layer at the top of the list.
+/// the frontmost layer at the top of the list. Layers can be organized into
+/// folders and multi-selected to group or merge them.
 struct LayersPanelView: View {
     @Bindable var document: VectrDocument
     /// Expansion is owned by the editor so taps outside the panel can collapse it.
@@ -16,8 +17,11 @@ struct LayersPanelView: View {
     var onChanged: () -> Void
 
     @State private var renamingLayerID: UUID?
+    @State private var renamingGroupID: UUID?
     @State private var renameText = ""
     @FocusState private var renameFieldFocused: Bool
+    /// Layers picked for a group/merge operation (independent of the active layer).
+    @State private var selectedLayerIDs: Set<UUID> = []
 
     private let panelWidth: CGFloat = 248
     private let rowHeight: CGFloat = 44
@@ -37,7 +41,10 @@ struct LayersPanelView: View {
         }
         .animation(.easeOut(duration: 0.15), value: isExpanded)
         .onChange(of: isExpanded) { _, expanded in
-            if !expanded { commitRenameIfNeeded() }
+            if !expanded {
+                commitRenameIfNeeded()
+                selectedLayerIDs = []
+            }
         }
     }
 
@@ -62,6 +69,9 @@ struct LayersPanelView: View {
     private var panelCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             panelHeader
+            if !selectedLayerIDs.isEmpty {
+                selectionBar
+            }
             layerList
         }
         .padding(10)
@@ -103,25 +113,58 @@ struct LayersPanelView: View {
         }
     }
 
-    /// Top row = frontmost layer (last in the document's back-to-front array).
-    private var displayedLayers: [Layer] {
-        document.layers.reversed()
+    /// Contextual actions shown while one or more layers are selected.
+    private var selectionBar: some View {
+        HStack(spacing: 8) {
+            Text("\(validSelection.count) selected")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Button {
+                groupSelected()
+            } label: {
+                Label("Group", systemImage: "folder.badge.plus")
+                    .font(.caption2.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .disabled(validSelection.isEmpty)
+            .opacity(validSelection.isEmpty ? 0.4 : 1)
+
+            Button {
+                mergeSelected()
+            } label: {
+                Label("Merge", systemImage: "arrow.triangle.merge")
+                    .font(.caption2.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .disabled(validSelection.count < 2)
+            .opacity(validSelection.count < 2 ? 0.4 : 1)
+
+            Button {
+                selectedLayerIDs = []
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Clear selection")
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 4)
+        .background(Rectangle().fill(Color.accentColor.opacity(0.08)))
     }
 
     private var layerList: some View {
         List {
-            ForEach(displayedLayers) { layer in
-                layerRow(layer)
+            ForEach(displayRows) { row in
+                rowView(row)
                     .frame(height: rowHeight - 12)
                     .listRowInsets(EdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 2))
                     .listRowSeparator(.hidden)
-                    .listRowBackground(
-                        Rectangle()
-                            .fill(layer.id == document.activeLayerID
-                                ? Color.accentColor.opacity(0.16)
-                                : Color.clear)
-                            .padding(.vertical, 2)
-                    )
+                    .listRowBackground(rowBackground(row))
             }
             .onMove(perform: moveRows)
         }
@@ -129,27 +172,202 @@ struct LayersPanelView: View {
         .scrollContentBackground(.hidden)
         .environment(\.editMode, .constant(.active))
         .environment(\.defaultMinListRowHeight, rowHeight)
-        .frame(height: min(CGFloat(document.layers.count) * rowHeight, maxListHeight))
+        .frame(height: min(CGFloat(displayRows.count) * rowHeight, maxListHeight))
     }
 
-    // MARK: - Row
+    // MARK: - Display model
+
+    /// A panel entry: either a folder header or a layer. Folders appear at the
+    /// position of their front-most member; a collapsed folder hides its layers.
+    private enum PanelRow: Identifiable, Equatable {
+        case folder(LayerGroup)
+        case layer(Layer, indented: Bool)
+
+        var id: String {
+            switch self {
+            case .folder(let group): return "folder-\(group.id.uuidString)"
+            case .layer(let layer, _): return "layer-\(layer.id.uuidString)"
+            }
+        }
+    }
+
+    /// Rows in display (front-to-back) order.
+    private var displayRows: [PanelRow] {
+        var rows: [PanelRow] = []
+        var emittedGroups = Set<UUID>()
+        for layer in document.layers.reversed() {
+            if let gid = layer.groupID, let group = document.layerGroup(with: gid) {
+                if !emittedGroups.contains(gid) {
+                    emittedGroups.insert(gid)
+                    rows.append(.folder(group))
+                }
+                if !group.isCollapsed {
+                    rows.append(.layer(layer, indented: true))
+                }
+            } else {
+                rows.append(.layer(layer, indented: false))
+            }
+        }
+        return rows
+    }
 
     @ViewBuilder
-    private func layerRow(_ layer: Layer) -> some View {
+    private func rowBackground(_ row: PanelRow) -> some View {
+        switch row {
+        case .folder:
+            Rectangle()
+                .fill(Color.primary.opacity(0.06))
+                .padding(.vertical, 2)
+        case .layer(let layer, _):
+            Rectangle()
+                .fill(layer.id == document.activeLayerID
+                    ? Color.accentColor.opacity(0.16)
+                    : Color.clear)
+                .padding(.vertical, 2)
+        }
+    }
+
+    @ViewBuilder
+    private func rowView(_ row: PanelRow) -> some View {
+        switch row {
+        case .folder(let group):
+            folderRow(group)
+        case .layer(let layer, let indented):
+            layerRow(layer, indented: indented)
+        }
+    }
+
+    // MARK: - Folder row
+
+    @ViewBuilder
+    private func folderRow(_ group: LayerGroup) -> some View {
+        let members = document.layers(inGroup: group.id)
         HStack(spacing: 6) {
+            selectionToggle(isOn: membersAllSelected(members), isMixed: membersSomeSelected(members)) {
+                toggleFolderSelection(members)
+            }
+
+            Button {
+                document.toggleLayerGroupCollapsed(id: group.id)
+                onChanged()
+            } label: {
+                Image(systemName: group.isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+            }
+            .buttonStyle(.plain)
+
+            Image(systemName: group.isCollapsed ? "folder.fill" : "folder")
+                .font(.caption)
+                .foregroundStyle(Color.accentColor.opacity(0.85))
+
+            if renamingGroupID == group.id {
+                renameField
+            } else {
+                Text(group.name)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        TapGesture(count: 2)
+                            .onEnded { beginRenameGroup(group) }
+                            .exclusively(
+                                before: TapGesture().onEnded {
+                                    document.toggleLayerGroupCollapsed(id: group.id)
+                                    onChanged()
+                                }
+                            )
+                    )
+            }
+
+            let allVisible = document.layerGroupIsVisible(id: group.id)
+            Image(systemName: allVisible ? "eye" : "eye.slash")
+                .font(.caption)
+                .foregroundStyle(allVisible ? Color.primary.opacity(0.72) : Color.primary.opacity(0.28))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    document.setLayerGroupVisibility(id: group.id, isVisible: !allVisible)
+                    onChanged()
+                }
+                .accessibilityLabel(allVisible ? "Hide folder" : "Show folder")
+
+            let allLocked = document.layerGroupIsLocked(id: group.id)
+            Image(systemName: allLocked ? "lock.fill" : "lock.open")
+                .font(.caption)
+                .foregroundStyle(allLocked ? Color.accentColor : Color.primary.opacity(0.28))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    document.setLayerGroupLocked(id: group.id, isLocked: !allLocked)
+                    onChanged()
+                }
+                .accessibilityLabel(allLocked ? "Unlock folder" : "Lock folder")
+
+            Menu {
+                Button {
+                    beginRenameGroup(group)
+                } label: {
+                    Label("Rename Folder", systemImage: "pencil")
+                }
+
+                Button {
+                    document.ungroupLayers(groupID: group.id)
+                    onChanged()
+                } label: {
+                    Label("Ungroup", systemImage: "folder.badge.minus")
+                }
+
+                Button {
+                    mergeFolder(group)
+                } label: {
+                    Label("Merge Folder", systemImage: "arrow.triangle.merge")
+                }
+                .disabled(members.count < 2)
+
+                Divider()
+
+                Button(role: .destructive) {
+                    deleteFolder(group)
+                } label: {
+                    Label("Delete Folder & Layers", systemImage: "trash")
+                }
+                .disabled(members.count >= document.layers.count)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.caption)
+                    .foregroundStyle(Color.primary.opacity(0.6))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Folder options")
+        }
+    }
+
+    // MARK: - Layer row
+
+    @ViewBuilder
+    private func layerRow(_ layer: Layer, indented: Bool) -> some View {
+        HStack(spacing: 6) {
+            selectionToggle(isOn: selectedLayerIDs.contains(layer.id), isMixed: false) {
+                toggleSelection(layer.id)
+            }
+
+            if indented {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(width: 1)
+                    .padding(.leading, 4)
+            }
+
             LayerThumbnailView(document: document, layerID: layer.id)
                 .onTapGesture { activate(layer) }
 
             if renamingLayerID == layer.id {
-                TextField("Layer name", text: $renameText)
-                    .font(.caption)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .background(Rectangle().fill(Color(.systemBackground)))
-                    .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
-                    .focused($renameFieldFocused)
-                    .onSubmit { commitRenameIfNeeded() }
+                renameField
             } else {
                 Text(layer.name)
                     .font(.caption.weight(layer.id == document.activeLayerID ? .semibold : .regular))
@@ -194,8 +412,17 @@ struct LayersPanelView: View {
                     Label("Rename", systemImage: "pencil")
                 }
 
+                if layer.groupID != nil {
+                    Button {
+                        removeFromFolder(layer)
+                    } label: {
+                        Label("Remove from Folder", systemImage: "folder.badge.minus")
+                    }
+                }
+
                 Button(role: .destructive) {
                     document.deleteLayer(id: layer.id)
+                    selectedLayerIDs.remove(layer.id)
                     onChanged()
                 } label: {
                     Label("Delete Layer", systemImage: "trash")
@@ -213,7 +440,110 @@ struct LayersPanelView: View {
         }
     }
 
+    // MARK: - Shared subviews
+
+    private var renameField: some View {
+        TextField("Name", text: $renameText)
+            .font(.caption)
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(Rectangle().fill(Color(.systemBackground)))
+            .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
+            .focused($renameFieldFocused)
+            .onSubmit { commitRenameIfNeeded() }
+    }
+
+    private func selectionToggle(isOn: Bool, isMixed: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: isOn ? "checkmark.circle.fill" : (isMixed ? "minus.circle.fill" : "circle"))
+                .font(.caption)
+                .foregroundStyle(isOn || isMixed ? Color.accentColor : Color.primary.opacity(0.3))
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isOn ? "Deselect" : "Select")
+    }
+
+    // MARK: - Selection helpers
+
+    private var validSelection: Set<UUID> {
+        selectedLayerIDs.intersection(Set(document.layers.map(\.id)))
+    }
+
+    private func toggleSelection(_ id: UUID) {
+        if selectedLayerIDs.contains(id) {
+            selectedLayerIDs.remove(id)
+        } else {
+            selectedLayerIDs.insert(id)
+        }
+    }
+
+    private func membersAllSelected(_ members: [Layer]) -> Bool {
+        !members.isEmpty && members.allSatisfy { selectedLayerIDs.contains($0.id) }
+    }
+
+    private func membersSomeSelected(_ members: [Layer]) -> Bool {
+        members.contains { selectedLayerIDs.contains($0.id) } && !membersAllSelected(members)
+    }
+
+    private func toggleFolderSelection(_ members: [Layer]) {
+        if membersAllSelected(members) {
+            for m in members { selectedLayerIDs.remove(m.id) }
+        } else {
+            for m in members { selectedLayerIDs.insert(m.id) }
+        }
+    }
+
     // MARK: - Actions
+
+    private func groupSelected() {
+        commitRenameIfNeeded()
+        let ids = validSelection
+        guard !ids.isEmpty else { return }
+        document.groupLayers(ids: ids)
+        selectedLayerIDs = []
+        onChanged()
+    }
+
+    private func mergeSelected() {
+        commitRenameIfNeeded()
+        let ids = validSelection
+        guard ids.count >= 2 else { return }
+        if let target = document.mergeLayers(ids: ids) {
+            document.setActiveLayer(id: target)
+        }
+        selectedLayerIDs = []
+        onChanged()
+    }
+
+    private func mergeFolder(_ group: LayerGroup) {
+        commitRenameIfNeeded()
+        let ids = Set(document.layers(inGroup: group.id).map(\.id))
+        guard ids.count >= 2 else { return }
+        if let target = document.mergeLayers(ids: ids) {
+            document.setActiveLayer(id: target)
+        }
+        selectedLayerIDs.subtract(ids)
+        onChanged()
+    }
+
+    private func deleteFolder(_ group: LayerGroup) {
+        commitRenameIfNeeded()
+        let ids = document.layers(inGroup: group.id).map(\.id)
+        for id in ids {
+            document.deleteLayer(id: id)
+            selectedLayerIDs.remove(id)
+        }
+        onChanged()
+    }
+
+    private func removeFromFolder(_ layer: Layer) {
+        commitRenameIfNeeded()
+        document.removeLayerFromFolder(layerID: layer.id)
+        onChanged()
+    }
 
     private func activate(_ layer: Layer) {
         commitRenameIfNeeded()
@@ -225,23 +555,53 @@ struct LayersPanelView: View {
         commitRenameIfNeeded()
         renameText = layer.name
         renamingLayerID = layer.id
+        renamingGroupID = nil
+        renameFieldFocused = true
+    }
+
+    private func beginRenameGroup(_ group: LayerGroup) {
+        commitRenameIfNeeded()
+        renameText = group.name
+        renamingGroupID = group.id
+        renamingLayerID = nil
         renameFieldFocused = true
     }
 
     private func commitRenameIfNeeded() {
-        guard let id = renamingLayerID else { return }
-        document.renameLayer(id: id, to: renameText)
+        guard renamingLayerID != nil || renamingGroupID != nil else { return }
+        if let id = renamingLayerID {
+            document.renameLayer(id: id, to: renameText)
+        }
+        if let id = renamingGroupID {
+            document.renameLayerGroup(id: id, to: renameText)
+        }
         renamingLayerID = nil
+        renamingGroupID = nil
         renameFieldFocused = false
         onChanged()
     }
 
-    /// `List.onMove` indices are in display (front-to-back) order; the document
-    /// stores layers back-to-front, so reorder a reversed copy and flip it back.
+    /// `List.onMove` indices are in display (front-to-back) order. Rebuild the
+    /// document's back-to-front `layers` array from the reordered rows; folder
+    /// membership is preserved (only explicit actions change it) and normalized
+    /// back to contiguous runs by the document.
     private func moveRows(from source: IndexSet, to destination: Int) {
-        var displayed = displayedLayers
-        displayed.move(fromOffsets: source, toOffset: destination)
-        document.reorderLayers(displayed.reversed())
+        var rows = displayRows
+        rows.move(fromOffsets: source, toOffset: destination)
+        var frontToBack: [Layer] = []
+        for row in rows {
+            switch row {
+            case .folder(let group):
+                if group.isCollapsed {
+                    frontToBack.append(contentsOf: document.layers(inGroup: group.id).reversed())
+                }
+            case .layer(let layer, _):
+                if let current = document.layers.first(where: { $0.id == layer.id }) {
+                    frontToBack.append(current)
+                }
+            }
+        }
+        document.reorderLayers(Array(frontToBack.reversed()))
         onChanged()
     }
 }

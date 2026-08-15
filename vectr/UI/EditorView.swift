@@ -922,7 +922,7 @@ struct EditorView: View {
                 // the parent group when that stroke is a group member.
                 if store.document.selectionIsEmpty,
                    let lastID = store.document.lastSelectedStrokeID,
-                   store.document.stroke(with: lastID) != nil {
+                   store.document.stroke(with: lastID)?.layerID == store.document.activeLayerID {
                     store.document.selectStrokeConsideringGroups(lastID)
                 } else {
                     store.document.expandSelectionToGroupsIfNeeded()
@@ -1357,6 +1357,7 @@ struct EditorView: View {
         DocumentSnapshot(
             layers: store.document.layers,
             strokes: store.document.strokes,
+            layerGroups: store.document.layerGroups,
             activeLayerID: store.document.activeLayerID,
             viewport: store.document.viewport,
             grid: store.document.grid,

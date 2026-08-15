@@ -14,6 +14,7 @@ enum DocumentCodec {
             strokes: document.strokes,
             textElements: document.textElements,
             groups: document.groups,
+            layerGroups: document.layerGroups,
             activeLayerID: document.activeLayerID,
             viewport: document.viewport,
             grid: document.grid,
