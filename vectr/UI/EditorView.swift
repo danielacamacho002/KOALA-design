@@ -703,7 +703,15 @@ struct EditorView: View {
         guard store.needsInitialViewportLayout, canvasSize.width > 0, canvasSize.height > 0 else { return }
         let contentPoints = store.document.visibleStrokes().flatMap { ShapeGeometry.renderPoints(for: $0) }
         if contentPoints.isEmpty {
-            store.document.viewport.resetToDefaultView(in: canvasSize)
+            // Fit the whole canvas sheet into the visible drawing area and center it there.
+            // The only chrome overlaying the canvas is the 150pt leading command panel and the
+            // top toolbar; the toolbar is what shifts the vertical center (see method docs).
+            store.document.viewport.frameCanvasInDrawableArea(
+                canvasSize: store.document.settings.canvasSize,
+                in: canvasSize,
+                leadingPanel: 150,
+                topToolbar: EditorToolbarView.height
+            )
         } else {
             store.document.viewport.fitToPoints(contentPoints, in: canvasSize)
             store.document.viewport.clampToCanvasSize(

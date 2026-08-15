@@ -18,7 +18,8 @@ struct EditorToolbarView: View {
     var onToolSelected: (ToolCategory) -> Void
     var onSwitchToPrintLayout: (() -> Void)?
 
-    private let toolbarHeight: CGFloat = 48
+    static let height: CGFloat = 48
+    private var toolbarHeight: CGFloat { Self.height }
 
     var body: some View {
         HStack(spacing: 0) {

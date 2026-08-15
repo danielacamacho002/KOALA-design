@@ -52,7 +52,17 @@ enum GridRenderer {
         let subdiv = grid.visibleSubdivisions(for: documentSettings, scale: viewport.scale)
         let minor = major / CGFloat(subdiv)
 
-        let majorColor = UIColor.separator
+        // Fade major-line emphasis as sub-grid detail appears.
+        // detail = 0 when only inch lines show, rising as halves/quarters/eighths appear.
+        let detail = log2(CGFloat(max(1, subdiv)))
+        let fadeSpan = log2(CGFloat(max(2, grid.snapSubdivisions)))
+        let emphasis = max(0, 1 - detail / fadeSpan)
+
+        let blendedMajorAlpha: CGFloat = 0.32
+        let emphasizedMajorAlpha: CGFloat = 0.6
+        let majorAlpha = blendedMajorAlpha + (emphasizedMajorAlpha - blendedMajorAlpha) * emphasis
+
+        let majorColor = UIColor.label.withAlphaComponent(majorAlpha)
         let snapColor = UIColor.separator.withAlphaComponent(0.5)
         let fineColor = UIColor.separator.withAlphaComponent(0.22)
 
