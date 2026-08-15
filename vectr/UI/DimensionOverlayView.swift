@@ -119,9 +119,7 @@ struct DimensionOverlayView: View {
                 valueCapsule(dimension: dimension, strokeID: strokeID)
             }
 
-            if supportsLock(dimension) {
-                lockButton(dimension: dimension, strokeID: strokeID)
-            }
+            lockButton(dimension: dimension, strokeID: strokeID)
         }
         .position(labelPoint)
     }
@@ -197,16 +195,16 @@ struct DimensionOverlayView: View {
                 )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(locked ? "Unpin" : "Pin") \(edgeName(for: dimension.id)) edge")
+        .accessibilityLabel("\(locked ? "Unlock" : "Lock") \(lockTargetName(for: dimension))")
     }
 
-    /// Pinning only has meaning where two dimensions share a shape and one can be held
-    /// while the other is resized.
-    private func supportsLock(_ dimension: ShapeGeometry.SemanticDimension) -> Bool {
-        switch dimension.kind {
-        case .rectangleWidth, .rectangleHeight: return true
-        default: return false
+    /// Rectangle locks pin a named edge; everywhere else the lock simply freezes the
+    /// value against edits.
+    private func lockTargetName(for dimension: ShapeGeometry.SemanticDimension) -> String {
+        if ShapeGeometry.RectangleEdge(rawValue: dimension.id) != nil {
+            return "\(edgeName(for: dimension.id)) edge"
         }
+        return "dimension"
     }
 
     /// The pill on the parallel edge showing the same value. Pinning one edge releases
