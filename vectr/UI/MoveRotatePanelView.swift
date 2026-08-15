@@ -24,6 +24,7 @@ struct MoveRotatePanelView: View {
     @State private var fillOpacity: Double = Double(VectorStroke.defaultFillOpacity)
     @State private var showTextFillPicker = false
     @State private var showTextStrokePicker = false
+    @State private var showColorPicker = false
 
     private var selectedStroke: VectorStroke? {
         guard let id = document.selectedStrokeID else { return nil }
@@ -65,6 +66,9 @@ struct MoveRotatePanelView: View {
             if !document.selectedStrokeIDs.isEmpty {
                 Divider()
                 thicknessSection
+
+                Divider()
+                colorSection
             }
 
             if document.hasClosedFillableSelection {
@@ -327,6 +331,81 @@ struct MoveRotatePanelView: View {
         ToolPanelLabelButton(title: "Apply", fullWidth: true) {
             applyThickness()
         }
+    }
+
+    @ViewBuilder
+    private var colorSection: some View {
+        ToolPanelHeader("Color")
+
+        HStack(spacing: 8) {
+            Rectangle()
+                .fill(currentStrokeColor)
+                .frame(width: 26, height: 26)
+                .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
+
+            Button {
+                showColorPicker = true
+            } label: {
+                colorWheel
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Line and border color")
+            .sheet(isPresented: $showColorPicker) {
+                SystemColorPickerSheet(
+                    color: strokeColorBinding,
+                    onBeginEditing: { document.beginInteractiveEdit() }
+                )
+            }
+
+            if isStrokeColorMixed {
+                Text("Mixed")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var colorWheel: some View {
+        Circle()
+            .fill(
+                AngularGradient(
+                    colors: (0...12).map { Color(hue: Double($0) / 12.0, saturation: 0.85, brightness: 0.95) },
+                    center: .center
+                )
+            )
+            .overlay(
+                Circle().fill(
+                    RadialGradient(
+                        colors: [Color.white.opacity(0.85), Color.white.opacity(0)],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: 14
+                    )
+                )
+            )
+    }
+
+    private var currentStrokeColor: Color {
+        (document.representativeSelectedStrokeColor() ?? document.strokeColor).color
+    }
+
+    private var isStrokeColorMixed: Bool {
+        document.selectedStrokeColorSummary() == .mixed
+    }
+
+    /// Programmatic-free binding: writes flow to the selected strokes without recording undo
+    /// per change (a single snapshot is taken via `onBeginEditing`).
+    private var strokeColorBinding: Binding<Color> {
+        Binding(
+            get: { currentStrokeColor },
+            set: { newColor in
+                document.setSelectedStrokesColor(CodableColor(newColor), recordUndo: false)
+                onApply()
+            }
+        )
     }
 
     @ViewBuilder

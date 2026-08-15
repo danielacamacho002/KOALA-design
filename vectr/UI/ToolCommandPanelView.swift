@@ -253,41 +253,6 @@ struct ToolCommandPanelView: View {
     }
 }
 
-/// Full system color picker (wheel, sliders, eyedropper) presented as a sheet.
-private struct SystemColorPickerSheet: UIViewControllerRepresentable {
-    @Binding var color: Color
-
-    func makeUIViewController(context: Context) -> UIColorPickerViewController {
-        let picker = UIColorPickerViewController()
-        picker.delegate = context.coordinator
-        picker.selectedColor = UIColor(color)
-        picker.supportsAlpha = false
-        return picker
-    }
-
-    func updateUIViewController(_ picker: UIColorPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(color: $color)
-    }
-
-    final class Coordinator: NSObject, UIColorPickerViewControllerDelegate {
-        @Binding var color: Color
-
-        init(color: Binding<Color>) {
-            _color = color
-        }
-
-        func colorPickerViewController(
-            _ viewController: UIColorPickerViewController,
-            didSelect selectedColor: UIColor,
-            continuously: Bool
-        ) {
-            color = Color(selectedColor)
-        }
-    }
-}
-
 extension ShapeCommandSession {
     func placedPointsLabel(units: MeasurementUnit) -> String? {
         guard let last = controlPoints.last else { return nil }

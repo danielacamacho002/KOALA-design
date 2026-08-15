@@ -39,14 +39,18 @@ final class ProjectLibrary {
     }
 
     @discardableResult
-    func createProject(name: String = "Untitled Artwork") throws -> ProjectRecord {
+    func createProject(
+        name: String = "Untitled Artwork",
+        canvasSize: CGSize? = nil,
+        units: MeasurementUnit = .inches
+    ) throws -> ProjectRecord {
         ensureDirectories()
         let id = UUID()
         let sanitized = sanitizedName(name)
         let fileName = uniqueFileName(base: sanitized, extension: DocumentCodec.fileExtension)
         let fileURL = projectsDirectory.appendingPathComponent(fileName)
         let document = VectrDocument()
-        document.applyNewProjectDefaults()
+        document.applyNewProjectDefaults(canvasSize: canvasSize, units: units)
         try DocumentCodec.write(document, to: fileURL)
         let record = makeRecord(id: id, name: name, fileURL: fileURL, document: document)
         try writeThumbnail(for: record, document: document)
@@ -122,8 +126,8 @@ final class ProjectLibrary {
             var record = projects[index]
             record.name = name
             record.modifiedAt = modifiedAt
-            record.canvasWidth = document.settings.canvasExtent
-            record.canvasHeight = document.settings.canvasExtent
+            record.canvasWidth = document.settings.canvasWidth
+            record.canvasHeight = document.settings.canvasHeight
             try writeThumbnail(for: record, document: document)
             projects[index] = record
         } else {
@@ -238,8 +242,8 @@ final class ProjectLibrary {
             fileURL: fileURL,
             thumbnailURL: thumbnailURL(for: id),
             modifiedAt: modifiedAt,
-            canvasWidth: document.settings.canvasExtent,
-            canvasHeight: document.settings.canvasExtent
+            canvasWidth: document.settings.canvasWidth,
+            canvasHeight: document.settings.canvasHeight
         )
     }
 

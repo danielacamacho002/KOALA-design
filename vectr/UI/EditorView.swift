@@ -516,7 +516,8 @@ struct EditorView: View {
             point,
             grid: store.document.grid,
             settings: store.document.settings,
-            enabled: drawingSnapEnabled
+            enabled: drawingSnapEnabled,
+            scale: store.document.viewport.scale
         )
     }
 
@@ -527,7 +528,8 @@ struct EditorView: View {
             projected: projected,
             grid: store.document.grid,
             settings: store.document.settings,
-            enabled: drawingSnapEnabled
+            enabled: drawingSnapEnabled,
+            scale: store.document.viewport.scale
         )
     }
 
@@ -704,9 +706,9 @@ struct EditorView: View {
             store.document.viewport.resetToDefaultView(in: canvasSize)
         } else {
             store.document.viewport.fitToPoints(contentPoints, in: canvasSize)
-            store.document.viewport.clampToCanvasExtent(
+            store.document.viewport.clampToCanvasSize(
                 in: canvasSize,
-                canvasExtent: store.document.settings.canvasExtent
+                canvasSize: store.document.settings.canvasSize
             )
         }
         store.needsInitialViewportLayout = false
@@ -920,7 +922,7 @@ struct EditorView: View {
                 // the parent group when that stroke is a group member.
                 if store.document.selectionIsEmpty,
                    let lastID = store.document.lastSelectedStrokeID,
-                   store.document.stroke(with: lastID) != nil {
+                   store.document.stroke(with: lastID)?.layerID == store.document.activeLayerID {
                     store.document.selectStrokeConsideringGroups(lastID)
                 } else {
                     store.document.expandSelectionToGroupsIfNeeded()
@@ -1173,16 +1175,32 @@ struct EditorView: View {
         }
     }
 
-    private func commitCurve(anchors: [CGPoint]) {
-        guard anchors.count >= 2 else { return }
+    private func commitCurve(anchors rawAnchors: [CGPoint]) {
+        guard rawAnchors.count >= 2 else { return }
+
+        // Recognize a closed shape: if the curve loops back near its start, drop the
+        // duplicate end anchor and mark it closed so it can be filled/treated as a region.
+        var anchors = rawAnchors
+        var isClosed = false
+        let tolerance = store.document.grid.spacing * 0.5
+        if anchors.count >= 3,
+           let first = anchors.first,
+           let last = anchors.last,
+           hypot(first.x - last.x, first.y - last.y) <= tolerance {
+            anchors.removeLast()
+            isClosed = true
+        }
+
+        guard anchors.count >= (isClosed ? 3 : 2) else { return }
+
         let stroke = VectorStroke(
             layerID: store.document.activeLayerID,
             points: anchors,
             strokeWidth: store.document.strokeWidth,
             strokeColor: store.document.strokeColor,
-            isClosed: false,
+            isClosed: isClosed,
             shapeType: .curve,
-            curveHandles: ShapeGeometry.defaultCurveHandles(anchors: anchors)
+            curveHandles: ShapeGeometry.defaultCurveHandles(anchors: anchors, closed: isClosed)
         )
         store.document.addStroke(stroke)
         // Select the new curve so its anchor + tangent handles are immediately editable.
@@ -1339,6 +1357,7 @@ struct EditorView: View {
         DocumentSnapshot(
             layers: store.document.layers,
             strokes: store.document.strokes,
+            layerGroups: store.document.layerGroups,
             activeLayerID: store.document.activeLayerID,
             viewport: store.document.viewport,
             grid: store.document.grid,

@@ -16,6 +16,9 @@ final class VectrDocument {
     /// Structural groups referencing strokes/text by ID. Purely organizational:
     /// members remain independent entities in `strokes`/`textElements`.
     var groups: [ObjectGroup] = []
+    /// Layer folders. Membership is stored on each `Layer.groupID`; this list
+    /// only holds the folder name and collapsed state.
+    var layerGroups: [LayerGroup] = []
     var activeLayerID: UUID
     var viewport: ViewportTransform
     var grid: GridSettings
@@ -144,6 +147,7 @@ final class VectrDocument {
         strokes = snapshot.strokes
         textElements = snapshot.textElements
         groups = snapshot.groups
+        layerGroups = snapshot.layerGroups
         activeLayerID = snapshot.activeLayerID
         viewport = snapshot.viewport
         grid = snapshot.grid
@@ -158,8 +162,8 @@ final class VectrDocument {
         printPieces = snapshot.printPieces
         printHiddenStrokeIDs = snapshot.printHiddenStrokeIDs
         dimensionOffsets = snapshot.dimensionOffsets
-        settings.syncCanvasExtentToMaximum()
         syncGridFromSettings()
+        normalizeLayerGrouping()
     }
 
     func strokes(for layerID: UUID) -> [VectorStroke] {
@@ -182,11 +186,11 @@ final class VectrDocument {
             .map(\.element)
     }
 
-    /// Visible strokes excluding those on locked layers, for hit-testing/selection.
+    /// Visible strokes on the active layer that isn't locked, for hit-testing/selection.
+    /// Shapes on other layers are visible but not editable until their layer is active.
     func selectableStrokes() -> [VectorStroke] {
         let lockedLayerIDs = Set(layers.filter(\.isLocked).map(\.id))
-        guard !lockedLayerIDs.isEmpty else { return visibleStrokes() }
-        return visibleStrokes().filter { !lockedLayerIDs.contains($0.layerID) }
+        return visibleStrokes().filter { $0.layerID == activeLayerID && !lockedLayerIDs.contains($0.layerID) }
     }
 
     func stroke(with id: UUID) -> VectorStroke? {
@@ -250,6 +254,7 @@ final class VectrDocument {
         if activeLayerID == id {
             activeLayerID = layers[min(index, layers.count - 1)].id
         }
+        normalizeLayerGrouping()
         geometryRevision += 1
     }
 
@@ -279,6 +284,13 @@ final class VectrDocument {
     func setActiveLayer(id: UUID) {
         guard activeLayerID != id, layers.contains(where: { $0.id == id }) else { return }
         activeLayerID = id
+        // Selection is confined to the active layer, so drop anything selected on the
+        // previous layer to prevent stale edit handles/drags on non-active shapes.
+        let selectedOnActive = selectedStrokeIDs.filter { stroke(with: $0)?.layerID == id }
+        let selectedTextOnActive = selectedTextIDs.filter { textElement(with: $0)?.layerID == id }
+        if selectedOnActive.count != selectedStrokeIDs.count || selectedTextOnActive.count != selectedTextIDs.count {
+            setElementSelection(strokeIDs: selectedOnActive, textIDs: selectedTextOnActive)
+        }
     }
 
     /// Replaces the layer stack with a reordered copy of the same layers (index 0 = backmost).
@@ -288,7 +300,204 @@ final class VectrDocument {
               newOrder.count == layers.count else { return }
         pushUndo()
         layers = newOrder
+        normalizeLayerGrouping()
         geometryRevision += 1
+    }
+
+    // MARK: - Layer Folders
+
+    func layerGroup(with id: UUID) -> LayerGroup? {
+        layerGroups.first { $0.id == id }
+    }
+
+    /// Member layers of a folder, in back-to-front document order.
+    func layers(inGroup groupID: UUID) -> [Layer] {
+        layers.filter { $0.groupID == groupID }
+    }
+
+    /// Keeps folder invariants intact: drops dangling `groupID`s and empty
+    /// folders, and re-gathers each folder's layers into a single contiguous run
+    /// (anchored at the position of its first member) so a folder never appears
+    /// split in the stacking order.
+    func normalizeLayerGrouping() {
+        let groupIDs = Set(layerGroups.map(\.id))
+        for i in layers.indices where layers[i].groupID != nil && !groupIDs.contains(layers[i].groupID!) {
+            layers[i].groupID = nil
+        }
+        var result: [Layer] = []
+        var placed = Set<UUID>()
+        for layer in layers {
+            guard let gid = layer.groupID else {
+                result.append(layer)
+                continue
+            }
+            if placed.contains(gid) { continue }
+            placed.insert(gid)
+            result.append(contentsOf: layers.filter { $0.groupID == gid })
+        }
+        layers = result
+        let used = Set(layers.compactMap(\.groupID))
+        layerGroups.removeAll { !used.contains($0.id) }
+    }
+
+    private func nextLayerGroupName() -> String {
+        let existing = Set(layerGroups.map(\.name))
+        var n = layerGroups.count + 1
+        while existing.contains("Folder \(n)") { n += 1 }
+        return "Folder \(n)"
+    }
+
+    /// Puts the given layers into a new folder. Any prior folder membership of
+    /// those layers is replaced; the members are gathered contiguously.
+    @discardableResult
+    func groupLayers(ids: Set<UUID>) -> LayerGroup? {
+        let members = layers.filter { ids.contains($0.id) }
+        guard !members.isEmpty else { return nil }
+        pushUndo()
+        let group = LayerGroup(name: nextLayerGroupName())
+        layerGroups.append(group)
+        for i in layers.indices where ids.contains(layers[i].id) {
+            layers[i].groupID = group.id
+        }
+        normalizeLayerGrouping()
+        geometryRevision += 1
+        return group
+    }
+
+    /// Dissolves a folder, leaving its layers in place at the top level.
+    func ungroupLayers(groupID: UUID) {
+        guard layerGroups.contains(where: { $0.id == groupID }) else { return }
+        pushUndo()
+        for i in layers.indices where layers[i].groupID == groupID {
+            layers[i].groupID = nil
+        }
+        layerGroups.removeAll { $0.id == groupID }
+        geometryRevision += 1
+    }
+
+    /// Removes a single layer from its folder, leaving it at the top level.
+    func removeLayerFromFolder(layerID: UUID) {
+        guard let index = layers.firstIndex(where: { $0.id == layerID }),
+              layers[index].groupID != nil else { return }
+        pushUndo()
+        layers[index].groupID = nil
+        normalizeLayerGrouping()
+        geometryRevision += 1
+    }
+
+    func renameLayerGroup(id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let index = layerGroups.firstIndex(where: { $0.id == id }),
+              layerGroups[index].name != trimmed else { return }
+        pushUndo()
+        layerGroups[index].name = trimmed
+    }
+
+    /// Collapse state is presentation-only, so it isn't recorded on the undo stack.
+    func toggleLayerGroupCollapsed(id: UUID) {
+        guard let index = layerGroups.firstIndex(where: { $0.id == id }) else { return }
+        layerGroups[index].isCollapsed.toggle()
+    }
+
+    /// Whether all member layers of a folder are currently visible.
+    func layerGroupIsVisible(id: UUID) -> Bool {
+        let members = layers(inGroup: id)
+        return !members.isEmpty && members.allSatisfy(\.isVisible)
+    }
+
+    /// Whether all member layers of a folder are currently locked.
+    func layerGroupIsLocked(id: UUID) -> Bool {
+        let members = layers(inGroup: id)
+        return !members.isEmpty && members.allSatisfy(\.isLocked)
+    }
+
+    /// Cascades a visibility change to every layer in the folder.
+    func setLayerGroupVisibility(id: UUID, isVisible: Bool) {
+        guard layers.contains(where: { $0.groupID == id }) else { return }
+        pushUndo()
+        for i in layers.indices where layers[i].groupID == id {
+            layers[i].isVisible = isVisible
+        }
+        geometryRevision += 1
+    }
+
+    /// Cascades a lock change to every layer in the folder.
+    func setLayerGroupLocked(id: UUID, isLocked: Bool) {
+        guard layers.contains(where: { $0.groupID == id }) else { return }
+        pushUndo()
+        for i in layers.indices where layers[i].groupID == id {
+            layers[i].isLocked = isLocked
+        }
+        geometryRevision += 1
+    }
+
+    /// Merges the given layers into a single layer, preserving the visual
+    /// front/back stacking of their contents. The front-most selected layer is
+    /// kept as the destination (its name, visibility, lock, and folder stay);
+    /// the others are removed. Returns the surviving layer's id.
+    @discardableResult
+    func mergeLayers(ids: Set<UUID>) -> UUID? {
+        let indexed = layers.enumerated().filter { ids.contains($0.element.id) }
+        guard indexed.count >= 2 else { return nil }
+        pushUndo()
+        let order = layerIndexByID()
+        // Destination = front-most (largest layer index) among the selection.
+        let targetID = indexed.max(by: { order[$0.element.id] ?? 0 < order[$1.element.id] ?? 0 })!.element.id
+        let mergedIDs = Set(indexed.map(\.element.id))
+
+        strokes = mergedContentPreservingOrder(strokes, mergedIDs: mergedIDs, targetID: targetID, order: order,
+                                               layerID: { $0.layerID }, setLayerID: { $0.layerID = $1 })
+        textElements = mergedContentPreservingOrder(textElements, mergedIDs: mergedIDs, targetID: targetID, order: order,
+                                                    layerID: { $0.layerID }, setLayerID: { $0.layerID = $1 })
+
+        layers.removeAll { mergedIDs.contains($0.id) && $0.id != targetID }
+        pruneGroups()
+        if let selected = selectedStrokeID, stroke(with: selected) == nil { selectedStrokeID = nil }
+        if let selectedText = selectedTextID, textElement(with: selectedText) == nil { selectedTextID = nil }
+        if mergedIDs.contains(activeLayerID) { activeLayerID = targetID }
+        normalizeLayerGrouping()
+        geometryRevision += 1
+        return targetID
+    }
+
+    /// Reassigns every element on a merged layer to `targetID`, ordering the
+    /// merged block back-to-front by original layer index (then insertion order)
+    /// and reinserting it where the first merged element used to sit.
+    private func mergedContentPreservingOrder<T>(
+        _ items: [T],
+        mergedIDs: Set<UUID>,
+        targetID: UUID,
+        order: [UUID: Int],
+        layerID: (T) -> UUID,
+        setLayerID: (inout T, UUID) -> Void
+    ) -> [T] {
+        let sortedMerged = items.enumerated()
+            .filter { mergedIDs.contains(layerID($0.element)) }
+            .sorted { lhs, rhs in
+                let l = order[layerID(lhs.element)] ?? 0
+                let r = order[layerID(rhs.element)] ?? 0
+                return l == r ? lhs.offset < rhs.offset : l < r
+            }
+            .map { entry -> T in
+                var copy = entry.element
+                setLayerID(&copy, targetID)
+                return copy
+            }
+        guard !sortedMerged.isEmpty else { return items }
+        var result: [T] = []
+        var insertedBlock = false
+        for item in items {
+            if mergedIDs.contains(layerID(item)) {
+                if !insertedBlock {
+                    insertedBlock = true
+                    result.append(contentsOf: sortedMerged)
+                }
+            } else {
+                result.append(item)
+            }
+        }
+        return result
     }
 
     // MARK: - Text Elements
@@ -308,11 +517,11 @@ final class VectrDocument {
             .map(\.element)
     }
 
-    /// Visible text elements excluding those on locked layers, for hit-testing/selection.
+    /// Visible text elements on the active layer that isn't locked, for hit-testing/selection.
+    /// Text on other layers is visible but not editable until its layer is active.
     func selectableTextElements() -> [TextElement] {
         let lockedLayerIDs = Set(layers.filter(\.isLocked).map(\.id))
-        guard !lockedLayerIDs.isEmpty else { return visibleTextElements() }
-        return visibleTextElements().filter { !lockedLayerIDs.contains($0.layerID) }
+        return visibleTextElements().filter { $0.layerID == activeLayerID && !lockedLayerIDs.contains($0.layerID) }
     }
 
     func textElement(with id: UUID) -> TextElement? {
@@ -1463,6 +1672,58 @@ final class VectrDocument {
         return true
     }
 
+    // MARK: - Stroke color editing
+
+    /// Shared line/border color of the currently selected strokes, for display in the move panel.
+    enum StrokeColorSelection: Equatable {
+        case none
+        case uniform(CodableColor)
+        case mixed
+    }
+
+    func selectedStrokeColorSummary() -> StrokeColorSelection {
+        let ids = selectedStrokeIDs
+        guard !ids.isEmpty else { return .none }
+        var value: CodableColor?
+        for id in ids {
+            guard let stroke = stroke(with: id) else { continue }
+            if let existing = value {
+                if existing != stroke.strokeColor { return .mixed }
+            } else {
+                value = stroke.strokeColor
+            }
+        }
+        guard let value else { return .none }
+        return .uniform(value)
+    }
+
+    /// Representative color used to seed the picker when the selection is mixed.
+    func representativeSelectedStrokeColor() -> CodableColor? {
+        for id in selectedStrokeIDs {
+            if let stroke = stroke(with: id) { return stroke.strokeColor }
+        }
+        return nil
+    }
+
+    /// Sets the line/border color on every selected stroke.
+    @discardableResult
+    func setSelectedStrokesColor(_ color: CodableColor, recordUndo: Bool = true) -> Bool {
+        let ids = selectedStrokeIDs
+        guard !ids.isEmpty else { return false }
+        let willChange = ids.contains { id in
+            guard let stroke = stroke(with: id) else { return false }
+            return stroke.strokeColor != color
+        }
+        guard willChange else { return false }
+        if recordUndo { pushUndo() }
+        for id in ids {
+            guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
+            strokes[index].strokeColor = color
+        }
+        geometryRevision += 1
+        return true
+    }
+
     // MARK: - Fill opacity editing
 
     /// Selected strokes that are closed planes (and therefore have an editable fill).
@@ -1555,11 +1816,17 @@ final class VectrDocument {
     }
 
     /// Applies defaults intended for newly created projects.
-    func applyNewProjectDefaults() {
-        settings.units = .inches
+    /// - Parameters:
+    ///   - canvasSize: Optional canvas dimensions in document points. Defaults to 24" × 18" when nil.
+    ///   - units: Working measurement unit for the new project.
+    func applyNewProjectDefaults(canvasSize: CGSize? = nil, units: MeasurementUnit = .inches) {
+        settings.units = units
         settings.defaultGridSpacing = UnitConversion.pointsPerInch
         settings.allowsFingerDrawing = false
-        settings.syncCanvasExtentToMaximum()
+        if let canvasSize {
+            settings.canvasWidth = canvasSize.width
+            settings.canvasHeight = canvasSize.height
+        }
         syncGridFromSettings()
     }
 
@@ -1920,6 +2187,7 @@ final class VectrDocument {
             strokes: strokes,
             textElements: textElements,
             groups: groups,
+            layerGroups: layerGroups,
             activeLayerID: activeLayerID,
             viewport: viewport,
             grid: grid,
@@ -1942,6 +2210,7 @@ final class VectrDocument {
         strokes = snapshot.strokes
         textElements = snapshot.textElements
         groups = snapshot.groups
+        layerGroups = snapshot.layerGroups
         activeLayerID = snapshot.activeLayerID
         grid = snapshot.grid
         settings = snapshot.settings
@@ -1955,7 +2224,6 @@ final class VectrDocument {
         printPieces = snapshot.printPieces
         printHiddenStrokeIDs = snapshot.printHiddenStrokeIDs
         dimensionOffsets = snapshot.dimensionOffsets
-        settings.syncCanvasExtentToMaximum()
         syncGridFromSettings()
         printLayoutRevision += 1
     }
@@ -1966,6 +2234,7 @@ struct DocumentSnapshot: Codable {
     var strokes: [VectorStroke]
     var textElements: [TextElement] = []
     var groups: [ObjectGroup] = []
+    var layerGroups: [LayerGroup] = []
     var activeLayerID: UUID
     var viewport: ViewportTransform
     var grid: GridSettings

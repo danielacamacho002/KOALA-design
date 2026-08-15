@@ -22,7 +22,16 @@ final class DrawingCanvasUIView: UIView {
     var activeCategory: ToolCategory = .line {
         didSet {
             if oldValue == .curve, activeCategory != .curve {
+                // Don't discard an in-progress curve when leaving the tool: commit it
+                // so the drawn strokes persist. Deferred to avoid mutating document
+                // state during a SwiftUI view update.
+                let anchors = curveAnchors
                 resetCurve()
+                if anchors.count >= 2 {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onCurveCommitted?(anchors)
+                    }
+                }
             }
         }
     }
@@ -76,10 +85,19 @@ final class DrawingCanvasUIView: UIView {
     private let snapHaptics = SnapHaptics()
     private let snapIndicator = SnapIndicatorRenderer()
 
+    /// Color of the canvas sheet itself (the area within the canvas bounds). The view's
+    /// `backgroundColor` is the surrounding dark pasteboard shown when zoomed out.
+    var canvasFillColor: UIColor = UIColor(Color(hex: AppearanceSettings.defaultCanvasHex)) {
+        didSet {
+            guard canvasFillColor != oldValue else { return }
+            setNeedsDisplay()
+        }
+    }
+
     init(document: VectrDocument) {
         self.document = document
         super.init(frame: .zero)
-        backgroundColor = UIColor(Color(hex: AppearanceSettings.defaultCanvasHex))
+        backgroundColor = UIColor(Color(hex: AppearanceSettings.pasteboardHex))
         isMultipleTouchEnabled = true
         layer.addSublayer(gridLayer)
         setupGestures()
@@ -101,14 +119,35 @@ final class DrawingCanvasUIView: UIView {
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
+        drawCanvasSheet(in: context)
         GridRenderer.drawGrid(
             in: context,
             bounds: bounds,
             viewport: document.viewport,
             grid: document.grid,
             documentSettings: document.settings,
-            canvasExtent: document.settings.canvasExtent
+            canvasSize: document.settings.canvasSize
         )
+    }
+
+    /// Fills the canvas rectangle with the sheet color on top of the pasteboard background.
+    private func drawCanvasSheet(in context: CGContext) {
+        let size = document.settings.canvasSize
+        guard size.width > 0, size.height > 0 else { return }
+        let halfWidth = size.width / 2
+        let halfHeight = size.height / 2
+        let topLeft = document.viewport.documentToView(CGPoint(x: -halfWidth, y: -halfHeight))
+        let bottomRight = document.viewport.documentToView(CGPoint(x: halfWidth, y: halfHeight))
+        let rect = CGRect(
+            x: topLeft.x,
+            y: topLeft.y,
+            width: bottomRight.x - topLeft.x,
+            height: bottomRight.y - topLeft.y
+        )
+        context.saveGState()
+        context.setFillColor(canvasFillColor.cgColor)
+        context.fill(rect)
+        context.restoreGState()
     }
 
     // MARK: - Touch navigation
@@ -446,7 +485,8 @@ final class DrawingCanvasUIView: UIView {
             point,
             grid: document.grid,
             settings: document.settings,
-            enabled: enabled
+            enabled: enabled,
+            scale: document.viewport.scale
         )
     }
 
@@ -886,9 +926,9 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func clampViewportToCanvasExtent() {
-        document.viewport.clampToCanvasExtent(
+        document.viewport.clampToCanvasSize(
             in: bounds.size,
-            canvasExtent: document.settings.canvasExtent
+            canvasSize: document.settings.canvasSize
         )
     }
 
@@ -927,7 +967,9 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
         if let tap = gestureRecognizer as? UITapGestureRecognizer {
             if tap.numberOfTapsRequired == 2 {
                 // Double-tap recognizer only finishes curves; inert elsewhere.
-                return activeCategory == .curve && shouldAcceptDrawingTouch(touch)
+                // Accept a finger double-tap too so the curve can always be finished,
+                // even when finger drawing is off and the curve was drawn with a Pencil.
+                return activeCategory == .curve
             }
             if activeCategory == .curve {
                 // Curve points come from Pencil drags; ignore stray single taps.

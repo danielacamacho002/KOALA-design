@@ -34,7 +34,6 @@ struct SettingsView: View {
                         }
                     }
                     .onChange(of: document.settings.units) { _, _ in
-                        document.settings.syncCanvasExtentToMaximum()
                         reloadDisplayValues()
                         document.syncGridFromSettings()
                     }
@@ -73,9 +72,11 @@ struct SettingsView: View {
                         Text("Corners").tag(1)
                         Text("Halves").tag(2)
                         Text("Quarters").tag(4)
+                        Text("Eighths").tag(8)
+                        Text("Sixteenths").tag(16)
                     }
 
-                    Text("Snap to fractions of a grid square without changing the grid.")
+                    Text("Snap to fractions of a grid square without changing the grid. Zoom in to reveal these sub-grid lines.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -122,7 +123,6 @@ struct SettingsView: View {
             }
             .onAppear {
                 editingName = fileName
-                document.settings.syncCanvasExtentToMaximum()
                 reloadDisplayValues()
             }
         }

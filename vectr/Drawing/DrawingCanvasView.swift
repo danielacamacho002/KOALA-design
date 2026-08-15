@@ -106,9 +106,9 @@ struct DrawingCanvasView: UIViewRepresentable {
     }
 
     private func configure(_ uiView: DrawingCanvasUIView) {
-        let resolvedBackground = UIColor(canvasBackgroundColor)
-        if uiView.backgroundColor != resolvedBackground {
-            uiView.backgroundColor = resolvedBackground
+        let resolvedCanvasFill = UIColor(canvasBackgroundColor)
+        if uiView.canvasFillColor != resolvedCanvasFill {
+            uiView.canvasFillColor = resolvedCanvasFill
         }
         if uiView.isCommandMode != isCommandMode {
             uiView.isCommandMode = isCommandMode

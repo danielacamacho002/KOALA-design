@@ -136,7 +136,7 @@ enum StrokeEditor {
         }
         // Curve anchors changed count/order: rebuild tangent handles to stay in sync.
         let curveHandles = shapeType == .curve
-            ? ShapeGeometry.defaultCurveHandles(anchors: points)
+            ? ShapeGeometry.defaultCurveHandles(anchors: points, closed: isClosed)
             : nil
         return VectorStroke(
             id: stroke.id,

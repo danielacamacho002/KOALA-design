@@ -62,7 +62,7 @@ enum DocumentRenderer {
                 viewport: viewport,
                 grid: document.grid,
                 documentSettings: document.settings,
-                canvasExtent: document.settings.canvasExtent
+                canvasSize: document.settings.canvasSize
             )
         }
 
@@ -123,8 +123,8 @@ enum DocumentRenderer {
     static func boundingRect(for document: VectrDocument) -> CGRect {
         let points = allPoints(in: document)
         guard !points.isEmpty else {
-            let extent = document.settings.canvasExtent
-            return CGRect(x: -extent / 2, y: -extent / 2, width: extent, height: extent)
+            let size = document.settings.canvasSize
+            return CGRect(x: -size.width / 2, y: -size.height / 2, width: size.width, height: size.height)
         }
         var rect = CGRect.null
         for point in points { rect = rect.union(CGRect(origin: point, size: .zero)) }
