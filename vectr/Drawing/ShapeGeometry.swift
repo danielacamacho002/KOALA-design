@@ -1039,46 +1039,150 @@ enum ShapeGeometry {
         case right = "height-right"
     }
 
-    /// Resizes a single edge about its own midpoint, leaving the opposite edge exactly
-    /// where it is. Used when the opposite edge is pinned so the two can differ; the
-    /// result is generally a trapezoid, so the stroke is demoted to a closed polyline
-    /// once its opposite edges stop matching.
+    /// Whether the stroke gets the paired quad dimension treatment: a true rectangle,
+    /// or a closed four-corner polyline such as a trapezoid made by edge edits.
+    static func isEditableQuad(_ stroke: VectorStroke) -> Bool {
+        guard stroke.points.count == 4 else { return false }
+        switch stroke.shapeType {
+        case .rectangle:
+            return true
+        case .polyline:
+            return stroke.isClosed && (stroke.curveHandles?.isEmpty ?? true)
+        default:
+            return false
+        }
+    }
+
+    /// Resizes a single edge about its own midpoint along its own direction, leaving
+    /// the opposite edge exactly where it is. Used when the opposite edge is pinned so
+    /// the two can differ; a rectangle is demoted to a closed polyline once its
+    /// opposite edges stop matching.
     static func applyEdgeLength(_ edge: RectangleEdge, newValue: CGFloat, to stroke: VectorStroke) -> VectorStroke? {
-        guard stroke.shapeType == .rectangle, let frame = rectangleFrame(stroke.points) else { return nil }
+        guard isEditableQuad(stroke) else { return nil }
         let half = max(0.001, newValue) / 2
         var p = stroke.points
+
+        let (startIndex, endIndex): (Int, Int)
+        switch edge {
+        case .top: (startIndex, endIndex) = (0, 1)
+        case .bottom: (startIndex, endIndex) = (3, 2)
+        case .left: (startIndex, endIndex) = (0, 3)
+        case .right: (startIndex, endIndex) = (1, 2)
+        }
+        let vector = CGPoint(x: p[endIndex].x - p[startIndex].x, y: p[endIndex].y - p[startIndex].y)
+        let length = hypot(vector.x, vector.y)
+        guard length > 0.001 else { return nil }
+        let dir = CGPoint(x: vector.x / length, y: vector.y / length)
+        let m = midpoint(p[startIndex], p[endIndex])
+        p[startIndex] = CGPoint(x: m.x - dir.x * half, y: m.y - dir.y * half)
+        p[endIndex] = CGPoint(x: m.x + dir.x * half, y: m.y + dir.y * half)
+
+        var updated = stroke
+        updated.points = p
+        if stroke.shapeType == .rectangle {
+            let topLength = hypot(p[1].x - p[0].x, p[1].y - p[0].y)
+            let bottomLength = hypot(p[2].x - p[3].x, p[2].y - p[3].y)
+            let leftLength = hypot(p[3].x - p[0].x, p[3].y - p[0].y)
+            let rightLength = hypot(p[2].x - p[1].x, p[2].y - p[1].y)
+            let stillRectangle = abs(topLength - bottomLength) < 0.01 && abs(leftLength - rightLength) < 0.01
+            if !stillRectangle {
+                updated.shapeType = .polyline
+                updated.shapeRotation = nil
+                updated.rotationBasePoints = nil
+                updated.rotationBaseCenter = nil
+            }
+        }
+        return updated
+    }
+
+    /// Sets an edge's length by sliding the quad's two side groups apart along the
+    /// axis between them, keeping the adjacent edges rigid. On a rectangle this is the
+    /// familiar axis resize; on a trapezoid it keeps the shape symmetric, so editing
+    /// one leg brings its unlocked partner along. The anchor picks which side group
+    /// stays put (`.center` splits the motion evenly).
+    static func applyQuadEdge(
+        _ edge: RectangleEdge,
+        newValue: CGFloat,
+        to stroke: VectorStroke,
+        anchor: DimensionAnchor
+    ) -> VectorStroke? {
+        guard isEditableQuad(stroke) else { return nil }
+        var p = stroke.points
+
+        // The edited edge runs from the near side group to the far side group.
+        let nearGroup: [Int]
+        let farGroup: [Int]
+        let edgeStart: Int
+        let edgeEnd: Int
         switch edge {
         case .top:
-            let m = midpoint(p[0], p[1])
-            p[0] = CGPoint(x: m.x - frame.u.x * half, y: m.y - frame.u.y * half)
-            p[1] = CGPoint(x: m.x + frame.u.x * half, y: m.y + frame.u.y * half)
+            (edgeStart, edgeEnd) = (0, 1)
+            nearGroup = [0, 3]
+            farGroup = [1, 2]
         case .bottom:
-            let m = midpoint(p[3], p[2])
-            p[3] = CGPoint(x: m.x - frame.u.x * half, y: m.y - frame.u.y * half)
-            p[2] = CGPoint(x: m.x + frame.u.x * half, y: m.y + frame.u.y * half)
+            (edgeStart, edgeEnd) = (3, 2)
+            nearGroup = [0, 3]
+            farGroup = [1, 2]
         case .left:
-            let m = midpoint(p[0], p[3])
-            p[0] = CGPoint(x: m.x - frame.v.x * half, y: m.y - frame.v.y * half)
-            p[3] = CGPoint(x: m.x + frame.v.x * half, y: m.y + frame.v.y * half)
+            (edgeStart, edgeEnd) = (0, 3)
+            nearGroup = [0, 1]
+            farGroup = [3, 2]
         case .right:
-            let m = midpoint(p[1], p[2])
-            p[1] = CGPoint(x: m.x - frame.v.x * half, y: m.y - frame.v.y * half)
-            p[2] = CGPoint(x: m.x + frame.v.x * half, y: m.y + frame.v.y * half)
+            (edgeStart, edgeEnd) = (1, 2)
+            nearGroup = [0, 1]
+            farGroup = [3, 2]
+        }
+
+        let nearMid = midpoint(p[nearGroup[0]], p[nearGroup[1]])
+        let farMid = midpoint(p[farGroup[0]], p[farGroup[1]])
+        let axisVector = CGPoint(x: farMid.x - nearMid.x, y: farMid.y - nearMid.y)
+        let axisLength = hypot(axisVector.x, axisVector.y)
+        guard axisLength > 0.001 else { return nil }
+        let n = CGPoint(x: axisVector.x / axisLength, y: axisVector.y / axisLength)
+
+        // Solve |w + t*n| = newValue for the far group's slide distance t.
+        let w = CGPoint(x: p[edgeEnd].x - p[edgeStart].x, y: p[edgeEnd].y - p[edgeStart].y)
+        let target = max(0.001, newValue)
+        let along = w.x * n.x + w.y * n.y
+        let discriminant = along * along - (w.x * w.x + w.y * w.y) + target * target
+        // Negative: the edge cannot reach the target length by sliding, e.g. shorter
+        // than the fixed perpendicular offset between the side groups.
+        guard discriminant >= 0 else { return nil }
+        let t = -along + sqrt(discriminant)
+
+        let nearShift: CGFloat
+        let farShift: CGFloat
+        switch anchor {
+        case .nearEdge:
+            nearShift = 0
+            farShift = t
+        case .farEdge:
+            nearShift = -t
+            farShift = 0
+        case .center:
+            nearShift = -t / 2
+            farShift = t / 2
+        }
+        for index in nearGroup {
+            p[index] = CGPoint(x: p[index].x + n.x * nearShift, y: p[index].y + n.y * nearShift)
+        }
+        for index in farGroup {
+            p[index] = CGPoint(x: p[index].x + n.x * farShift, y: p[index].y + n.y * farShift)
+        }
+
+        // Reject collapses and inversions: shrinking a trapezoid's top too far would
+        // push the bottom edge through zero and out the other side as a bowtie.
+        let edgePairs = [(0, 1), (1, 2), (3, 2), (0, 3)]
+        for (a, b) in edgePairs {
+            let old = CGPoint(x: stroke.points[b].x - stroke.points[a].x, y: stroke.points[b].y - stroke.points[a].y)
+            let new = CGPoint(x: p[b].x - p[a].x, y: p[b].y - p[a].y)
+            if hypot(new.x, new.y) < 0.001 || old.x * new.x + old.y * new.y <= 0 {
+                return nil
+            }
         }
 
         var updated = stroke
         updated.points = p
-        let topLength = hypot(p[1].x - p[0].x, p[1].y - p[0].y)
-        let bottomLength = hypot(p[2].x - p[3].x, p[2].y - p[3].y)
-        let leftLength = hypot(p[3].x - p[0].x, p[3].y - p[0].y)
-        let rightLength = hypot(p[2].x - p[1].x, p[2].y - p[1].y)
-        let stillRectangle = abs(topLength - bottomLength) < 0.01 && abs(leftLength - rightLength) < 0.01
-        if !stillRectangle {
-            updated.shapeType = .polyline
-            updated.shapeRotation = nil
-            updated.rotationBasePoints = nil
-            updated.rotationBaseCenter = nil
-        }
         return updated
     }
 
@@ -1086,24 +1190,42 @@ enum ShapeGeometry {
     /// its resting label position.
     private static let labelStandoff: CGFloat = 20
 
-    /// A rectangle's local frame: origin corner plus orthogonal unit axes and extents.
-    /// Derived from the stored corner order so rotated rectangles resize correctly.
-    private static func rectangleFrame(
-        _ points: [CGPoint]
-    ) -> (origin: CGPoint, u: CGPoint, v: CGPoint, width: CGFloat, height: CGFloat)? {
-        guard points.count == 4 else { return nil }
-        let uVector = CGPoint(x: points[1].x - points[0].x, y: points[1].y - points[0].y)
-        let vVector = CGPoint(x: points[3].x - points[0].x, y: points[3].y - points[0].y)
-        let width = hypot(uVector.x, uVector.y)
-        let height = hypot(vVector.x, vVector.y)
-        guard width > 0.001, height > 0.001 else { return nil }
-        return (
-            origin: points[0],
-            u: CGPoint(x: uVector.x / width, y: uVector.y / width),
-            v: CGPoint(x: vVector.x / height, y: vVector.y / height),
-            width: width,
-            height: height
+    /// One editable pill per quad edge. Each pill shows its own edge's length (they
+    /// differ on a trapezoid), placed just outside the shape past the edge midpoint.
+    private static func quadDimensions(for stroke: VectorStroke) -> [SemanticDimension] {
+        guard isEditableQuad(stroke) else { return [] }
+        let p = stroke.points
+        let centroid = CGPoint(
+            x: (p[0].x + p[1].x + p[2].x + p[3].x) / 4,
+            y: (p[0].y + p[1].y + p[2].y + p[3].y) / 4
         )
+        let edges: [(edge: RectangleEdge, start: CGPoint, end: CGPoint, kind: SemanticDimension.Kind)] = [
+            (.top, p[0], p[1], .rectangleWidth),
+            (.bottom, p[3], p[2], .rectangleWidth),
+            (.left, p[0], p[3], .rectangleHeight),
+            (.right, p[1], p[2], .rectangleHeight)
+        ]
+        return edges.compactMap { entry in
+            let length = hypot(entry.end.x - entry.start.x, entry.end.y - entry.start.y)
+            guard length > 0.001 else { return nil }
+            let m = midpoint(entry.start, entry.end)
+            var outward = CGPoint(x: m.x - centroid.x, y: m.y - centroid.y)
+            let outwardLength = hypot(outward.x, outward.y)
+            outward = outwardLength > 0.001
+                ? CGPoint(x: outward.x / outwardLength, y: outward.y / outwardLength)
+                : CGPoint(x: 0, y: -1)
+            return SemanticDimension(
+                id: entry.edge.rawValue,
+                label: String(format: "%.3f", length),
+                midPoint: CGPoint(
+                    x: m.x + outward.x * labelStandoff,
+                    y: m.y + outward.y * labelStandoff
+                ),
+                value: length,
+                kind: entry.kind,
+                anchor: m
+            )
+        }
     }
 
     static func semanticDimensions(for stroke: VectorStroke) -> [SemanticDimension] {
@@ -1140,30 +1262,11 @@ enum ShapeGeometry {
                 )
             ]
         case .rectangle:
-            guard let frame = rectangleFrame(stroke.points) else { return [] }
-            let p = stroke.points
-            // One editable pill on each edge: the value is shared per axis, the id
-            // identifies the edge so labels and pins can be placed per edge.
-            let edges: [(id: String, anchor: CGPoint, outward: CGPoint, value: CGFloat, kind: SemanticDimension.Kind)] = [
-                ("width-top", midpoint(p[0], p[1]), CGPoint(x: -frame.v.x, y: -frame.v.y), frame.width, .rectangleWidth),
-                ("width-bottom", midpoint(p[2], p[3]), frame.v, frame.width, .rectangleWidth),
-                ("height-left", midpoint(p[0], p[3]), CGPoint(x: -frame.u.x, y: -frame.u.y), frame.height, .rectangleHeight),
-                ("height-right", midpoint(p[1], p[2]), frame.u, frame.height, .rectangleHeight)
-            ]
-            return edges.map { edge in
-                SemanticDimension(
-                    id: edge.id,
-                    label: String(format: "%.3f", edge.value),
-                    midPoint: CGPoint(
-                        x: edge.anchor.x + edge.outward.x * labelStandoff,
-                        y: edge.anchor.y + edge.outward.y * labelStandoff
-                    ),
-                    value: edge.value,
-                    kind: edge.kind,
-                    anchor: edge.anchor
-                )
-            }
+            return quadDimensions(for: stroke)
         default:
+            if isEditableQuad(stroke) {
+                return quadDimensions(for: stroke)
+            }
             let points = stroke.points
             guard points.count >= 2 else { return [] }
             let count = stroke.isClosed ? points.count : points.count - 1
@@ -1183,12 +1286,7 @@ enum ShapeGeometry {
         }
     }
 
-    static func applyDimension(
-        _ dimension: SemanticDimension,
-        newValue: CGFloat,
-        to stroke: VectorStroke,
-        anchor: DimensionAnchor = .center
-    ) -> VectorStroke? {
+    static func applyDimension(_ dimension: SemanticDimension, newValue: CGFloat, to stroke: VectorStroke) -> VectorStroke? {
         var updated = stroke
         switch dimension.kind {
         case .circleDiameter:
@@ -1202,34 +1300,9 @@ enum ShapeGeometry {
             guard let ellipse = ellipseFromCardinalPoints(stroke.points) else { return nil }
             updated.points = ellipseCardinalPoints(center: ellipse.center, rx: ellipse.rx, ry: max(0.001, newValue))
         case .rectangleWidth, .rectangleHeight:
-            guard let frame = rectangleFrame(stroke.points) else { return nil }
-            let isWidth: Bool
-            if case .rectangleWidth = dimension.kind { isWidth = true } else { isWidth = false }
-            let width = isWidth ? max(0.001, newValue) : frame.width
-            let height = isWidth ? frame.height : max(0.001, newValue)
-
-            // Sliding the origin by the amount the axis shrank keeps the far edge in
-            // place; half of it keeps the center in place.
-            var origin = frame.origin
-            let axis = isWidth ? frame.u : frame.v
-            let delta = isWidth ? frame.width - width : frame.height - height
-            switch anchor {
-            case .nearEdge:
-                break
-            case .center:
-                origin = CGPoint(x: origin.x + axis.x * delta / 2, y: origin.y + axis.y * delta / 2)
-            case .farEdge:
-                origin = CGPoint(x: origin.x + axis.x * delta, y: origin.y + axis.y * delta)
-            }
-            updated.points = [
-                origin,
-                CGPoint(x: origin.x + frame.u.x * width, y: origin.y + frame.u.y * width),
-                CGPoint(
-                    x: origin.x + frame.u.x * width + frame.v.x * height,
-                    y: origin.y + frame.u.y * width + frame.v.y * height
-                ),
-                CGPoint(x: origin.x + frame.v.x * height, y: origin.y + frame.v.y * height)
-            ]
+            // Quad edges are routed through applyQuadEdge/applyEdgeLength, which know
+            // which specific edge is being edited.
+            return nil
         case .segmentLength(let segmentIndex):
             let points = stroke.points
             guard points.count >= 2 else { return nil }

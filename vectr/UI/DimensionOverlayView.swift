@@ -291,18 +291,23 @@ struct DimensionOverlayView: View {
               let stroke = document.stroke(with: strokeID) else { return }
         let docValue = document.settings.units.toDocumentUnits(CGFloat(value))
         let updated: VectorStroke?
-        if let edge = ShapeGeometry.RectangleEdge(rawValue: dimension.id),
-           isOppositeEdgePinned(dimension, strokeID: strokeID) {
-            // The parallel edge is pinned, so reshape just this edge; opposite edges
-            // may then differ and the shape becomes a free quad.
-            updated = ShapeGeometry.applyEdgeLength(edge, newValue: docValue, to: stroke)
+        if let edge = ShapeGeometry.RectangleEdge(rawValue: dimension.id) {
+            if isOppositeEdgePinned(dimension, strokeID: strokeID) {
+                // The parallel edge is pinned, so reshape just this edge; opposite
+                // edges may then differ and the shape becomes a free quad.
+                updated = ShapeGeometry.applyEdgeLength(edge, newValue: docValue, to: stroke)
+            } else {
+                // Paired edit: adjacent sides stay rigid and slide apart, so the
+                // unlocked partner edge resizes along with this one.
+                updated = ShapeGeometry.applyQuadEdge(
+                    edge,
+                    newValue: docValue,
+                    to: stroke,
+                    anchor: anchor(for: dimension, strokeID: strokeID)
+                )
+            }
         } else {
-            updated = ShapeGeometry.applyDimension(
-                dimension,
-                newValue: docValue,
-                to: stroke,
-                anchor: anchor(for: dimension, strokeID: strokeID)
-            )
+            updated = ShapeGeometry.applyDimension(dimension, newValue: docValue, to: stroke)
         }
         guard let updated else { return }
         document.updateStroke(updated)
