@@ -609,6 +609,64 @@ final class VectrDocument {
         geometryRevision += 1
     }
 
+    // MARK: - Selected text styling (Move tool)
+
+    /// Indices of the text elements in the current selection, in document order.
+    private var selectedTextIndices: [Int] {
+        textElements.indices.filter { selectedTextIDs.contains(textElements[$0].id) }
+    }
+
+    /// First selected text element in document order; the Move panel uses it as
+    /// the representative whose values populate the style controls.
+    var representativeSelectedText: TextElement? {
+        textElements.first { selectedTextIDs.contains($0.id) }
+    }
+
+    /// Applies a font size to every selected text element as one undo step.
+    func setSelectedTextsFontSize(_ size: CGFloat, recordUndo: Bool = false) {
+        let indices = selectedTextIndices
+        guard !indices.isEmpty else { return }
+        if recordUndo { pushUndo() }
+        for index in indices { textElements[index].fontSize = max(1, size) }
+        geometryRevision += 1
+    }
+
+    /// Applies a fill color to every selected text element as one undo step.
+    func setSelectedTextsFillColor(_ color: CodableColor, recordUndo: Bool = false) {
+        let indices = selectedTextIndices
+        guard !indices.isEmpty else { return }
+        if recordUndo { pushUndo() }
+        for index in indices { textElements[index].color = color }
+        geometryRevision += 1
+    }
+
+    /// Applies a stroke color to every selected text element as one undo step.
+    func setSelectedTextsStrokeColor(_ color: CodableColor, recordUndo: Bool = false) {
+        let indices = selectedTextIndices
+        guard !indices.isEmpty else { return }
+        if recordUndo { pushUndo() }
+        for index in indices { textElements[index].strokeColor = color }
+        geometryRevision += 1
+    }
+
+    /// Applies a stroke weight to every selected text element as one undo step.
+    func setSelectedTextsStrokeWidth(_ width: CGFloat, recordUndo: Bool = false) {
+        let indices = selectedTextIndices
+        guard !indices.isEmpty else { return }
+        if recordUndo { pushUndo() }
+        for index in indices { textElements[index].strokeWidth = max(0, width) }
+        geometryRevision += 1
+    }
+
+    /// Applies outline (hollow) mode to every selected text element as one undo step.
+    func setSelectedTextsOutline(_ isOutline: Bool, recordUndo: Bool = false) {
+        let indices = selectedTextIndices
+        guard !indices.isEmpty else { return }
+        if recordUndo { pushUndo() }
+        for index in indices { textElements[index].isOutline = isOutline }
+        geometryRevision += 1
+    }
+
     /// End point of the most recent open line on the given layer, if any.
     func lastOpenLineEndpoint(on layerID: UUID) -> CGPoint? {
         guard let stroke = strokes.last(where: { stroke in

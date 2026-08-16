@@ -58,7 +58,7 @@ struct MoveRotatePanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             rotateSection
 
-            if isTextSelected && !document.usesGroupTransform {
+            if !document.selectedTextIDs.isEmpty {
                 Divider()
                 textStyleSection
             }
@@ -111,9 +111,14 @@ struct MoveRotatePanelView: View {
 
     // MARK: - Text style
 
+    /// Number of text elements in the current selection.
+    private var selectedTextCount: Int {
+        document.selectedTextIDs.count
+    }
+
     @ViewBuilder
     private var textStyleSection: some View {
-        ToolPanelHeader("Text")
+        ToolPanelHeader(selectedTextCount > 1 ? "Text (\(selectedTextCount))" : "Text")
 
         Toggle(isOn: textOutlineBinding) {
             Text("Outline")
@@ -223,20 +228,26 @@ struct MoveRotatePanelView: View {
             )
     }
 
+    /// Representative text element whose values populate the style controls.
+    /// With multiple texts selected this is the first one in document order.
+    private var representativeText: TextElement? {
+        document.representativeSelectedText
+    }
+
     private var currentTextFillColor: Color {
-        (selectedText?.color ?? CodableColor(.primary)).color
+        (representativeText?.color ?? CodableColor(.primary)).color
     }
 
     private var currentTextStrokeColor: Color {
-        (selectedText?.strokeColor ?? CodableColor(.primary)).color
+        (representativeText?.strokeColor ?? CodableColor(.primary)).color
     }
 
     private var currentTextFontSize: CGFloat {
-        selectedText?.fontSize ?? document.activeFontSize
+        representativeText?.fontSize ?? document.activeFontSize
     }
 
     private var currentTextStrokeWidth: CGFloat {
-        selectedText?.strokeWidth ?? TextElement.defaultStrokeWidth
+        representativeText?.strokeWidth ?? TextElement.defaultStrokeWidth
     }
 
     private var textStrokeWidthLabel: String {
@@ -249,10 +260,9 @@ struct MoveRotatePanelView: View {
 
     private var textOutlineBinding: Binding<Bool> {
         Binding(
-            get: { selectedText?.isOutline ?? false },
+            get: { representativeText?.isOutline ?? false },
             set: { newValue in
-                guard let id = document.selectedTextID else { return }
-                document.setTextOutline(id: id, isOutline: newValue, recordUndo: true)
+                document.setSelectedTextsOutline(newValue, recordUndo: true)
                 onApply()
             }
         )
@@ -262,8 +272,7 @@ struct MoveRotatePanelView: View {
         Binding(
             get: { currentTextFillColor },
             set: { newValue in
-                guard let id = document.selectedTextID else { return }
-                document.setTextFillColor(id: id, color: CodableColor(newValue))
+                document.setSelectedTextsFillColor(CodableColor(newValue))
                 onApply()
             }
         )
@@ -273,25 +282,24 @@ struct MoveRotatePanelView: View {
         Binding(
             get: { currentTextStrokeColor },
             set: { newValue in
-                guard let id = document.selectedTextID else { return }
-                document.setTextStrokeColor(id: id, color: CodableColor(newValue))
+                document.setSelectedTextsStrokeColor(CodableColor(newValue))
                 onApply()
             }
         )
     }
 
     private func stepTextFontSize(by delta: CGFloat) {
-        guard let id = document.selectedTextID else { return }
+        guard !document.selectedTextIDs.isEmpty else { return }
         let clamped = min(Self.fontSizeRange.upperBound, max(Self.fontSizeRange.lowerBound, currentTextFontSize + delta))
         document.activeFontSize = clamped
-        document.setTextFontSize(id: id, size: clamped, recordUndo: true)
+        document.setSelectedTextsFontSize(clamped, recordUndo: true)
         onApply()
     }
 
     private func stepTextStrokeWidth(by delta: CGFloat) {
-        guard let id = document.selectedTextID else { return }
+        guard !document.selectedTextIDs.isEmpty else { return }
         let clamped = min(Self.textStrokeRange.upperBound, max(Self.textStrokeRange.lowerBound, currentTextStrokeWidth + delta))
-        document.setTextStrokeWidth(id: id, width: clamped, recordUndo: true)
+        document.setSelectedTextsStrokeWidth(clamped, recordUndo: true)
         onApply()
     }
 
