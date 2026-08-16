@@ -71,8 +71,16 @@ enum LayerThumbnailRenderer {
                 var transform = documentToView
                 guard let viewPath = TextOutline.path(for: element).copy(using: &transform) else { continue }
                 context.addPath(viewPath)
-                context.setFillColor(element.cgColor)
-                context.fillPath()
+                if element.isOutline {
+                    context.setStrokeColor(element.strokeCGColor)
+                    context.setLineWidth(max(0.5, viewport.documentToView(distance: element.strokeWidth)))
+                    context.setLineCap(.round)
+                    context.setLineJoin(.round)
+                    context.strokePath()
+                } else {
+                    context.setFillColor(element.cgColor)
+                    context.fillPath()
+                }
             }
         }
     }

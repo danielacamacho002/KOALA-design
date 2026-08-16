@@ -13,9 +13,17 @@ struct MoveRotatePanelView: View {
     /// Thickness step in document points so behavior is consistent across measurement units.
     private static let thicknessStepPoints: CGFloat = 0.5
 
+    /// Font size / stroke weight stepping for the selected text.
+    private static let fontSizeStep: CGFloat = 1
+    private static let fontSizeRange: ClosedRange<CGFloat> = 6...200
+    private static let textStrokeStep: CGFloat = 0.5
+    private static let textStrokeRange: ClosedRange<CGFloat> = 0.5...48
+
     @State private var degreesText = ""
     @State private var thicknessText = ""
     @State private var fillOpacity: Double = Double(VectorStroke.defaultFillOpacity)
+    @State private var showTextFillPicker = false
+    @State private var showTextStrokePicker = false
     @State private var showColorPicker = false
 
     private var selectedStroke: VectorStroke? {
@@ -49,6 +57,11 @@ struct MoveRotatePanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             rotateSection
+
+            if !document.selectedTextIDs.isEmpty {
+                Divider()
+                textStyleSection
+            }
 
             if !document.selectedStrokeIDs.isEmpty {
                 Divider()
@@ -94,6 +107,200 @@ struct MoveRotatePanelView: View {
             syncThicknessText()
             syncFillOpacity()
         }
+    }
+
+    // MARK: - Text style
+
+    /// Number of text elements in the current selection.
+    private var selectedTextCount: Int {
+        document.selectedTextIDs.count
+    }
+
+    @ViewBuilder
+    private var textStyleSection: some View {
+        ToolPanelHeader(selectedTextCount > 1 ? "Text (\(selectedTextCount))" : "Text")
+
+        Toggle(isOn: textOutlineBinding) {
+            Text("Outline")
+                .font(.system(size: 12))
+        }
+        .toggleStyle(.switch)
+
+        textColorRow(
+            label: "Fill",
+            swatch: currentTextFillColor,
+            accessibility: "Fill color"
+        ) { showTextFillPicker = true }
+        .sheet(isPresented: $showTextFillPicker) {
+            TextStyleColorPickerSheet(color: textFillColorBinding)
+        }
+
+        textColorRow(
+            label: "Stroke",
+            swatch: currentTextStrokeColor,
+            accessibility: "Stroke color"
+        ) { showTextStrokePicker = true }
+        .sheet(isPresented: $showTextStrokePicker) {
+            TextStyleColorPickerSheet(color: textStrokeColorBinding)
+        }
+
+        textStepperRow(
+            label: "Size",
+            value: "\(Int(currentTextFontSize))",
+            onMinus: { stepTextFontSize(by: -Self.fontSizeStep) },
+            onPlus: { stepTextFontSize(by: Self.fontSizeStep) }
+        )
+
+        textStepperRow(
+            label: "Stroke weight",
+            value: textStrokeWidthLabel,
+            onMinus: { stepTextStrokeWidth(by: -Self.textStrokeStep) },
+            onPlus: { stepTextStrokeWidth(by: Self.textStrokeStep) }
+        )
+    }
+
+    private func textColorRow(
+        label: String,
+        swatch: Color,
+        accessibility: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 8) {
+            ToolPanelSectionLabel(label)
+                .frame(width: 44, alignment: .leading)
+
+            Rectangle()
+                .fill(swatch)
+                .frame(width: 24, height: 24)
+                .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
+
+            Button(action: action) {
+                textColorWheel
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(accessibility)
+
+            Spacer()
+        }
+    }
+
+    private func textStepperRow(
+        label: String,
+        value: String,
+        onMinus: @escaping () -> Void,
+        onPlus: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel(label)
+
+            HStack(spacing: 6) {
+                ToolPanelIconButton(systemImage: "minus", action: onMinus)
+
+                Text(value)
+                    .font(.caption.monospacedDigit())
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 26)
+                    .background(Color.toolPanelButtonFill)
+
+                ToolPanelIconButton(systemImage: "plus", action: onPlus)
+            }
+        }
+    }
+
+    private var textColorWheel: some View {
+        Circle()
+            .fill(
+                AngularGradient(
+                    colors: (0...12).map { Color(hue: Double($0) / 12.0, saturation: 0.85, brightness: 0.95) },
+                    center: .center
+                )
+            )
+            .overlay(
+                Circle().fill(
+                    RadialGradient(
+                        colors: [Color.white.opacity(0.85), Color.white.opacity(0)],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: 13
+                    )
+                )
+            )
+    }
+
+    /// Representative text element whose values populate the style controls.
+    /// With multiple texts selected this is the first one in document order.
+    private var representativeText: TextElement? {
+        document.representativeSelectedText
+    }
+
+    private var currentTextFillColor: Color {
+        (representativeText?.color ?? CodableColor(.primary)).color
+    }
+
+    private var currentTextStrokeColor: Color {
+        (representativeText?.strokeColor ?? CodableColor(.primary)).color
+    }
+
+    private var currentTextFontSize: CGFloat {
+        representativeText?.fontSize ?? document.activeFontSize
+    }
+
+    private var currentTextStrokeWidth: CGFloat {
+        representativeText?.strokeWidth ?? TextElement.defaultStrokeWidth
+    }
+
+    private var textStrokeWidthLabel: String {
+        let width = currentTextStrokeWidth
+        if width.truncatingRemainder(dividingBy: 1) == 0 {
+            return String(format: "%.0f pt", width)
+        }
+        return String(format: "%.1f pt", width)
+    }
+
+    private var textOutlineBinding: Binding<Bool> {
+        Binding(
+            get: { representativeText?.isOutline ?? false },
+            set: { newValue in
+                document.setSelectedTextsOutline(newValue, recordUndo: true)
+                onApply()
+            }
+        )
+    }
+
+    private var textFillColorBinding: Binding<Color> {
+        Binding(
+            get: { currentTextFillColor },
+            set: { newValue in
+                document.setSelectedTextsFillColor(CodableColor(newValue))
+                onApply()
+            }
+        )
+    }
+
+    private var textStrokeColorBinding: Binding<Color> {
+        Binding(
+            get: { currentTextStrokeColor },
+            set: { newValue in
+                document.setSelectedTextsStrokeColor(CodableColor(newValue))
+                onApply()
+            }
+        )
+    }
+
+    private func stepTextFontSize(by delta: CGFloat) {
+        guard !document.selectedTextIDs.isEmpty else { return }
+        let clamped = min(Self.fontSizeRange.upperBound, max(Self.fontSizeRange.lowerBound, currentTextFontSize + delta))
+        document.activeFontSize = clamped
+        document.setSelectedTextsFontSize(clamped, recordUndo: true)
+        onApply()
+    }
+
+    private func stepTextStrokeWidth(by delta: CGFloat) {
+        guard !document.selectedTextIDs.isEmpty else { return }
+        let clamped = min(Self.textStrokeRange.upperBound, max(Self.textStrokeRange.lowerBound, currentTextStrokeWidth + delta))
+        document.setSelectedTextsStrokeWidth(clamped, recordUndo: true)
+        onApply()
     }
 
     @ViewBuilder
@@ -528,5 +735,41 @@ struct MoveRotatePanelView: View {
         document.reconcileIntersectionAnchors(around: [strokeID])
         syncDegreesField()
         onApply()
+    }
+}
+
+/// Full system color picker (wheel, sliders, eyedropper) presented as a sheet
+/// for editing a selected text element's fill or stroke color.
+private struct TextStyleColorPickerSheet: UIViewControllerRepresentable {
+    @Binding var color: Color
+
+    func makeUIViewController(context: Context) -> UIColorPickerViewController {
+        let picker = UIColorPickerViewController()
+        picker.delegate = context.coordinator
+        picker.selectedColor = UIColor(color)
+        picker.supportsAlpha = false
+        return picker
+    }
+
+    func updateUIViewController(_ picker: UIColorPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(color: $color)
+    }
+
+    final class Coordinator: NSObject, UIColorPickerViewControllerDelegate {
+        @Binding var color: Color
+
+        init(color: Binding<Color>) {
+            _color = color
+        }
+
+        func colorPickerViewController(
+            _ viewController: UIColorPickerViewController,
+            didSelect selectedColor: UIColor,
+            continuously: Bool
+        ) {
+            color = Color(selectedColor)
+        }
     }
 }
