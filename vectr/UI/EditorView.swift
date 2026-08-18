@@ -1115,7 +1115,13 @@ struct EditorView: View {
                 refreshCanvas()
                 return
             }
-            // 2. Interior fill tap over an overlap: punch a hole (base MINUS target).
+            // 2. Arc-on-edge knife: tapping the piece an edge-crossing arc slices off
+            //    removes that piece.
+            if store.document.sliceArcCut(at: documentPoint) {
+                refreshCanvas()
+                return
+            }
+            // 3. Interior fill tap over an overlap: punch a hole (base MINUS target).
             if store.document.punchOverlapHole(at: documentPoint) {
                 refreshCanvas()
                 return

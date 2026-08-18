@@ -56,6 +56,151 @@ enum PolygonBoolean {
         return [Contour(points: subj, cutEdges: Array(repeating: false, count: subj.count))]
     }
 
+    /// Where the cut curve attaches to the polygon boundary.
+    private struct BoundaryAttach {
+        var point: CGPoint
+        var edge: Int      // polygon edge index it lands on
+        var u: CGFloat     // parameter along that edge
+    }
+
+    /// Splits a closed `polygon` into two pieces along an open `path` (an arc/knife).
+    ///
+    /// Two configurations are supported, both meaning "on the edge":
+    /// - The path pokes through the boundary (its ends lie outside): the first and last
+    ///   boundary crossings become the attach points.
+    /// - The path lies inside with its endpoints on/near the boundary: the endpoints are
+    ///   snapped to the nearest edge, provided they are within `maxEndpointAttach`.
+    ///
+    /// Returns the two closed contours, or `nil` when the path does not divide the shape.
+    static func split(
+        polygon: [CGPoint],
+        byOpenPath rawPath: [CGPoint],
+        maxEndpointAttach: CGFloat = .greatestFiniteMagnitude
+    ) -> [[CGPoint]]? {
+        let poly = normalized(polygon)
+        let path = normalizedOpen(rawPath)
+        guard poly.count >= 3, path.count >= 2 else { return nil }
+        let n = poly.count
+
+        struct Crossing { var point: CGPoint; var tPath: CGFloat; var edge: Int; var u: CGFloat }
+        var crossings: [Crossing] = []
+        for i in 0..<(path.count - 1) {
+            let a1 = path[i], a2 = path[i + 1]
+            for j in 0..<n {
+                let b1 = poly[j], b2 = poly[(j + 1) % n]
+                guard let hit = segmentIntersection(a1, a2, b1, b2) else { continue }
+                crossings.append(Crossing(
+                    point: hit.point,
+                    tPath: CGFloat(i) + hit.alphaA,
+                    edge: j,
+                    u: hit.alphaB
+                ))
+            }
+        }
+
+        let entry: BoundaryAttach
+        let exit: BoundaryAttach
+        var cutInterior: [CGPoint] = []
+
+        if crossings.count >= 2 {
+            // Poke-through: use the outermost crossings and the path between them.
+            crossings.sort { $0.tPath < $1.tPath }
+            let first = crossings.first!
+            let last = crossings.last!
+            guard first.tPath + 1e-9 < last.tPath else { return nil }
+            entry = BoundaryAttach(point: first.point, edge: first.edge, u: first.u)
+            exit = BoundaryAttach(point: last.point, edge: last.edge, u: last.u)
+            for k in 0..<path.count {
+                let t = CGFloat(k)
+                if t > first.tPath + 1e-9, t < last.tPath - 1e-9 { cutInterior.append(path[k]) }
+            }
+        } else {
+            // Endpoints-on-edge: snap the open path's ends to the nearest boundary edge.
+            guard let a = nearestBoundary(path.first!, poly),
+                  let b = nearestBoundary(path.last!, poly),
+                  hypot(path.first!.x - a.point.x, path.first!.y - a.point.y) <= maxEndpointAttach,
+                  hypot(path.last!.x - b.point.x, path.last!.y - b.point.y) <= maxEndpointAttach,
+                  hypot(a.point.x - b.point.x, a.point.y - b.point.y) > 1e-6 else { return nil }
+            entry = a
+            exit = b
+            if path.count > 2 { cutInterior = Array(path[1..<(path.count - 1)]) }
+        }
+
+        // Cut curve A → interior → B.
+        var cut: [CGPoint] = [entry.point]
+        cut.append(contentsOf: cutInterior)
+        cut.append(exit.point)
+
+        // Ordered boundary nodes: polygon vertices at integer positions plus the two
+        // attach points at their fractional positions, sorted around the ring.
+        struct BNode { var pos: CGFloat; var pt: CGPoint; var isA: Bool; var isB: Bool }
+        var nodes: [BNode] = (0..<n).map { BNode(pos: CGFloat($0), pt: poly[$0], isA: false, isB: false) }
+        nodes.append(BNode(pos: CGFloat(entry.edge) + entry.u, pt: entry.point, isA: true, isB: false))
+        nodes.append(BNode(pos: CGFloat(exit.edge) + exit.u, pt: exit.point, isA: false, isB: true))
+        nodes.sort { $0.pos < $1.pos }
+        guard let ia = nodes.firstIndex(where: { $0.isA }),
+              let ib = nodes.firstIndex(where: { $0.isB }) else { return nil }
+
+        let m = nodes.count
+        func vertsBetween(_ from: Int, _ to: Int) -> [CGPoint] {
+            var result: [CGPoint] = []
+            var k = (from + 1) % m
+            while k != to {
+                if !nodes[k].isA, !nodes[k].isB { result.append(nodes[k].pt) }
+                k = (k + 1) % m
+            }
+            return result
+        }
+        // Piece 1: knife A→B, then the boundary walked forward from B back to A.
+        var piece1 = cut
+        piece1.append(contentsOf: vertsBetween(ib, ia))
+        // Piece 2: knife A→B, then the other boundary arc traversed B→A (reversed).
+        var piece2 = cut
+        piece2.append(contentsOf: vertsBetween(ia, ib).reversed())
+
+        let p1 = normalized(piece1)
+        let p2 = normalized(piece2)
+        guard p1.count >= 3, p2.count >= 3 else { return nil }
+        return [p1, p2]
+    }
+
+    /// Nearest point on the polygon boundary to `point`, with its edge index and param.
+    private static func nearestBoundary(_ point: CGPoint, _ poly: [CGPoint]) -> BoundaryAttach? {
+        let n = poly.count
+        guard n >= 2 else { return nil }
+        var best: BoundaryAttach?
+        var bestDist = CGFloat.greatestFiniteMagnitude
+        for j in 0..<n {
+            let a = poly[j], b = poly[(j + 1) % n]
+            let dx = b.x - a.x, dy = b.y - a.y
+            let lenSq = dx * dx + dy * dy
+            var u: CGFloat = 0
+            if lenSq > .ulpOfOne {
+                u = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lenSq
+                u = max(0, min(1, u))
+            }
+            let proj = CGPoint(x: a.x + u * dx, y: a.y + u * dy)
+            let d = hypot(point.x - proj.x, point.y - proj.y)
+            if d < bestDist {
+                bestDist = d
+                best = BoundaryAttach(point: proj, edge: j, u: u)
+            }
+        }
+        return best
+    }
+
+    /// Like `normalized` but preserves the open path (does not drop the closing point).
+    private static func normalizedOpen(_ points: [CGPoint]) -> [CGPoint] {
+        guard points.count > 1 else { return points }
+        var result: [CGPoint] = []
+        result.reserveCapacity(points.count)
+        for point in points {
+            if let last = result.last, hypot(last.x - point.x, last.y - point.y) <= 1e-6 { continue }
+            result.append(point)
+        }
+        return result
+    }
+
     private static func boundingDiagonal(_ points: [CGPoint]) -> CGFloat {
         guard let first = points.first else { return 0 }
         var minX = first.x, maxX = first.x, minY = first.y, maxY = first.y
