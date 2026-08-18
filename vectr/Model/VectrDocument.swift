@@ -1924,8 +1924,10 @@ final class VectrDocument {
 
     /// Interior fill tap for the Delete tool: when the topmost filled shape under
     /// `documentPoint` overlaps a closed shape beneath it, subtracts the top shape
-    /// (Boolean: base MINUS target) to punch a hole in the base and removes the top
-    /// shape. Returns `true` when a subtraction was performed.
+    /// (Boolean: base MINUS target) and removes the top shape. When the target sits
+    /// fully inside the base a hole is punched; when it crosses the base's edge the
+    /// base outline is reshaped into the notch/bite instead of leaving a seam.
+    /// Returns `true` when a subtraction was performed.
     @discardableResult
     func punchOverlapHole(at documentPoint: CGPoint) -> Bool {
         let candidates = selectableStrokes()
@@ -1943,16 +1945,14 @@ final class VectrDocument {
             guard base.id != target.id, base.isClosed, !base.isConstruction else { continue }
             let baseContour = ShapeGeometry.renderPoints(for: base)
             guard baseContour.count >= 3 else { continue }
-            guard let cutouts = ShapeBooleanEngine.subtractionCutouts(
+            guard let outcome = ShapeBooleanEngine.subtract(
                 baseContour: baseContour,
                 targetContour: targetContour
             ) else { continue }
             guard let baseArrayIndex = strokes.firstIndex(where: { $0.id == base.id }) else { continue }
 
             pushUndo()
-            var updatedBase = strokes[baseArrayIndex]
-            updatedBase.cutoutPoints.append(contentsOf: cutouts)
-            strokes[baseArrayIndex] = updatedBase
+            applySubtraction(outcome, toBaseAt: baseArrayIndex)
             strokes.removeAll { $0.id == target.id }
             pruneGroups()
             deselectStrokeAfterMutation(target.id)
@@ -1960,6 +1960,80 @@ final class VectrDocument {
             return true
         }
         return false
+    }
+
+    /// Mutates the base stroke at `baseArrayIndex` according to a Boolean subtraction
+    /// outcome, spawning additional strokes when a cut splits the base into pieces.
+    private func applySubtraction(_ outcome: ShapeBooleanEngine.Subtraction, toBaseAt baseArrayIndex: Int) {
+        switch outcome {
+        case let .interiorHole(cutouts):
+            var updatedBase = strokes[baseArrayIndex]
+            updatedBase.cutoutPoints.append(contentsOf: cutouts)
+            strokes[baseArrayIndex] = updatedBase
+
+        case let .boundaryCut(contours):
+            guard let primary = contours.first else { return }
+            let baseID = strokes[baseArrayIndex].id
+            var updatedBase = reshaped(strokes[baseArrayIndex], to: primary)
+            // Keep existing holes only where they still fall inside the reshaped outline.
+            updatedBase.cutoutPoints = updatedBase.cutoutPoints.filter { hole in
+                let holeCenter = centroid(hole)
+                return PolygonBoolean.pointInPolygon(holeCenter, primary.points)
+            }
+            strokes[baseArrayIndex] = updatedBase
+
+            // Remaining contours are disjoint pieces carved off the original shape.
+            let extraContours = contours.dropFirst()
+            guard !extraContours.isEmpty else { return }
+            var newPieces: [VectorStroke] = []
+            for contour in extraContours {
+                var piece = reshaped(updatedBase, to: contour)
+                piece.id = UUID()
+                piece.cutoutPoints = []
+                newPieces.append(piece)
+            }
+            let insertionIndex = min(baseArrayIndex + 1, strokes.count)
+            strokes.insert(contentsOf: newPieces, at: insertionIndex)
+            // New fragments join whatever group the base belonged to.
+            for i in groups.indices where groups[i].strokeIDs.contains(baseID) {
+                groups[i].strokeIDs.append(contentsOf: newPieces.map(\.id))
+            }
+
+        case .baseRemoved:
+            let baseID = strokes[baseArrayIndex].id
+            strokes.remove(at: baseArrayIndex)
+            deselectStrokeAfterMutation(baseID)
+        }
+    }
+
+    /// Returns a copy of `stroke` reshaped into an arbitrary closed polygon outline,
+    /// clearing parametric/shape-specific state so the raw Boolean-cut contour renders
+    /// verbatim as new geometry (its whole outline, cut edges included, is stroked).
+    private func reshaped(_ stroke: VectorStroke, to contour: ShapeBooleanEngine.CutContour) -> VectorStroke {
+        var copy = stroke
+        copy.points = contour.points
+        copy.shapeType = .polyline
+        copy.isClosed = true
+        copy.shapeRotation = nil
+        copy.rotationBasePoints = nil
+        copy.rotationBaseCenter = nil
+        copy.curveHandles = nil
+        copy.cornerRadius = 0
+        copy.cornerRadiiByIndex = nil
+        copy.smoothCornerIndices = nil
+        copy.openEdgeStarts = nil
+        copy.openCutoutIndices = nil
+        return copy
+    }
+
+    private func centroid(_ points: [CGPoint]) -> CGPoint {
+        guard !points.isEmpty else { return .zero }
+        var sum = CGPoint.zero
+        for point in points {
+            sum.x += point.x
+            sum.y += point.y
+        }
+        return CGPoint(x: sum.x / CGFloat(points.count), y: sum.y / CGFloat(points.count))
     }
 
     /// Removes a stroke id from every selection set after it has been deleted/consumed.

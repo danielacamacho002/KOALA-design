@@ -43,8 +43,12 @@ enum LayerThumbnailRenderer {
             let context = ctx.cgContext
 
             for stroke in strokes {
-                let path = StrokeRenderer.path(for: stroke, viewport: viewport).cgPath
-                context.addPath(path)
+                if stroke.isClosed, !stroke.isConstruction {
+                    context.addPath(StrokeRenderer.path(for: stroke, viewport: viewport).cgPath)
+                    context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
+                    context.fillPath(using: stroke.cutoutPoints.isEmpty ? .winding : .evenOdd)
+                }
+                context.addPath(StrokeRenderer.outlinePath(for: stroke, viewport: viewport).cgPath)
                 context.setStrokeColor(thumbnailStrokeColor(for: stroke))
                 // Clamp so hairlines stay visible at thumbnail scale.
                 context.setLineWidth(max(0.75, viewport.documentToView(distance: stroke.strokeWidth)))
@@ -53,13 +57,7 @@ enum LayerThumbnailRenderer {
                 if stroke.isConstruction {
                     context.setLineDash(phase: 0, lengths: [3, 2])
                 }
-                if stroke.isClosed, !stroke.isConstruction {
-                    context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
-                    let fillMode: CGPathDrawingMode = stroke.cutoutPoints.isEmpty ? .fillStroke : .eoFillStroke
-                    context.drawPath(using: fillMode)
-                } else {
-                    context.strokePath()
-                }
+                context.strokePath()
                 context.setLineDash(phase: 0, lengths: [])
             }
 

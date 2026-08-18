@@ -74,18 +74,7 @@ enum StrokeRenderer {
         opacity: CGFloat = 1
     ) -> CAShapeLayer {
         let layer = CAShapeLayer()
-        layer.path = path(for: stroke, viewport: viewport, pointTransform: pointTransform).cgPath
-        layer.strokeColor = strokeColor(for: stroke)
-        layer.fillColor = fillColor(for: stroke)
-        layer.lineWidth = viewport.documentToView(distance: stroke.strokeWidth)
-        layer.lineCap = .round
-        layer.lineJoin = .round
-        layer.contentsScale = UIScreen.main.scale
-        layer.fillRule = usesEvenOddFill(stroke) ? .evenOdd : .nonZero
-        layer.opacity = Float(opacity)
-        if stroke.isConstruction {
-            layer.lineDashPattern = [10, 6]
-        }
+        configure(layer, stroke: stroke, viewport: viewport, pointTransform: pointTransform, opacity: opacity)
         return layer
     }
 
@@ -96,13 +85,142 @@ enum StrokeRenderer {
         pointTransform: PrintStrokeTransform? = nil,
         opacity: CGFloat = 1
     ) {
-        layer.path = path(for: stroke, viewport: viewport, pointTransform: pointTransform).cgPath
-        layer.strokeColor = strokeColor(for: stroke)
-        layer.fillColor = fillColor(for: stroke)
-        layer.lineWidth = viewport.documentToView(distance: stroke.strokeWidth)
-        layer.lineDashPattern = stroke.isConstruction ? [10, 6] : nil
+        configure(layer, stroke: stroke, viewport: viewport, pointTransform: pointTransform, opacity: opacity)
+    }
+
+    private static let outlineSublayerName = "cutOutlineSublayer"
+
+    /// Configures a stroke's shape layer. When the stroke carries cut edges
+    /// (`openEdgeStarts`) the layer fills the full contour but draws no stroke; a child
+    /// sublayer strokes only the retained (non-cut) edges, so the carved notch has no
+    /// outline. Otherwise the layer fills and strokes the same path, as before.
+    private static func configure(
+        _ layer: CAShapeLayer,
+        stroke: VectorStroke,
+        viewport: ViewportTransform,
+        pointTransform: PrintStrokeTransform?,
+        opacity: CGFloat
+    ) {
+        let fillPath = path(for: stroke, viewport: viewport, pointTransform: pointTransform).cgPath
+        let lineWidth = viewport.documentToView(distance: stroke.strokeWidth)
+        layer.lineCap = .round
+        layer.lineJoin = .round
+        layer.contentsScale = UIScreen.main.scale
         layer.fillRule = usesEvenOddFill(stroke) ? .evenOdd : .nonZero
         layer.opacity = Float(opacity)
+
+        if hasCutEdges(stroke) {
+            layer.path = fillPath
+            layer.fillColor = fillColor(for: stroke)
+            layer.strokeColor = UIColor.clear.cgColor
+            layer.lineWidth = 0
+            layer.lineDashPattern = nil
+
+            let outline = outlineSublayer(for: layer)
+            outline.path = outlinePath(for: stroke, viewport: viewport, pointTransform: pointTransform).cgPath
+            outline.strokeColor = strokeColor(for: stroke)
+            outline.fillColor = UIColor.clear.cgColor
+            outline.lineWidth = lineWidth
+            outline.lineCap = .round
+            outline.lineJoin = .round
+            outline.contentsScale = UIScreen.main.scale
+        } else {
+            removeOutlineSublayer(from: layer)
+            layer.path = fillPath
+            layer.strokeColor = strokeColor(for: stroke)
+            layer.fillColor = fillColor(for: stroke)
+            layer.lineWidth = lineWidth
+            layer.lineDashPattern = stroke.isConstruction ? [10, 6] : nil
+        }
+    }
+
+    /// True when the stroke needs its fill and outline drawn from different paths:
+    /// either it has cut edges on the outer contour, or it has punched (unstroked)
+    /// holes. In both cases the outline must omit the cut geometry.
+    private static func hasCutEdges(_ stroke: VectorStroke) -> Bool {
+        guard stroke.isClosed, !stroke.isConstruction else { return false }
+        return (stroke.openEdgeStarts?.isEmpty == false) || (stroke.openCutoutIndices?.isEmpty == false)
+    }
+
+    private static func outlineSublayer(for layer: CAShapeLayer) -> CAShapeLayer {
+        if let existing = layer.sublayers?.first(where: { $0.name == outlineSublayerName }) as? CAShapeLayer {
+            return existing
+        }
+        let created = CAShapeLayer()
+        created.name = outlineSublayerName
+        layer.addSublayer(created)
+        return created
+    }
+
+    private static func removeOutlineSublayer(from layer: CAShapeLayer) {
+        layer.sublayers?
+            .filter { $0.name == outlineSublayerName }
+            .forEach { $0.removeFromSuperlayer() }
+    }
+
+    /// The path to *stroke* for a shape: identical to `path(for:)` unless the stroke
+    /// has cut edges, in which case the outer contour is split into open subpaths that
+    /// omit the cut edges (nested cutout contours remain stroked as closed loops).
+    static func outlinePath(
+        for stroke: VectorStroke,
+        viewport: ViewportTransform,
+        pointTransform: PrintStrokeTransform? = nil
+    ) -> UIBezierPath {
+        guard hasCutEdges(stroke) else {
+            return path(for: stroke, viewport: viewport, pointTransform: pointTransform)
+        }
+        let renderStroke: VectorStroke
+        if let pointTransform {
+            renderStroke = PrintLayoutCoordinateSpace.transformedStroke(stroke, transform: pointTransform)
+        } else {
+            renderStroke = stroke
+        }
+
+        let contour = ShapeGeometry.renderPoints(for: renderStroke)
+        let count = contour.count
+        let path = UIBezierPath()
+        guard count >= 2 else { return path }
+        let cut = Set(renderStroke.openEdgeStarts ?? [])
+
+        if let firstCut = (0..<count).first(where: { cut.contains($0) }) {
+            var subpathOpen = false
+            // Walk all edges once, starting right after a cut edge so retained runs
+            // never straddle the wrap-around seam.
+            for step in 1...count {
+                let edge = (firstCut + step) % count
+                if cut.contains(edge) {
+                    subpathOpen = false
+                } else {
+                    let start = contour[edge]
+                    let end = contour[(edge + 1) % count]
+                    if !subpathOpen {
+                        path.move(to: viewport.documentToView(start))
+                        subpathOpen = true
+                    }
+                    path.addLine(to: viewport.documentToView(end))
+                }
+            }
+        } else {
+            appendContour(to: path, points: contour, closed: renderStroke.isClosed, viewport: viewport)
+        }
+
+        let unstroked = renderStroke.openCutoutIndices ?? []
+        for (index, cutout) in renderStroke.cutoutPoints.enumerated() where !unstroked.contains(index) {
+            let holeStroke = VectorStroke(
+                layerID: renderStroke.layerID,
+                points: cutout,
+                strokeWidth: renderStroke.strokeWidth,
+                isClosed: true,
+                shapeType: .circle
+            )
+            appendContour(
+                to: path,
+                points: ShapeGeometry.renderPoints(for: holeStroke),
+                closed: true,
+                viewport: viewport
+            )
+        }
+        return path
     }
 
     static func transformedPath(for stroke: VectorStroke, viewport: ViewportTransform) -> UIBezierPath {
