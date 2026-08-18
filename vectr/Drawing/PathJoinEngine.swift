@@ -14,12 +14,23 @@ import Foundation
 /// whenever topology allows. Open and closed shapes are both eligible — Join is
 /// available whenever any two anchors from different selected strokes sit within
 /// tolerance of each other.
+///
+/// Fidelity: closed shapes fuse using their *true rendered contour* (dense
+/// samples from `ShapeGeometry.renderPoints`) rather than a handful of anchor
+/// points, so circles, ellipses, arcs, beziers and baked fillets keep their real
+/// geometry through a join instead of collapsing into a few straight segments.
 enum PathJoinEngine {
     private struct Path {
         var points: [CGPoint]
         var handles: [CurveHandle]
         var isClosed: Bool
         var isCurve: Bool
+        /// True rendered outline (dense) used for boolean-union fusion so curved
+        /// geometry survives. Equals `points` for non-curve shapes.
+        var contour: [CGPoint]
+        /// Inner holes (even-odd) carried through the join so complex shapes keep
+        /// their cutouts.
+        var cutouts: [[CGPoint]] = []
     }
 
     // MARK: - Public API
@@ -43,19 +54,40 @@ enum PathJoinEngine {
         return false
     }
 
-    /// Welds touching anchors across `strokes` and fuses each connected group
-    /// into one path. Returns `nil` when no anchors touch.
+    /// True when Join can do something: any two selected shapes either share a
+    /// touching anchor or (for closed shapes) overlap. Open vs closed doesn't
+    /// matter for the anchor case — Join appears whenever a weld/fuse is possible.
+    static func canJoin(_ strokes: [VectorStroke], tolerance: CGFloat) -> Bool {
+        let usable = strokes.filter { ShapeGeometry.handlePoints(for: $0).count >= 2 }
+        guard usable.count >= 2 else { return false }
+        if hasTouchingAnchors(usable, tolerance: tolerance) { return true }
+
+        // Closed shapes that overlap (edges cross or one contains the other) can
+        // be unioned even without a shared anchor.
+        let closed = usable.map { normalized($0) }.filter { $0.isClosed && $0.contour.count >= 3 }
+        for i in closed.indices {
+            for j in (i + 1)..<closed.count where closedContoursOverlap(closed[i].contour, closed[j].contour) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Welds touching anchors and fuses each connected group (linked by a shared
+    /// anchor or by overlapping closed contours) into one path. Returns `nil`
+    /// when nothing can be fused.
     static func join(_ strokes: [VectorStroke], tolerance: CGFloat) -> [VectorStroke]? {
         let usable = strokes.filter { ShapeGeometry.handlePoints(for: $0).count >= 2 }
         guard usable.count >= 2, let base = usable.first else { return nil }
-        guard hasTouchingAnchors(usable, tolerance: tolerance) else { return nil }
 
         var paths = usable.map { normalized($0) }
         _ = weldCoincidentAnchors(in: &paths, tolerance: tolerance)
 
-        // Fuse every connected component (paths linked by a shared welded point)
-        // down to a single stroke so the weld is permanent, not just coincident.
+        // Fuse every connected component (paths linked by a shared welded point or
+        // by overlapping closed contours) down to a single stroke so the weld is
+        // permanent, not just coincident.
         let components = connectedComponents(paths, tolerance: tolerance)
+        guard components.contains(where: { $0.count >= 2 }) else { return nil }
         let fused = components.map { fuseComponent($0, tolerance: tolerance) }
 
         return fused.map { stroke(from: $0, base: base) }
@@ -63,12 +95,14 @@ enum PathJoinEngine {
 
     // MARK: - Normalization
 
-    /// Converts a stroke into an editable anchor path. Uses the same handle
-    /// points the UI exposes (so rectangles and circles join by their corners /
-    /// cardinals). Curve handles are kept when the stroke is already a curve, and
-    /// arcs are approximated with Bezier handles so their curvature survives joins.
+    /// Converts a stroke into an editable anchor path plus its dense rendered
+    /// contour. Curve handles are kept when the stroke is already a curve, and
+    /// arcs are approximated with Bezier handles so their curvature survives
+    /// open-path joins. Every other shape stores its *rendered* outline as its
+    /// point list so circles, ellipses and baked fillets keep their real shape.
     private static func normalized(_ stroke: VectorStroke) -> Path {
-        let points = ShapeGeometry.handlePoints(for: stroke)
+        let contour = ShapeGeometry.renderPoints(for: stroke)
+        let cutouts = stroke.cutoutPoints
 
         // Arcs: rebuild the circular geometry as cubic Bezier handles through the
         // (start, mid, end) anchors so a joined arc stays curved instead of
@@ -81,20 +115,33 @@ enum PathJoinEngine {
                mid: anchors[1],
                end: anchors[2]
            ) {
-            return Path(points: anchors, handles: handles, isClosed: false, isCurve: true)
+            return Path(
+                points: anchors, handles: handles, isClosed: false, isCurve: true,
+                contour: contour, cutouts: cutouts
+            )
         }
 
-        let isCurve = stroke.shapeType == .curve
-        if isCurve, let handles = stroke.curveHandles, handles.count == stroke.points.count,
-           stroke.points.count == points.count {
-            return Path(points: points, handles: handles, isClosed: stroke.isClosed, isCurve: true)
+        if stroke.shapeType == .curve,
+           let handles = stroke.curveHandles,
+           handles.count == stroke.points.count {
+            return Path(
+                points: stroke.points, handles: handles,
+                isClosed: stroke.isClosed, isCurve: true,
+                contour: contour, cutouts: cutouts
+            )
         }
+
+        // Circles / ellipses / rectangles / polylines: use the dense rendered
+        // outline as the anchor list so fusion follows the real curve.
+        let points = contour
         return Path(
             points: points,
             handles: Array(repeating: CurveHandle(), count: points.count),
             isClosed: stroke.isClosed || stroke.shapeType == .rectangle
                 || stroke.shapeType == .circle || stroke.shapeType == .ellipse,
-            isCurve: false
+            isCurve: false,
+            contour: contour,
+            cutouts: cutouts
         )
     }
 
@@ -108,7 +155,7 @@ enum PathJoinEngine {
         result.shapeRotation = nil
         result.rotationBasePoints = nil
         result.rotationBaseCenter = nil
-        result.cutoutPoints = []
+        result.cutoutPoints = path.cutouts
         result.cornerRadius = 0
         result.cornerRadiiByIndex = nil
         result.smoothCornerIndices = nil
@@ -147,6 +194,12 @@ enum PathJoinEngine {
         for a in 0..<refs.count {
             let pa = paths[refs[a].path].points[refs[a].point]
             for b in (a + 1)..<refs.count {
+                // Only weld anchors from *different* shapes. Welding two points of
+                // the same shape is never intended, and dense contours (e.g. a
+                // circle's 64 samples) can sit closer than tolerance to their own
+                // neighbors, which would otherwise chain a whole shape into one
+                // point and collapse it.
+                guard refs[a].path != refs[b].path else { continue }
                 let pb = paths[refs[b].path].points[refs[b].point]
                 if distance(pa, pb) <= tolerance { union(a, b) }
             }
@@ -196,7 +249,8 @@ enum PathJoinEngine {
 
         for i in 0..<paths.count {
             for j in (i + 1)..<paths.count {
-                if sharesPoint(paths[i], paths[j], tolerance: tolerance) {
+                if sharesPoint(paths[i], paths[j], tolerance: tolerance)
+                    || pathsOverlap(paths[i], paths[j]) {
                     union(i, j)
                 }
             }
@@ -216,31 +270,71 @@ enum PathJoinEngine {
         return false
     }
 
+    /// True when two closed paths overlap (their rendered contours cross or one
+    /// contains the other), so they can be unioned without sharing an anchor.
+    private static func pathsOverlap(_ a: Path, _ b: Path) -> Bool {
+        guard a.isClosed, b.isClosed else { return false }
+        return closedContoursOverlap(a.contour, b.contour)
+    }
+
+    private static func closedContoursOverlap(_ a: [CGPoint], _ b: [CGPoint]) -> Bool {
+        guard a.count >= 3, b.count >= 3 else { return false }
+        for i in a.indices {
+            let a1 = a[i]
+            let a2 = a[(i + 1) % a.count]
+            for j in b.indices {
+                let b1 = b[j]
+                let b2 = b[(j + 1) % b.count]
+                if segmentIntersection(a1, a2, b1, b2) != nil { return true }
+            }
+        }
+        if let p = a.first, pointInsidePolygon(p, b) { return true }
+        if let p = b.first, pointInsidePolygon(p, a) { return true }
+        return false
+    }
+
     // MARK: - Fuse a connected component into one path
 
-    /// Merges every path in a touching group into a single stroke.
+    /// Merges every path in a touching group into a single stroke, carrying any
+    /// cutouts through so holes survive the weld.
     private static func fuseComponent(_ paths: [Path], tolerance: CGFloat) -> Path {
         guard let first = paths.first else {
-            return Path(points: [], handles: [], isClosed: false, isCurve: false)
+            return Path(points: [], handles: [], isClosed: false, isCurve: false, contour: [])
         }
-        guard paths.count >= 2 else { return first }
+
+        let cutouts = paths.flatMap(\.cutouts)
+
+        guard paths.count >= 2 else {
+            var only = first
+            only.cutouts = cutouts
+            return only
+        }
+
+        var result: Path
 
         // Closed-only: prefer a clean boolean-union outline when shapes share an
         // edge or overlap. Falls through to stitching when they only share a point.
         if paths.allSatisfy(\.isClosed) {
             let merged = mergeClosedContours(paths, tolerance: tolerance)
-            if merged.count == 1 { return merged[0] }
+            if merged.count == 1 {
+                result = merged[0]
+                result.cutouts = cutouts
+                return result
+            }
         }
 
         // Open-only: chain at shared endpoints first.
         if paths.allSatisfy({ !$0.isClosed }) {
             let chained = chainOpenPaths(paths, tolerance: tolerance)
-            if chained.count == 1 { return chained[0] }
-            return stitchPaths(chained, tolerance: tolerance)
+            result = chained.count == 1 ? chained[0] : stitchPaths(chained, tolerance: tolerance)
+            result.cutouts = cutouts
+            return result
         }
 
         // Mixed open/closed, or closed shapes that only touch at a point.
-        return stitchPaths(paths, tolerance: tolerance)
+        result = stitchPaths(paths, tolerance: tolerance)
+        result.cutouts = cutouts
+        return result
     }
 
     /// Stitches paths that share vertices into one polyline by splicing each
@@ -289,6 +383,7 @@ enum PathJoinEngine {
         if !host.isCurve {
             host.handles = Array(repeating: CurveHandle(), count: host.points.count)
         }
+        host.contour = host.points
         return host
     }
 
@@ -386,7 +481,8 @@ enum PathJoinEngine {
             points: points,
             handles: handles,
             isClosed: host.isClosed,
-            isCurve: host.isCurve || guest.isCurve
+            isCurve: host.isCurve || guest.isCurve,
+            contour: points
         )
     }
 
@@ -436,17 +532,21 @@ enum PathJoinEngine {
                 CurveHandle(inOffset: $0.outOffset, outOffset: $0.inOffset)
             },
             isClosed: path.isClosed,
-            isCurve: path.isCurve
+            isCurve: path.isCurve,
+            contour: path.contour.reversed(),
+            cutouts: path.cutouts
         )
     }
 
     private static func append(_ head: Path, _ tail: Path, tolerance: CGFloat) -> Path {
         guard let last = head.points.last, let first = tail.points.first else {
+            let points = head.points + tail.points
             return Path(
-                points: head.points + tail.points,
+                points: points,
                 handles: head.handles + tail.handles,
                 isClosed: false,
-                isCurve: head.isCurve || tail.isCurve
+                isCurve: head.isCurve || tail.isCurve,
+                contour: points
             )
         }
         var merged = head
@@ -469,6 +569,7 @@ enum PathJoinEngine {
             merged.handles = Array(repeating: CurveHandle(), count: merged.points.count)
             merged.isCurve = false
         }
+        merged.contour = merged.points
         return merged
     }
 
@@ -514,17 +615,21 @@ enum PathJoinEngine {
         var poly: Int
     }
 
-    /// Boolean-unions closed contours that share an edge or overlap. Contours
-    /// that only touch at a point are returned unchanged so the caller can
-    /// stitch them instead.
+    /// Boolean-unions closed contours that share an edge or overlap, operating on
+    /// each path's *dense rendered contour* so curved outlines fuse faithfully.
+    /// Contours that only touch at a point are returned unchanged so the caller
+    /// can stitch them instead.
     private static func mergeClosedContours(_ paths: [Path], tolerance: CGFloat) -> [Path] {
-        guard paths.count >= 2, paths.allSatisfy({ $0.points.count >= 3 }) else { return paths }
+        guard paths.count >= 2, paths.allSatisfy({ $0.contour.count >= 3 }) else { return paths }
 
         let polygons: [[CGPoint]] = paths.map { path in
-            signedArea(path.points) < 0 ? Array(path.points.reversed()) : path.points
+            signedArea(path.contour) < 0 ? Array(path.contour.reversed()) : path.contour
         }
         let snap = max(tolerance * 0.1, 1e-4)
 
+        // Split every edge at intersections *and* at collinear/touching vertices
+        // of other polygons, so partially shared (overlapping) edges subdivide at
+        // their shared endpoints.
         var directed: [DirectedEdge] = []
         for (i, polygon) in polygons.enumerated() {
             for k in polygon.indices {
@@ -536,6 +641,7 @@ enum PathJoinEngine {
                         let c = other[m]
                         let d = other[(m + 1) % other.count]
                         if let hit = segmentIntersection(a, b, c, d) { cuts.append(hit) }
+                        if pointOnSegment(c, a, b, snap: snap) { cuts.append(c) }
                     }
                 }
                 let ordered = orderedAlong(a, b, points: cuts, snap: snap)
@@ -551,6 +657,8 @@ enum PathJoinEngine {
         guard !directed.isEmpty else { return paths }
 
         var alive = [Bool](repeating: true, count: directed.count)
+        // Cancel opposing coincident edges (an internal shared boundary between
+        // two polygons that lie on opposite sides of it).
         for x in directed.indices where alive[x] {
             for y in (x + 1)..<directed.count where alive[y] {
                 if distance(directed[x].from, directed[y].to) <= snap
@@ -558,6 +666,16 @@ enum PathJoinEngine {
                     alive[x] = false
                     alive[y] = false
                     break
+                }
+            }
+        }
+        // Dedup same-direction coincident edges (an external boundary two polygons
+        // share while lying on the same side, e.g. grid-aligned shapes).
+        for x in directed.indices where alive[x] {
+            for y in (x + 1)..<directed.count where alive[y] {
+                if distance(directed[x].from, directed[y].from) <= snap
+                    && distance(directed[x].to, directed[y].to) <= snap {
+                    alive[y] = false
                 }
             }
         }
@@ -569,38 +687,53 @@ enum PathJoinEngine {
                 y: (edge.from.y + edge.to.y) / 2
             )
             let insideOther = polygons.indices.contains { j in
-                j != edge.poly && pointInsidePolygon(midpoint, polygons[j])
+                j != edge.poly && strictlyInsidePolygon(midpoint, polygons[j], snap: snap)
             }
             if !insideOther { boundary.append(edge) }
         }
 
-        // No edges cancelled and no interior dropped → only point-touch (or
+        // No edges cancelled/deduped and no interior dropped → only point-touch (or
         // disjoint). Leave unchanged so stitchPaths can fuse them.
         let changed = boundary.count < directed.count
         guard !boundary.isEmpty, changed else { return paths }
 
-        var adjacency: [String: [Int]] = [:]
+        // Trace boundary edges into loops. At branch vertices choose the outgoing
+        // edge that turns the most counterclockwise so the fill stays on the left.
+        var outgoing: [String: [Int]] = [:]
         for (index, edge) in boundary.enumerated() {
-            adjacency[snappedKey(edge.from, snap: snap), default: []].append(index)
+            outgoing[snappedKey(edge.from, snap: snap), default: []].append(index)
         }
         var used = [Bool](repeating: false, count: boundary.count)
         var loops: [Path] = []
         for startIndex in boundary.indices where !used[startIndex] {
             var points: [CGPoint] = []
-            var current: Int? = startIndex
-            while let index = current, !used[index] {
-                used[index] = true
-                let edge = boundary[index]
+            var current = startIndex
+            var guardCount = 0
+            while !used[current], guardCount <= boundary.count {
+                guardCount += 1
+                used[current] = true
+                let edge = boundary[current]
                 points.append(edge.from)
-                let candidates = adjacency[snappedKey(edge.to, snap: snap)] ?? []
-                current = candidates.first { !used[$0] }
+                let candidates = (outgoing[snappedKey(edge.to, snap: snap)] ?? []).filter { !used[$0] }
+                guard var next = candidates.first else { break }
+                if candidates.count > 1 {
+                    let incoming = unitDirection(edge)
+                    func turn(_ idx: Int) -> CGFloat {
+                        signedAngle(incoming, unitDirection(boundary[idx]))
+                    }
+                    next = candidates.reduce(candidates[0]) { best, cand in
+                        turn(cand) > turn(best) ? cand : best
+                    }
+                }
+                current = next
             }
             if points.count >= 3 {
                 loops.append(Path(
                     points: points,
                     handles: Array(repeating: CurveHandle(), count: points.count),
                     isClosed: true,
-                    isCurve: false
+                    isCurve: false,
+                    contour: points
                 ))
             }
         }
@@ -623,6 +756,19 @@ enum PathJoinEngine {
         guard t >= -eps, t <= 1 + eps, u >= -eps, u <= 1 + eps else { return nil }
         let clamped = Swift.max(0, Swift.min(1, t))
         return CGPoint(x: a.x + clamped * r.x, y: a.y + clamped * r.y)
+    }
+
+    /// True when `p` lies on the open segment `a`–`b` (collinear within `snap` and
+    /// strictly between the endpoints).
+    private static func pointOnSegment(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint, snap: CGFloat) -> Bool {
+        let ab = CGPoint(x: b.x - a.x, y: b.y - a.y)
+        let ap = CGPoint(x: p.x - a.x, y: p.y - a.y)
+        let len = hypot(ab.x, ab.y)
+        guard len > 1e-9 else { return false }
+        let cross = abs(ab.x * ap.y - ab.y * ap.x) / len
+        guard cross <= snap else { return false }
+        let t = (ap.x * ab.x + ap.y * ab.y) / (len * len)
+        return t > snap / len && t < 1 - snap / len
     }
 
     private static func orderedAlong(
@@ -655,6 +801,29 @@ enum PathJoinEngine {
             j = i
         }
         return inside
+    }
+
+    /// Strictly-inside test: a point sitting on the polygon boundary counts as NOT
+    /// inside, so shared collinear edges are preserved (they are deduped instead).
+    private static func strictlyInsidePolygon(_ point: CGPoint, _ polygon: [CGPoint], snap: CGFloat) -> Bool {
+        for i in polygon.indices {
+            let a = polygon[i]
+            let b = polygon[(i + 1) % polygon.count]
+            if distance(point, a) <= snap { return false }
+            if pointOnSegment(point, a, b, snap: snap) { return false }
+        }
+        return pointInsidePolygon(point, polygon)
+    }
+
+    private static func unitDirection(_ e: DirectedEdge) -> CGPoint {
+        let d = CGPoint(x: e.to.x - e.from.x, y: e.to.y - e.from.y)
+        let len = hypot(d.x, d.y)
+        return len > 0 ? CGPoint(x: d.x / len, y: d.y / len) : d
+    }
+
+    /// Signed angle (counterclockwise positive) turning from vector `a` to `b`.
+    private static func signedAngle(_ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        atan2(a.x * b.y - a.y * b.x, a.x * b.x + a.y * b.y)
     }
 
     private static func snappedKey(_ p: CGPoint, snap: CGFloat) -> String {

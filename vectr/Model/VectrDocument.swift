@@ -1295,13 +1295,13 @@ final class VectrDocument {
         strokes.filter { selectedStrokeIDs.contains($0.id) && isJoinable($0) }
     }
 
-    /// True when two selected shapes have anchors within snap tolerance of each
-    /// other. Open vs closed does not matter — Join appears exactly when a weld
-    /// is possible.
+    /// True when selected shapes can be fused: either two have anchors within
+    /// snap tolerance, or two closed shapes overlap. Open vs closed does not
+    /// matter for the anchor case — Join appears exactly when a fuse is possible.
     var canJoinSelection: Bool {
         let selected = joinableSelectedStrokes
         guard selected.count >= 2 else { return false }
-        return PathJoinEngine.hasTouchingAnchors(selected, tolerance: grid.spacing * 0.5)
+        return PathJoinEngine.canJoin(selected, tolerance: grid.spacing * 0.5)
     }
 
     /// Permanently welds selected shapes that share touching anchors into one
