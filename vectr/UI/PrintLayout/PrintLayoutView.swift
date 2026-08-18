@@ -16,8 +16,8 @@ struct PrintLayoutView: View {
     var onSwitchToDesign: () -> Void
     var onExport: () -> Void
     var onChanged: () -> Void
-    var onLayoutReady: (CGSize) -> Void
-    var onFitToGrid: (CGSize) -> Void
+    var onLayoutReady: (CGRect) -> Void
+    var onFitToGrid: (CGRect) -> Void
 
     @State private var statusMessage: String?
     @State private var showPaperPanel = false
@@ -87,7 +87,7 @@ struct PrintLayoutView: View {
             .onChange(of: document.printSelectedTextID) { _, _ in printRotateMode = false }
             .overlay(alignment: .bottomTrailing) {
                 RecenterCanvasButton {
-                    onFitToGrid(geometry.size)
+                    onFitToGrid(geometry.frame(in: .global))
                 }
                 .padding(.trailing, 16)
                 .padding(.bottom, 16)
@@ -108,10 +108,10 @@ struct PrintLayoutView: View {
                 }
             }
             .onAppear {
-                onLayoutReady(geometry.size)
+                onLayoutReady(geometry.frame(in: .global))
             }
-            .onChange(of: geometry.size) { _, size in
-                onLayoutReady(size)
+            .onChange(of: geometry.size) { _, _ in
+                onLayoutReady(geometry.frame(in: .global))
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {

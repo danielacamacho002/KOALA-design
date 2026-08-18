@@ -41,6 +41,8 @@ struct EditorView: View {
     @State private var editingTextID: UUID?
     @State private var editorMode: EditorMode = .design
     @State private var savedDesignViewport: ViewportTransform?
+    @State private var printLayoutNeedsInitialFit = false
+    @State private var printCanvasRect: CGRect = .zero
     @State private var lastSavedSnapshot: DocumentSnapshot?
     @State private var patternSettings = PatternSettings()
     @State private var patternPreviewStrokes: [VectorStroke] = []
@@ -77,8 +79,8 @@ struct EditorView: View {
                         store.markDirty()
                         refreshCanvas()
                     },
-                    onLayoutReady: { size in centerPrintLayoutWithoutRescaling(in: size) },
-                    onFitToGrid: { size in fitPrintLayoutToGrid(in: size) }
+                    onLayoutReady: { rect in handlePrintLayoutReady(in: rect) },
+                    onFitToGrid: { rect in fitPrintLayoutToGrid(in: rect) }
                 )
             } else {
                 designEditorBody
@@ -425,8 +427,20 @@ struct EditorView: View {
         store.document.printSelectedStrokeID = nil
         store.document.printSelectedTextID = nil
         store.document.autoPositionDesignOnPrintGrid()
-        centerPrintLayoutWithoutRescaling(in: canvasSize)
+        printLayoutNeedsInitialFit = true
+        fitPrintLayoutToGrid()
         refreshCanvas()
+    }
+
+    /// Fits all sheets into view the first time the layout appears, then only
+    /// re-centers (preserving the user's zoom) on later size changes / rotations.
+    private func handlePrintLayoutReady(in rect: CGRect) {
+        if printLayoutNeedsInitialFit {
+            printLayoutNeedsInitialFit = false
+            fitPrintLayoutToGrid(in: rect)
+        } else {
+            centerPrintLayoutWithoutRescaling(in: rect)
+        }
     }
 
     private func switchToDesignMode() {
@@ -437,29 +451,47 @@ struct EditorView: View {
         refreshCanvas()
     }
 
-    private func fitPrintLayoutToGrid(in size: CGSize? = nil) {
-        let layoutSize = size ?? canvasSize
+    private func fitPrintLayoutToGrid(in rect: CGRect? = nil) {
+        let layoutRect = rect ?? printCanvasRect
+        let layoutSize = layoutRect.size
         guard layoutSize.width > 0, layoutSize.height > 0 else { return }
         canvasSize = layoutSize
+        printCanvasRect = layoutRect
         let points = store.document.allPrintLayoutPoints()
         store.document.viewport.fitToPoints(
             points,
             in: layoutSize,
-            chrome: ViewportTransform.ChromeInsets(left: 40, right: 40, top: 60, bottom: 40)
+            margin: 16,
+            chrome: ViewportTransform.ChromeInsets(left: 16, right: 16, top: 40, bottom: 16),
+            minScale: ViewportTransform.minScale
         )
-        refreshCanvas()
+
+        // Zoom in a bit past a perfect fit so the sheets aren't so small, then
+        // re-center on the grid. The outermost sheets may extend slightly past
+        // the edges, which is fine.
+        let zoomInFactor: CGFloat = 1.8
+        store.document.viewport.scale = min(
+            store.document.viewport.scale * zoomInFactor,
+            ViewportTransform.maxScale
+        )
+        centerPrintLayoutWithoutRescaling(in: layoutRect)
     }
 
-    private func centerPrintLayoutWithoutRescaling(in size: CGSize? = nil) {
-        let layoutSize = size ?? canvasSize
+    private func centerPrintLayoutWithoutRescaling(in rect: CGRect? = nil) {
+        let layoutRect = rect ?? printCanvasRect
+        let layoutSize = layoutRect.size
         guard layoutSize.width > 0, layoutSize.height > 0 else { return }
         canvasSize = layoutSize
+        printCanvasRect = layoutRect
 
         let points = store.document.allPrintLayoutPoints()
         guard let bounds = boundingRect(for: points) else { return }
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
         let currentScale = store.document.viewport.scale
-        let viewCenter = CGPoint(x: layoutSize.width / 2, y: layoutSize.height / 2)
+        // The canvas is drawn full-screen (it ignores the safe area / toolbar),
+        // so center on the midpoint of the visible layout region in canvas
+        // coordinates rather than on size/2.
+        let viewCenter = CGPoint(x: layoutRect.midX, y: layoutRect.midY)
         store.document.viewport.translation = CGPoint(
             x: viewCenter.x - center.x * currentScale,
             y: viewCenter.y - center.y * currentScale

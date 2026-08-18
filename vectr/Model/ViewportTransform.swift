@@ -96,7 +96,8 @@ struct ViewportTransform: Codable, Equatable {
         _ points: [CGPoint],
         in viewSize: CGSize,
         margin: CGFloat = 48,
-        chrome: ChromeInsets = ChromeInsets()
+        chrome: ChromeInsets = ChromeInsets(),
+        minScale: CGFloat = 2
     ) {
         let leftInset = chrome.left
         let topInset = chrome.top
@@ -109,7 +110,7 @@ struct ViewportTransform: Codable, Equatable {
         let scaleX = drawableWidth / max(bounds.width, 1)
         let scaleY = drawableHeight / max(bounds.height, 1)
         scale = min(scaleX, scaleY, Self.maxScale)
-        scale = max(scale, 2)
+        scale = max(scale, max(minScale, Self.minScale))
 
         let documentCenter = CGPoint(x: bounds.midX, y: bounds.midY)
         let viewCenter = CGPoint(
