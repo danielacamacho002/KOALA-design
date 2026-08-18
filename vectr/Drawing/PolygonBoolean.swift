@@ -98,32 +98,49 @@ enum PolygonBoolean {
             }
         }
 
+        // Resolve the two boundary attach points that bound the cut curve. An endpoint
+        // that rests on/near an edge (within `maxEndpointAttach`) attaches there; an
+        // endpoint outside the shape attaches at the boundary crossing instead. This
+        // unifies three cases: both ends on the edge (scoop), both ends outside
+        // (poke-through), and the mixed case (one end on the edge, one poking outside).
+        crossings.sort { $0.tPath < $1.tPath }
+        let startNear = nearestBoundary(path.first!, poly)
+        let endNear = nearestBoundary(path.last!, poly)
+        let startAttachable = startNear.map {
+            hypot(path.first!.x - $0.point.x, path.first!.y - $0.point.y) <= maxEndpointAttach
+        } ?? false
+        let endAttachable = endNear.map {
+            hypot(path.last!.x - $0.point.x, path.last!.y - $0.point.y) <= maxEndpointAttach
+        } ?? false
+
         let entry: BoundaryAttach
         let exit: BoundaryAttach
-        var cutInterior: [CGPoint] = []
-
-        if crossings.count >= 2 {
-            // Poke-through: use the outermost crossings and the path between them.
-            crossings.sort { $0.tPath < $1.tPath }
+        let entryT: CGFloat
+        let exitT: CGFloat
+        if startAttachable, endAttachable, let a = startNear, let b = endNear {
+            entry = a; entryT = 0
+            exit = b; exitT = CGFloat(path.count - 1)
+        } else if startAttachable, let a = startNear, let last = crossings.last {
+            entry = a; entryT = 0
+            exit = BoundaryAttach(point: last.point, edge: last.edge, u: last.u); exitT = last.tPath
+        } else if endAttachable, let b = endNear, let first = crossings.first {
+            entry = BoundaryAttach(point: first.point, edge: first.edge, u: first.u); entryT = first.tPath
+            exit = b; exitT = CGFloat(path.count - 1)
+        } else if crossings.count >= 2 {
             let first = crossings.first!
             let last = crossings.last!
-            guard first.tPath + 1e-9 < last.tPath else { return nil }
-            entry = BoundaryAttach(point: first.point, edge: first.edge, u: first.u)
-            exit = BoundaryAttach(point: last.point, edge: last.edge, u: last.u)
-            for k in 0..<path.count {
-                let t = CGFloat(k)
-                if t > first.tPath + 1e-9, t < last.tPath - 1e-9 { cutInterior.append(path[k]) }
-            }
+            entry = BoundaryAttach(point: first.point, edge: first.edge, u: first.u); entryT = first.tPath
+            exit = BoundaryAttach(point: last.point, edge: last.edge, u: last.u); exitT = last.tPath
         } else {
-            // Endpoints-on-edge: snap the open path's ends to the nearest boundary edge.
-            guard let a = nearestBoundary(path.first!, poly),
-                  let b = nearestBoundary(path.last!, poly),
-                  hypot(path.first!.x - a.point.x, path.first!.y - a.point.y) <= maxEndpointAttach,
-                  hypot(path.last!.x - b.point.x, path.last!.y - b.point.y) <= maxEndpointAttach,
-                  hypot(a.point.x - b.point.x, a.point.y - b.point.y) > 1e-6 else { return nil }
-            entry = a
-            exit = b
-            if path.count > 2 { cutInterior = Array(path[1..<(path.count - 1)]) }
+            return nil
+        }
+        guard entryT + 1e-9 < exitT,
+              hypot(entry.point.x - exit.point.x, entry.point.y - exit.point.y) > 1e-6 else { return nil }
+
+        var cutInterior: [CGPoint] = []
+        for k in 0..<path.count {
+            let t = CGFloat(k)
+            if t > entryT + 1e-9, t < exitT - 1e-9 { cutInterior.append(path[k]) }
         }
 
         // Cut curve A → interior → B.
