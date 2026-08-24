@@ -885,9 +885,9 @@ struct EditorView: View {
             commandSession.cancel()
             store.document.clearToolSelections()
             if store.document.selectedStrokeID == nil {
-                statusMessage = "Tap a shape to select it, then tap the portion to trim away"
+                statusMessage = "Tap a shape to select it, then tap the line to trim away"
             } else {
-                statusMessage = "Tap the portion to trim away (circle quadrants, or spans between intersections)"
+                statusMessage = "Tap the line segment to trim away"
             }
         case .fillet:
             commandSession.cancel()
@@ -1072,7 +1072,7 @@ struct EditorView: View {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
                 refreshCanvas()
             } else {
-                statusMessage = "Tap a span between cut points (quadrants or intersections) to trim it"
+                statusMessage = "Tap the line segment to trim away"
             }
         case .addAnchor:
             let threshold = store.document.viewport.viewToDocument(distance: 28)
