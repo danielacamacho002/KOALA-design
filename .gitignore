@@ -13,3 +13,4 @@ xcuserdata/
 build/
 DerivedData/
 .build_check/
+.build_dd/
