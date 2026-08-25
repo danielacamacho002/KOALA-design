@@ -1069,11 +1069,36 @@ struct EditorView: View {
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             if store.document.trimAt(documentPoint, threshold: threshold) {
                 refreshCanvas()
-            } else if store.document.selectedStrokeID == nil {
+            } else if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
+                // Non-CAD shapes previously trimmed via edge/vertex handles. Keep that
+                // behavior by tapping the geometry itself (no overlay handles).
+                let usesCADTrim = stroke.shapeType == .circle
+                    || stroke.shapeType == .ellipse
+                    || stroke.shapeType == .arc
+                if !usesCADTrim {
+                    if let edgeIndex = StrokeEditor.nearestEdgeIndex(
+                        in: stroke,
+                        point: documentPoint,
+                        threshold: threshold
+                    ) {
+                        store.document.deleteStrokeEdge(at: edgeIndex)
+                        refreshCanvas()
+                    } else if let pointIndex = StrokeEditor.nearestHandleIndex(
+                        in: stroke,
+                        point: documentPoint,
+                        threshold: threshold
+                    ) {
+                        store.document.deleteStrokePoint(at: pointIndex)
+                        refreshCanvas()
+                    } else {
+                        statusMessage = "Tap the line segment to trim away"
+                    }
+                } else {
+                    statusMessage = "Tap the line segment to trim away"
+                }
+            } else {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
                 refreshCanvas()
-            } else {
-                statusMessage = "Tap the line segment to trim away"
             }
         case .addAnchor:
             let threshold = store.document.viewport.viewToDocument(distance: 28)
