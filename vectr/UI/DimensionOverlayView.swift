@@ -26,13 +26,13 @@ struct DimensionOverlayView: View {
                let strokeID = document.selectedStrokeID,
                let stroke = document.stroke(with: strokeID) {
                 ForEach(ShapeGeometry.semanticDimensions(for: stroke)) { dimension in
-                    dimensionPill(dimension, strokeID: strokeID)
+                    dimensionLabel(dimension, strokeID: strokeID)
                 }
             } else if document.dimensionsVisible,
                       let textID = document.selectedTextID,
                       let element = document.textElement(with: textID) {
                 ForEach(textDimensions(for: element)) { dimension in
-                    textDimensionPill(dimension)
+                    textDimensionLabel(dimension)
                 }
             }
         }
@@ -64,13 +64,9 @@ struct DimensionOverlayView: View {
         ]
     }
 
-    private func textDimensionPill(_ dimension: TextDimension) -> some View {
+    private func textDimensionLabel(_ dimension: TextDimension) -> some View {
         Text(dimension.text)
-            .font(.caption.weight(.semibold).monospacedDigit())
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color(.systemBackground), in: Capsule())
-            .overlay(Capsule().stroke(Color.accentColor.opacity(0.35), lineWidth: 1))
+            .dimensionLabelAppearance()
             .position(document.viewport.documentToView(dimension.midPoint))
     }
 
@@ -103,7 +99,7 @@ struct DimensionOverlayView: View {
     }
 
     @ViewBuilder
-    private func dimensionPill(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
+    private func dimensionLabel(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
         let anchorPoint = document.viewport.documentToView(dimension.anchor)
         let labelPoint = livePosition(for: dimension, strokeID: strokeID)
         let leaderLength = hypot(labelPoint.x - anchorPoint.x, labelPoint.y - anchorPoint.y)
@@ -116,7 +112,7 @@ struct DimensionOverlayView: View {
             if editingID == dimension.id {
                 editorField(dimension: dimension, strokeID: strokeID)
             } else {
-                valueCapsule(dimension: dimension, strokeID: strokeID)
+                valueLabel(dimension: dimension, strokeID: strokeID)
             }
 
             lockButton(dimension: dimension, strokeID: strokeID)
@@ -126,13 +122,17 @@ struct DimensionOverlayView: View {
 
     private func editorField(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
         TextField("", text: $editText)
-            .font(.caption.weight(.semibold).monospacedDigit())
+            .font(DimensionLabelStyle.font)
+            .foregroundStyle(Color.accentColor)
             .multilineTextAlignment(.center)
             .frame(width: 88)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(Color(.systemBackground), in: Capsule())
-            .overlay(Capsule().stroke(Color.accentColor, lineWidth: 1.5))
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(height: 1.5)
+            }
             .focused($editorFocused)
             .submitLabel(.done)
             .onSubmit { commitEdit(dimension: dimension, strokeID: strokeID) }
@@ -149,21 +149,11 @@ struct DimensionOverlayView: View {
             }
     }
 
-    private func valueCapsule(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
+    private func valueLabel(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
         let locked = isEdgePinned(dimension, strokeID: strokeID)
         return Text(labelText(for: dimension))
-            .font(.caption.weight(.semibold).monospacedDigit())
-            .foregroundStyle(locked ? Color.secondary : Color.primary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(.systemBackground), in: Capsule())
-            .overlay(
-                Capsule().stroke(
-                    locked ? Color.secondary.opacity(0.35) : Color.accentColor.opacity(0.35),
-                    lineWidth: 1
-                )
-            )
-            .contentShape(Capsule())
+            .dimensionLabelAppearance(locked: locked)
+            .contentShape(Rectangle())
             .onTapGesture {
                 guard !locked else { return }
                 editingID = dimension.id
@@ -207,7 +197,7 @@ struct DimensionOverlayView: View {
         return "dimension"
     }
 
-    /// The pill on the parallel edge showing the same value. Pinning one edge releases
+    /// The label on the parallel edge showing the same value. Pinning one edge releases
     /// the other so an axis can never be pinned on both sides.
     private func oppositeEdgeID(for dimensionID: String) -> String? {
         switch dimensionID {
@@ -224,7 +214,7 @@ struct DimensionOverlayView: View {
     }
 
     /// Whether this specific edge is pinned. A pinned edge is frozen in place and its
-    /// pill refuses edits; the opposite pill stays editable so the two edges can hold
+    /// label refuses edits; the opposite label stays editable so the two edges can hold
     /// different values.
     private func isEdgePinned(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
         document.isDimensionLocked(
@@ -233,7 +223,7 @@ struct DimensionOverlayView: View {
     }
 
     /// Whether the parallel edge across the shape is pinned, which switches edits of
-    /// this pill from whole-axis resizing to reshaping just this edge.
+    /// this label from whole-axis resizing to reshaping just this edge.
     private func isOppositeEdgePinned(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
         guard let opposite = oppositeEdgeID(for: dimension.id) else { return false }
         return document.isDimensionLocked(
@@ -252,11 +242,11 @@ struct DimensionOverlayView: View {
                 path.move(to: start)
                 path.addLine(to: end)
             }
-            .stroke(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
 
             Circle()
-                .fill(Color.accentColor)
-                .frame(width: 5, height: 5)
+                .fill(Color.accentColor.opacity(0.7))
+                .frame(width: 4, height: 4)
                 .position(start)
         }
         .allowsHitTesting(false)

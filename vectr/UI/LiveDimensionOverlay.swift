@@ -17,11 +17,7 @@ struct LiveDimensionOverlay: View {
         let labels = liveLabels
         ForEach(labels, id: \.id) { label in
             Text(label.text)
-                .font(.caption.weight(.semibold).monospacedDigit())
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().stroke(Color.accentColor.opacity(0.4), lineWidth: 1))
+                .dimensionLabelAppearance()
                 .position(document.viewport.documentToView(label.point))
         }
     }
