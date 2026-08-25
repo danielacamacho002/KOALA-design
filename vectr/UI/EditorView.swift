@@ -757,23 +757,39 @@ struct EditorView: View {
 
     private func recenterAnimated() {
         guard canvasSize.width > 0, canvasSize.height > 0 else { return }
-        let start = store.document.viewport.translation
-        let end = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
-        guard hypot(end.x - start.x, end.y - start.y) > 0.5 else { return }
+
+        // Target the framed, centered default view (same framing as the initial layout) so the
+        // canvas always comes fully back into view no matter how far it was panned or zoomed.
+        var target = store.document.viewport
+        target.frameCanvasInDrawableArea(
+            canvasSize: store.document.settings.canvasSize,
+            in: canvasSize,
+            leadingPanel: 150,
+            topToolbar: EditorToolbarView.height
+        )
+
+        let startScale = store.document.viewport.scale
+        let startTranslation = store.document.viewport.translation
+        let endScale = target.scale
+        let endTranslation = target.translation
+
+        let translationDelta = hypot(endTranslation.x - startTranslation.x, endTranslation.y - startTranslation.y)
+        guard translationDelta > 0.5 || abs(endScale - startScale) > 0.0001 else { return }
 
         Task { @MainActor in
             let steps = 24
             for step in 1...steps {
                 let t = CGFloat(step) / CGFloat(steps)
                 let eased = easeInOut(t)
+                store.document.viewport.scale = startScale + (endScale - startScale) * eased
                 store.document.viewport.translation = CGPoint(
-                    x: start.x + (end.x - start.x) * eased,
-                    y: start.y + (end.y - start.y) * eased
+                    x: startTranslation.x + (endTranslation.x - startTranslation.x) * eased,
+                    y: startTranslation.y + (endTranslation.y - startTranslation.y) * eased
                 )
                 refreshCanvas()
                 try? await Task.sleep(nanoseconds: 12_000_000)
             }
-            store.document.viewport.centerOnAxisOrigin(in: canvasSize)
+            store.document.viewport = target
             refreshCanvas()
         }
     }
