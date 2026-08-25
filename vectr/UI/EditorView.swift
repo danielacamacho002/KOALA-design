@@ -542,11 +542,11 @@ struct EditorView: View {
             // With a text selected, the overlay handles move/scale/tap-to-edit;
             // with nothing selected, taps pass through so a new text can be placed.
             return store.document.selectedTextID != nil
-        case .delete, .addAnchor, .pattern:
-            // Let canvas taps pass through so delete/add-anchor/pattern can target the shape directly.
+        case .delete, .addAnchor, .pattern, .dimensions:
+            // Let canvas taps pass through so delete/add-anchor/pattern can target the shape
+            // directly, and so dimensions mode only shows labels (selection via canvas tap).
             return false
         default:
-            if store.document.dimensionsVisible { return false }
             return store.document.selectedStrokeID != nil
         }
     }

@@ -104,8 +104,10 @@ struct CanvasOverlayView: View {
                     addAnchorOverlay
                 } else if document.activeCategory == .pattern {
                     patternPreviewOverlay
+                } else if document.activeCategory == .dimensions {
+                    // Measurement labels only — never show edit anchors in this mode.
+                    EmptyView()
                 } else if document.selectedStrokeID != nil,
-                          !document.dimensionsVisible,
                           document.activeCategory != .delete {
                     strokeNodeHandles
                 }

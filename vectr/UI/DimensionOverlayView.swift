@@ -20,6 +20,11 @@ struct DimensionOverlayView: View {
     @State private var dragTranslation: CGSize = .zero
     @FocusState private var editorFocused: Bool
 
+    /// Minimum view-space distance from the shape edge to the label center so caption
+    /// text (and lock control) stay clear of the stroke at any zoom.
+    private static let minViewStandoff: CGFloat = 36
+    private static let textLabelStandoff: CGFloat = 28
+
     var body: some View {
         ZStack {
             if document.dimensionsVisible,
@@ -44,30 +49,76 @@ struct DimensionOverlayView: View {
         let id: String
         let text: String
         let midPoint: CGPoint
+        let anchor: CGPoint
     }
 
     private func textDimensions(for element: TextElement) -> [TextDimension] {
         let size = element.textSize()
         let corners = element.corners()
         guard corners.count == 4 else { return [] }
+        let centroid = CGPoint(
+            x: (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4,
+            y: (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4
+        )
         return [
-            TextDimension(
+            textDimension(
                 id: "text-width",
                 text: measurementLabel(size.width),
-                midPoint: midpoint(corners[3], corners[2])
+                start: corners[3],
+                end: corners[2],
+                awayFrom: centroid
             ),
-            TextDimension(
+            textDimension(
                 id: "text-height",
                 text: measurementLabel(size.height),
-                midPoint: midpoint(corners[0], corners[3])
+                start: corners[0],
+                end: corners[3],
+                awayFrom: centroid
             )
         ]
+    }
+
+    private func textDimension(
+        id: String,
+        text: String,
+        start: CGPoint,
+        end: CGPoint,
+        awayFrom reference: CGPoint
+    ) -> TextDimension {
+        let mid = midpoint(start, end)
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let length = hypot(dx, dy)
+        let normal: CGPoint
+        if length > 0.001 {
+            let ccw = CGPoint(x: -dy / length, y: dx / length)
+            let away = CGPoint(x: mid.x - reference.x, y: mid.y - reference.y)
+            normal = ccw.x * away.x + ccw.y * away.y >= 0
+                ? ccw
+                : CGPoint(x: -ccw.x, y: -ccw.y)
+        } else {
+            normal = CGPoint(x: 0, y: -1)
+        }
+        return TextDimension(
+            id: id,
+            text: text,
+            midPoint: CGPoint(
+                x: mid.x + normal.x * Self.textLabelStandoff,
+                y: mid.y + normal.y * Self.textLabelStandoff
+            ),
+            anchor: mid
+        )
     }
 
     private func textDimensionLabel(_ dimension: TextDimension) -> some View {
         Text(dimension.text)
             .dimensionLabelAppearance()
-            .position(document.viewport.documentToView(dimension.midPoint))
+            .position(
+                outsidePosition(
+                    preferred: document.viewport.documentToView(dimension.midPoint),
+                    from: document.viewport.documentToView(dimension.anchor)
+                )
+            )
     }
 
     private func measurementLabel(_ documentValue: CGFloat) -> String {
@@ -83,13 +134,36 @@ struct DimensionOverlayView: View {
     // MARK: - Shape dimensions (draggable, with leader lines)
 
     /// View-space position where the label should sit, honoring any stored drag offset.
+    /// Default placement is pushed at least `minViewStandoff` outside the shape edge.
     private func basePosition(for dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> CGPoint {
         let key = VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
+        let anchorView = document.viewport.documentToView(dimension.anchor)
         if let offset = document.dimensionOffsets[key] {
             let docPoint = CGPoint(x: dimension.anchor.x + offset.x, y: dimension.anchor.y + offset.y)
             return document.viewport.documentToView(docPoint)
         }
-        return document.viewport.documentToView(dimension.midPoint)
+        return outsidePosition(
+            preferred: document.viewport.documentToView(dimension.midPoint),
+            from: anchorView
+        )
+    }
+
+    /// Ensures the label center sits at least `minViewStandoff` from the edge along the
+    /// outward direction implied by `preferred`.
+    private func outsidePosition(preferred: CGPoint, from anchor: CGPoint) -> CGPoint {
+        var dx = preferred.x - anchor.x
+        var dy = preferred.y - anchor.y
+        var length = hypot(dx, dy)
+        if length < 0.001 {
+            dx = 0
+            dy = -1
+            length = 1
+        }
+        let distance = max(length, Self.minViewStandoff)
+        return CGPoint(
+            x: anchor.x + dx / length * distance,
+            y: anchor.y + dy / length * distance
+        )
     }
 
     private func livePosition(for dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> CGPoint {
