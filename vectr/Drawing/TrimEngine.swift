@@ -391,6 +391,9 @@ enum TrimEngine {
         let prev = points[prevIndex]
         let point = points[index]
         let next = points[nextIndex]
+        if PolygonBoolean.isCollinearVertex(prev: prev, point: point, next: next) {
+            return false
+        }
         let v1x = point.x - prev.x
         let v1y = point.y - prev.y
         let v2x = next.x - point.x

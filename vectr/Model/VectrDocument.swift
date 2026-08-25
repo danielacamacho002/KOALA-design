@@ -978,17 +978,26 @@ final class VectrDocument {
               stroke.shapeType != .ellipse,
               stroke.shapeType != .arc else { return false }
 
-        guard let index = StrokeEditor.nearestHandleIndex(
+        guard let index = StrokeEditor.nearestTrimAnchorIndex(
             in: stroke,
             point: documentPoint,
             threshold: threshold
         ) else { return false }
 
-        // Reject taps that are clearly on the interior of an edge (those should trim the edge,
-        // not delete a vertex). A tap near a corner projects onto an edge at its endpoint.
-        let handle = ShapeGeometry.handlePoints(for: stroke)[index]
+        let handles = StrokeEditor.handlePointsForEditing(stroke)
+        guard handles.indices.contains(index) else { return false }
+        let handle = handles[index]
         let handleDistance = hypot(handle.x - documentPoint.x, handle.y - documentPoint.y)
-        if let edge = StrokeEditor.projectPointOnNearestEdge(
+        let droppingRedundant = PolygonBoolean.isRedundantContourVertex(
+            handles,
+            index: index,
+            closed: stroke.isClosed
+        )
+        // Redundant leftovers on short tooth edges should still drop even if the tap
+        // also projects onto the edge interior. Structural-corner taps keep the
+        // mid-edge reject so an edge trim is not stolen by a nearby vertex.
+        if !droppingRedundant,
+           let edge = StrokeEditor.projectPointOnNearestEdge(
             in: stroke,
             point: documentPoint,
             threshold: threshold
