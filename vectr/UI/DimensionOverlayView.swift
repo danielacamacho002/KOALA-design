@@ -18,7 +18,13 @@ struct DimensionOverlayView: View {
     @State private var editText = ""
     @State private var draggingID: String?
     @State private var dragTranslation: CGSize = .zero
+    /// Measured sizes of each dimension label cluster (value + lock), used so wide
+    /// side labels clear the stroke instead of sitting on the border.
+    @State private var labelClusterSizes: [String: CGSize] = [:]
     @FocusState private var editorFocused: Bool
+
+    /// Document-space nudge used only to establish outward direction.
+    private static let textLabelStandoff: CGFloat = 28
 
     var body: some View {
         ZStack {
@@ -26,13 +32,13 @@ struct DimensionOverlayView: View {
                let strokeID = document.selectedStrokeID,
                let stroke = document.stroke(with: strokeID) {
                 ForEach(ShapeGeometry.semanticDimensions(for: stroke)) { dimension in
-                    dimensionPill(dimension, strokeID: strokeID)
+                    dimensionLabel(dimension, strokeID: strokeID)
                 }
             } else if document.dimensionsVisible,
                       let textID = document.selectedTextID,
                       let element = document.textElement(with: textID) {
                 ForEach(textDimensions(for: element)) { dimension in
-                    textDimensionPill(dimension)
+                    textDimensionLabel(dimension)
                 }
             }
         }
@@ -44,34 +50,77 @@ struct DimensionOverlayView: View {
         let id: String
         let text: String
         let midPoint: CGPoint
+        let anchor: CGPoint
     }
 
     private func textDimensions(for element: TextElement) -> [TextDimension] {
         let size = element.textSize()
         let corners = element.corners()
         guard corners.count == 4 else { return [] }
+        let centroid = CGPoint(
+            x: (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4,
+            y: (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4
+        )
         return [
-            TextDimension(
+            textDimension(
                 id: "text-width",
                 text: measurementLabel(size.width),
-                midPoint: midpoint(corners[3], corners[2])
+                start: corners[3],
+                end: corners[2],
+                awayFrom: centroid
             ),
-            TextDimension(
+            textDimension(
                 id: "text-height",
                 text: measurementLabel(size.height),
-                midPoint: midpoint(corners[0], corners[3])
+                start: corners[0],
+                end: corners[3],
+                awayFrom: centroid
             )
         ]
     }
 
-    private func textDimensionPill(_ dimension: TextDimension) -> some View {
+    private func textDimension(
+        id: String,
+        text: String,
+        start: CGPoint,
+        end: CGPoint,
+        awayFrom reference: CGPoint
+    ) -> TextDimension {
+        let mid = midpoint(start, end)
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let length = hypot(dx, dy)
+        let normal: CGPoint
+        if length > 0.001 {
+            let ccw = CGPoint(x: -dy / length, y: dx / length)
+            let away = CGPoint(x: mid.x - reference.x, y: mid.y - reference.y)
+            normal = ccw.x * away.x + ccw.y * away.y >= 0
+                ? ccw
+                : CGPoint(x: -ccw.x, y: -ccw.y)
+        } else {
+            normal = CGPoint(x: 0, y: -1)
+        }
+        return TextDimension(
+            id: id,
+            text: text,
+            midPoint: CGPoint(
+                x: mid.x + normal.x * Self.textLabelStandoff,
+                y: mid.y + normal.y * Self.textLabelStandoff
+            ),
+            anchor: mid
+        )
+    }
+
+    private func textDimensionLabel(_ dimension: TextDimension) -> some View {
         Text(dimension.text)
-            .font(.caption.weight(.semibold).monospacedDigit())
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color(.systemBackground), in: Capsule())
-            .overlay(Capsule().stroke(Color.accentColor.opacity(0.35), lineWidth: 1))
-            .position(document.viewport.documentToView(dimension.midPoint))
+            .dimensionLabelAppearance()
+            .position(
+                DimensionLabelStyle.outsideLabelCenter(
+                    preferred: document.viewport.documentToView(dimension.midPoint),
+                    from: document.viewport.documentToView(dimension.anchor),
+                    halfSize: DimensionLabelStyle.textOnlyHalfSize
+                )
+            )
     }
 
     private func measurementLabel(_ documentValue: CGFloat) -> String {
@@ -89,11 +138,21 @@ struct DimensionOverlayView: View {
     /// View-space position where the label should sit, honoring any stored drag offset.
     private func basePosition(for dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> CGPoint {
         let key = VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
+        let anchorView = document.viewport.documentToView(dimension.anchor)
         if let offset = document.dimensionOffsets[key] {
             let docPoint = CGPoint(x: dimension.anchor.x + offset.x, y: dimension.anchor.y + offset.y)
             return document.viewport.documentToView(docPoint)
         }
-        return document.viewport.documentToView(dimension.midPoint)
+        let preferred = document.viewport.documentToView(dimension.midPoint)
+        let measured = labelClusterSizes[dimension.id]
+        let halfSize = measured.map {
+            CGSize(width: max($0.width / 2, 1), height: max($0.height / 2, 1))
+        } ?? DimensionLabelStyle.labeledHalfSize
+        return DimensionLabelStyle.outsideLabelCenter(
+            preferred: preferred,
+            from: anchorView,
+            halfSize: halfSize
+        )
     }
 
     private func livePosition(for dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> CGPoint {
@@ -102,37 +161,85 @@ struct DimensionOverlayView: View {
         return CGPoint(x: base.x + dragTranslation.width, y: base.y + dragTranslation.height)
     }
 
+    private func viewOutward(for dimension: ShapeGeometry.SemanticDimension) -> CGPoint {
+        DimensionLabelStyle.outwardUnit(
+            preferred: document.viewport.documentToView(dimension.midPoint),
+            from: document.viewport.documentToView(dimension.anchor)
+        )
+    }
+
     @ViewBuilder
-    private func dimensionPill(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
+    private func dimensionLabel(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
         let anchorPoint = document.viewport.documentToView(dimension.anchor)
         let labelPoint = livePosition(for: dimension, strokeID: strokeID)
+        let outward = viewOutward(for: dimension)
         let leaderLength = hypot(labelPoint.x - anchorPoint.x, labelPoint.y - anchorPoint.y)
 
         if leaderLength > 12 {
             leader(from: anchorPoint, to: labelPoint)
         }
 
-        HStack(spacing: 4) {
+        labelCluster(dimension: dimension, strokeID: strokeID, outward: outward)
+            .fixedSize()
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: DimensionLabelSizeKey.self,
+                        value: [dimension.id: geo.size]
+                    )
+                }
+            )
+            .onPreferenceChange(DimensionLabelSizeKey.self) { sizes in
+                for (id, size) in sizes where labelClusterSizes[id] != size {
+                    labelClusterSizes[id] = size
+                }
+            }
+            .position(labelPoint)
+    }
+
+    /// Keep the lock on the outside of the shape so the value sits closer to the edge
+    /// and the cluster's outward half isn't wasted on empty space.
+    @ViewBuilder
+    private func labelCluster(
+        dimension: ShapeGeometry.SemanticDimension,
+        strokeID: UUID,
+        outward: CGPoint
+    ) -> some View {
+        let value = Group {
             if editingID == dimension.id {
                 editorField(dimension: dimension, strokeID: strokeID)
             } else {
-                valueCapsule(dimension: dimension, strokeID: strokeID)
+                valueLabel(dimension: dimension, strokeID: strokeID)
             }
-
-            lockButton(dimension: dimension, strokeID: strokeID)
         }
-        .position(labelPoint)
+        let lock = lockButton(dimension: dimension, strokeID: strokeID)
+        // Left-side labels: lock then value. Everywhere else: value then lock.
+        if outward.x < -0.3 {
+            HStack(spacing: 4) {
+                lock
+                value
+            }
+        } else {
+            HStack(spacing: 4) {
+                value
+                lock
+            }
+        }
     }
 
     private func editorField(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
         TextField("", text: $editText)
-            .font(.caption.weight(.semibold).monospacedDigit())
+            .font(DimensionLabelStyle.font)
+            .foregroundStyle(Color.accentColor)
             .multilineTextAlignment(.center)
             .frame(width: 88)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(Color(.systemBackground), in: Capsule())
-            .overlay(Capsule().stroke(Color.accentColor, lineWidth: 1.5))
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(height: 1.5)
+            }
             .focused($editorFocused)
             .submitLabel(.done)
             .onSubmit { commitEdit(dimension: dimension, strokeID: strokeID) }
@@ -149,21 +256,11 @@ struct DimensionOverlayView: View {
             }
     }
 
-    private func valueCapsule(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
+    private func valueLabel(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
         let locked = isEdgePinned(dimension, strokeID: strokeID)
         return Text(labelText(for: dimension))
-            .font(.caption.weight(.semibold).monospacedDigit())
-            .foregroundStyle(locked ? Color.secondary : Color.primary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(.systemBackground), in: Capsule())
-            .overlay(
-                Capsule().stroke(
-                    locked ? Color.secondary.opacity(0.35) : Color.accentColor.opacity(0.35),
-                    lineWidth: 1
-                )
-            )
-            .contentShape(Capsule())
+            .dimensionLabelAppearance(locked: locked)
+            .contentShape(Rectangle())
             .onTapGesture {
                 guard !locked else { return }
                 editingID = dimension.id
@@ -207,7 +304,7 @@ struct DimensionOverlayView: View {
         return "dimension"
     }
 
-    /// The pill on the parallel edge showing the same value. Pinning one edge releases
+    /// The label on the parallel edge showing the same value. Pinning one edge releases
     /// the other so an axis can never be pinned on both sides.
     private func oppositeEdgeID(for dimensionID: String) -> String? {
         switch dimensionID {
@@ -224,7 +321,7 @@ struct DimensionOverlayView: View {
     }
 
     /// Whether this specific edge is pinned. A pinned edge is frozen in place and its
-    /// pill refuses edits; the opposite pill stays editable so the two edges can hold
+    /// label refuses edits; the opposite label stays editable so the two edges can hold
     /// different values.
     private func isEdgePinned(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
         document.isDimensionLocked(
@@ -233,7 +330,7 @@ struct DimensionOverlayView: View {
     }
 
     /// Whether the parallel edge across the shape is pinned, which switches edits of
-    /// this pill from whole-axis resizing to reshaping just this edge.
+    /// this label from whole-axis resizing to reshaping just this edge.
     private func isOppositeEdgePinned(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
         guard let opposite = oppositeEdgeID(for: dimension.id) else { return false }
         return document.isDimensionLocked(
@@ -252,11 +349,11 @@ struct DimensionOverlayView: View {
                 path.move(to: start)
                 path.addLine(to: end)
             }
-            .stroke(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
 
             Circle()
-                .fill(Color.accentColor)
-                .frame(width: 5, height: 5)
+                .fill(Color.accentColor.opacity(0.7))
+                .frame(width: 4, height: 4)
                 .position(start)
         }
         .allowsHitTesting(false)
@@ -358,5 +455,13 @@ struct DimensionOverlayView: View {
             prefix = ""
         }
         return "\(prefix)\(formattedValue) \(document.settings.units.shortLabel)"
+    }
+}
+
+private struct DimensionLabelSizeKey: PreferenceKey {
+    static var defaultValue: [String: CGSize] = [:]
+
+    static func reduce(value: inout [String: CGSize], nextValue: () -> [String: CGSize]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
