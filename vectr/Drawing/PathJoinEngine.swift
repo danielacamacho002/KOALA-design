@@ -318,7 +318,9 @@ enum PathJoinEngine {
             let merged = mergeClosedContours(paths, tolerance: tolerance)
             if merged.count == 1 {
                 result = merged[0]
-                result.cutouts = cutouts
+                // Preserve pre-existing holes from the inputs *and* any hole the
+                // union itself carved out.
+                result.cutouts = cutouts + result.cutouts
                 return result
             }
         }
@@ -622,123 +624,265 @@ enum PathJoinEngine {
     private static func mergeClosedContours(_ paths: [Path], tolerance: CGFloat) -> [Path] {
         guard paths.count >= 2, paths.allSatisfy({ $0.contour.count >= 3 }) else { return paths }
 
-        let polygons: [[CGPoint]] = paths.map { path in
-            signedArea(path.contour) < 0 ? Array(path.contour.reversed()) : path.contour
-        }
+        let polygons: [[CGPoint]] = paths.map(\.contour)
         let snap = max(tolerance * 0.1, 1e-4)
 
-        // Split every edge at intersections *and* at collinear/touching vertices
-        // of other polygons, so partially shared (overlapping) edges subdivide at
-        // their shared endpoints.
-        var directed: [DirectedEdge] = []
+        // Only union contours that genuinely overlap (share 2D area or a collinear
+        // boundary run). Contours that merely touch at a point are returned
+        // unchanged so the caller can stitch them instead.
+        guard contoursOverlap(polygons, snap: snap) else { return paths }
+
+        // 1. Split every edge at intersections and at on-edge vertices of the
+        //    other contours, projecting each cut *exactly* onto the edge so a
+        //    subsegment endpoint never drifts off the true boundary (a nearby
+        //    vertex within `snap` would otherwise bend the outline sideways).
+        var subsegments: [DirectedEdge] = []
         for (i, polygon) in polygons.enumerated() {
             for k in polygon.indices {
                 let a = polygon[k]
                 let b = polygon[(k + 1) % polygon.count]
+                let axis = CGPoint(x: b.x - a.x, y: b.y - a.y)
+                let lengthSquared = axis.x * axis.x + axis.y * axis.y
+                func parameter(_ p: CGPoint) -> CGFloat {
+                    lengthSquared > 0 ? ((p.x - a.x) * axis.x + (p.y - a.y) * axis.y) / lengthSquared : 0
+                }
+                func projectOntoEdge(_ p: CGPoint) -> CGPoint {
+                    let t = Swift.max(0, Swift.min(1, parameter(p)))
+                    return CGPoint(x: a.x + t * axis.x, y: a.y + t * axis.y)
+                }
                 var cuts: [CGPoint] = [a, b]
                 for (j, other) in polygons.enumerated() where j != i {
                     for m in other.indices {
                         let c = other[m]
                         let d = other[(m + 1) % other.count]
-                        if let hit = segmentIntersection(a, b, c, d) { cuts.append(hit) }
-                        if pointOnSegment(c, a, b, snap: snap) { cuts.append(c) }
+                        if let hit = segmentIntersection(a, b, c, d) { cuts.append(projectOntoEdge(hit)) }
+                        if pointExactlyOnSegment(c, a, b) { cuts.append(projectOntoEdge(c)) }
                     }
                 }
-                let ordered = orderedAlong(a, b, points: cuts, snap: snap)
-                for s in 0..<(ordered.count - 1) {
-                    let from = ordered[s]
-                    let to = ordered[s + 1]
-                    if distance(from, to) > snap {
-                        directed.append(DirectedEdge(from: from, to: to, poly: i))
-                    }
+                let ordered = cuts.sorted { parameter($0) < parameter($1) }
+                // Merge only genuinely-coincident cuts (float noise); a small
+                // threshold keeps short-but-real subsegments (e.g. a small
+                // circle's chords) instead of dropping the whole contour.
+                var deduped: [CGPoint] = []
+                for p in ordered where deduped.last.map({ distance($0, p) > 1e-4 }) ?? true {
+                    deduped.append(p)
+                }
+                for s in 0..<max(0, deduped.count - 1) where distance(deduped[s], deduped[s + 1]) > 1e-4 {
+                    subsegments.append(DirectedEdge(from: deduped[s], to: deduped[s + 1], poly: i))
                 }
             }
+        }
+        guard !subsegments.isEmpty else { return paths }
+
+        // 2. Drop duplicate coincident subsegments (a shared edge is produced by
+        //    both contours), keeping one representative.
+        var seen = Set<String>()
+        var unique: [DirectedEdge] = []
+        for edge in subsegments {
+            let ka = unionKey(edge.from), kb = unionKey(edge.to)
+            let id = ka < kb ? ka + "|" + kb : kb + "|" + ka
+            if seen.insert(id).inserted { unique.append(edge) }
+        }
+
+        // 3. Keep a subsegment only where it separates the union interior from the
+        //    exterior, orienting it so the interior lies on its left. Probing just
+        //    off the midpoint (instead of testing the midpoint) stays robust near
+        //    crossings where an edge runs within `snap` of another contour.
+        func insideUnion(_ p: CGPoint) -> Bool {
+            polygons.contains { pointInsidePolygon(p, $0) }
+        }
+        var directed: [DirectedEdge] = []
+        for edge in unique {
+            let d = CGPoint(x: edge.to.x - edge.from.x, y: edge.to.y - edge.from.y)
+            let length = hypot(d.x, d.y)
+            guard length > 1e-9 else { continue }
+            let leftNormal = CGPoint(x: -d.y / length, y: d.x / length)
+            let mid = CGPoint(x: (edge.from.x + edge.to.x) / 2, y: (edge.from.y + edge.to.y) / 2)
+            let offset = Swift.min(length * 0.25, 1e-3)
+            let left = CGPoint(x: mid.x + leftNormal.x * offset, y: mid.y + leftNormal.y * offset)
+            let right = CGPoint(x: mid.x - leftNormal.x * offset, y: mid.y - leftNormal.y * offset)
+            let leftInside = insideUnion(left)
+            let rightInside = insideUnion(right)
+            if leftInside == rightInside { continue }
+            directed.append(leftInside
+                ? edge
+                : DirectedEdge(from: edge.to, to: edge.from, poly: edge.poly))
         }
         guard !directed.isEmpty else { return paths }
 
-        var alive = [Bool](repeating: true, count: directed.count)
-        // Cancel opposing coincident edges (an internal shared boundary between
-        // two polygons that lie on opposite sides of it).
-        for x in directed.indices where alive[x] {
-            for y in (x + 1)..<directed.count where alive[y] {
-                if distance(directed[x].from, directed[y].to) <= snap
-                    && distance(directed[x].to, directed[y].from) <= snap {
-                    alive[x] = false
-                    alive[y] = false
-                    break
-                }
-            }
+        // Fuse coincident endpoints *across* contours so tracing connects
+        // subsegments at shared crossings, never merging a contour's own dense
+        // vertices (which can sit closer than `snap`, e.g. a small circle).
+        var endpoints: [CGPoint] = []
+        var owners: [Int] = []
+        for edge in directed {
+            endpoints.append(edge.from); endpoints.append(edge.to)
+            owners.append(edge.poly); owners.append(edge.poly)
         }
-        // Dedup same-direction coincident edges (an external boundary two polygons
-        // share while lying on the same side, e.g. grid-aligned shapes).
-        for x in directed.indices where alive[x] {
-            for y in (x + 1)..<directed.count where alive[y] {
-                if distance(directed[x].from, directed[y].from) <= snap
-                    && distance(directed[x].to, directed[y].to) <= snap {
-                    alive[y] = false
-                }
-            }
+        let fused = fuseCrossContourVertices(endpoints, owners: owners, snap: snap)
+        for index in directed.indices {
+            directed[index].from = fused[2 * index]
+            directed[index].to = fused[2 * index + 1]
         }
 
-        var boundary: [DirectedEdge] = []
-        for (index, edge) in directed.enumerated() where alive[index] {
-            let midpoint = CGPoint(
-                x: (edge.from.x + edge.to.x) / 2,
-                y: (edge.from.y + edge.to.y) / 2
-            )
-            let insideOther = polygons.indices.contains { j in
-                j != edge.poly && strictlyInsidePolygon(midpoint, polygons[j], snap: snap)
-            }
-            if !insideOther { boundary.append(edge) }
-        }
-
-        // No edges cancelled/deduped and no interior dropped → only point-touch (or
-        // disjoint). Leave unchanged so stitchPaths can fuse them.
-        let changed = boundary.count < directed.count
-        guard !boundary.isEmpty, changed else { return paths }
-
-        // Trace boundary edges into loops. At branch vertices choose the outgoing
-        // edge that turns the most counterclockwise so the fill stays on the left.
+        // 4. Trace boundary loops. At branch vertices pick the most-clockwise
+        //    outgoing edge so the fill stays on the left and the outline hugs the
+        //    boundary.
         var outgoing: [String: [Int]] = [:]
-        for (index, edge) in boundary.enumerated() {
-            outgoing[snappedKey(edge.from, snap: snap), default: []].append(index)
+        for (index, edge) in directed.enumerated() {
+            outgoing[unionKey(edge.from), default: []].append(index)
         }
-        var used = [Bool](repeating: false, count: boundary.count)
-        var loops: [Path] = []
-        for startIndex in boundary.indices where !used[startIndex] {
+        var used = [Bool](repeating: false, count: directed.count)
+        var rawLoops: [[CGPoint]] = []
+        for startIndex in directed.indices where !used[startIndex] {
             var points: [CGPoint] = []
             var current = startIndex
             var guardCount = 0
-            while !used[current], guardCount <= boundary.count {
+            while !used[current], guardCount <= directed.count {
                 guardCount += 1
                 used[current] = true
-                let edge = boundary[current]
+                let edge = directed[current]
                 points.append(edge.from)
-                let candidates = (outgoing[snappedKey(edge.to, snap: snap)] ?? []).filter { !used[$0] }
+                let candidates = (outgoing[unionKey(edge.to)] ?? []).filter { !used[$0] }
                 guard var next = candidates.first else { break }
                 if candidates.count > 1 {
                     let incoming = unitDirection(edge)
                     func turn(_ idx: Int) -> CGFloat {
-                        signedAngle(incoming, unitDirection(boundary[idx]))
+                        signedAngle(incoming, unitDirection(directed[idx]))
                     }
                     next = candidates.reduce(candidates[0]) { best, cand in
-                        turn(cand) > turn(best) ? cand : best
+                        turn(cand) < turn(best) ? cand : best
                     }
                 }
                 current = next
             }
-            if points.count >= 3 {
-                loops.append(Path(
-                    points: points,
-                    handles: Array(repeating: CurveHandle(), count: points.count),
-                    isClosed: true,
-                    isCurve: false,
-                    contour: points
-                ))
-            }
+            if points.count >= 3 { rawLoops.append(points) }
         }
 
-        return loops.isEmpty ? paths : loops
+        // Discard degenerate slivers that can appear at crossings, then take the
+        // largest loop as the outer shell; smaller enclosed loops become holes.
+        let areaEpsilon = max(snap * snap * 4, 1e-6)
+        let loops = rawLoops.filter { abs(signedArea($0)) > areaEpsilon }
+        guard !loops.isEmpty else { return paths }
+        var outerIndex = 0
+        for i in loops.indices where abs(signedArea(loops[i])) > abs(signedArea(loops[outerIndex])) {
+            outerIndex = i
+        }
+        let outer = loops[outerIndex]
+        var holes: [[CGPoint]] = []
+        for (i, loop) in loops.enumerated() where i != outerIndex {
+            if pointInsidePolygon(polygonCentroid(loop), outer) { holes.append(loop) }
+        }
+
+        var result = Path(
+            points: outer,
+            handles: Array(repeating: CurveHandle(), count: outer.count),
+            isClosed: true,
+            isCurve: false,
+            contour: outer
+        )
+        result.cutouts = holes
+        return [result]
+    }
+
+    /// True when two or more contours share interior area or a run of collinear
+    /// boundary — i.e. a boolean union is warranted. A single shared point is not
+    /// enough (those are left to the stitcher).
+    private static func contoursOverlap(_ polygons: [[CGPoint]], snap: CGFloat) -> Bool {
+        for i in polygons.indices {
+            let pi = polygons[i]
+            for k in pi.indices {
+                let a = pi[k]
+                let b = pi[(k + 1) % pi.count]
+                let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+                for j in polygons.indices where j != i {
+                    if strictlyInsidePolygon(mid, polygons[j], snap: snap) { return true }
+                    if j > i {
+                        let pj = polygons[j]
+                        for m in pj.indices {
+                            if collinearSegmentsOverlap(a, b, pj[m], pj[(m + 1) % pj.count], snap: snap) {
+                                return true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    private static func collinearSegmentsOverlap(
+        _ a: CGPoint, _ b: CGPoint, _ c: CGPoint, _ d: CGPoint, snap: CGFloat
+    ) -> Bool {
+        guard pointNearLine(c, a, b, snap: snap), pointNearLine(d, a, b, snap: snap) else { return false }
+        let axis = CGPoint(x: b.x - a.x, y: b.y - a.y)
+        let length = hypot(axis.x, axis.y)
+        guard length > 1e-9 else { return false }
+        func parameter(_ p: CGPoint) -> CGFloat { ((p.x - a.x) * axis.x + (p.y - a.y) * axis.y) / length }
+        let lo = max(0, min(parameter(c), parameter(d)))
+        let hi = min(length, max(parameter(c), parameter(d)))
+        return hi - lo > snap
+    }
+
+    private static func pointNearLine(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint, snap: CGFloat) -> Bool {
+        let ab = CGPoint(x: b.x - a.x, y: b.y - a.y)
+        let ap = CGPoint(x: p.x - a.x, y: p.y - a.y)
+        let length = hypot(ab.x, ab.y)
+        guard length > 1e-9 else { return false }
+        return abs(ab.x * ap.y - ab.y * ap.x) / length <= snap
+    }
+
+    /// Vertex-on-edge test with a *tight* lateral tolerance so only vertices
+    /// essentially on the edge (shared/collinear boundaries, exact T-junctions)
+    /// split it — a vertex that merely grazes within `snap` does not.
+    private static func pointExactlyOnSegment(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> Bool {
+        let ab = CGPoint(x: b.x - a.x, y: b.y - a.y)
+        let ap = CGPoint(x: p.x - a.x, y: p.y - a.y)
+        let length = hypot(ab.x, ab.y)
+        guard length > 1e-9 else { return false }
+        guard abs(ab.x * ap.y - ab.y * ap.x) / length <= 1e-4 else { return false }
+        let t = (ap.x * ab.x + ap.y * ab.y) / (length * length)
+        return t > 1e-4 / length && t < 1 - 1e-4 / length
+    }
+
+    private static func unionKey(_ p: CGPoint) -> String {
+        "\(Int((p.x / 1e-4).rounded()))_\(Int((p.y / 1e-4).rounded()))"
+    }
+
+    private static func fuseCrossContourVertices(
+        _ points: [CGPoint], owners: [Int], snap: CGFloat
+    ) -> [CGPoint] {
+        var parent = Array(points.indices)
+        func find(_ i: Int) -> Int {
+            var root = i
+            while parent[root] != root { root = parent[root] }
+            var node = i
+            while parent[node] != root { let next = parent[node]; parent[node] = root; node = next }
+            return root
+        }
+        for i in points.indices {
+            for j in (i + 1)..<points.count where owners[i] != owners[j] && distance(points[i], points[j]) <= snap {
+                parent[find(i)] = find(j)
+            }
+        }
+        var sums: [Int: (CGFloat, CGFloat, Int)] = [:]
+        for i in points.indices {
+            let root = find(i)
+            let current = sums[root] ?? (0, 0, 0)
+            sums[root] = (current.0 + points[i].x, current.1 + points[i].y, current.2 + 1)
+        }
+        var representative: [Int: CGPoint] = [:]
+        for (root, sum) in sums {
+            representative[root] = CGPoint(x: sum.0 / CGFloat(sum.2), y: sum.1 / CGFloat(sum.2))
+        }
+        return points.indices.map { representative[find($0)]! }
+    }
+
+    private static func polygonCentroid(_ points: [CGPoint]) -> CGPoint {
+        guard !points.isEmpty else { return .zero }
+        var x: CGFloat = 0, y: CGFloat = 0
+        for p in points { x += p.x; y += p.y }
+        return CGPoint(x: x / CGFloat(points.count), y: y / CGFloat(points.count))
     }
 
     private static func segmentIntersection(
@@ -769,23 +913,6 @@ enum PathJoinEngine {
         guard cross <= snap else { return false }
         let t = (ap.x * ab.x + ap.y * ab.y) / (len * len)
         return t > snap / len && t < 1 - snap / len
-    }
-
-    private static func orderedAlong(
-        _ a: CGPoint, _ b: CGPoint, points: [CGPoint], snap: CGFloat
-    ) -> [CGPoint] {
-        let axis = CGPoint(x: b.x - a.x, y: b.y - a.y)
-        let lengthSquared = axis.x * axis.x + axis.y * axis.y
-        func projection(_ p: CGPoint) -> CGFloat {
-            guard lengthSquared > 0 else { return 0 }
-            return ((p.x - a.x) * axis.x + (p.y - a.y) * axis.y) / lengthSquared
-        }
-        let sorted = points.sorted { projection($0) < projection($1) }
-        var result: [CGPoint] = []
-        for point in sorted where result.last.map({ distance($0, point) > snap }) ?? true {
-            result.append(point)
-        }
-        return result
     }
 
     private static func pointInsidePolygon(_ point: CGPoint, _ polygon: [CGPoint]) -> Bool {
@@ -824,11 +951,6 @@ enum PathJoinEngine {
     /// Signed angle (counterclockwise positive) turning from vector `a` to `b`.
     private static func signedAngle(_ a: CGPoint, _ b: CGPoint) -> CGFloat {
         atan2(a.x * b.y - a.y * b.x, a.x * b.x + a.y * b.y)
-    }
-
-    private static func snappedKey(_ p: CGPoint, snap: CGFloat) -> String {
-        let q = max(snap, 1e-4)
-        return "\(Int((p.x / q).rounded()))_\(Int((p.y / q).rounded()))"
     }
 
     private static func signedArea(_ points: [CGPoint]) -> CGFloat {
