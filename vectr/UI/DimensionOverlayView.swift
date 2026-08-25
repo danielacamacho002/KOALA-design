@@ -18,11 +18,12 @@ struct DimensionOverlayView: View {
     @State private var editText = ""
     @State private var draggingID: String?
     @State private var dragTranslation: CGSize = .zero
+    /// Measured sizes of each dimension label cluster (value + lock), used so wide
+    /// side labels clear the stroke instead of sitting on the border.
+    @State private var labelClusterSizes: [String: CGSize] = [:]
     @FocusState private var editorFocused: Bool
 
-    /// Minimum view-space distance from the shape edge to the label center so caption
-    /// text (and lock control) stay clear of the stroke at any zoom.
-    private static let minViewStandoff: CGFloat = 36
+    /// Document-space nudge used only to establish outward direction.
     private static let textLabelStandoff: CGFloat = 28
 
     var body: some View {
@@ -114,9 +115,10 @@ struct DimensionOverlayView: View {
         Text(dimension.text)
             .dimensionLabelAppearance()
             .position(
-                outsidePosition(
+                DimensionLabelStyle.outsideLabelCenter(
                     preferred: document.viewport.documentToView(dimension.midPoint),
-                    from: document.viewport.documentToView(dimension.anchor)
+                    from: document.viewport.documentToView(dimension.anchor),
+                    halfSize: DimensionLabelStyle.textOnlyHalfSize
                 )
             )
     }
@@ -134,7 +136,6 @@ struct DimensionOverlayView: View {
     // MARK: - Shape dimensions (draggable, with leader lines)
 
     /// View-space position where the label should sit, honoring any stored drag offset.
-    /// Default placement is pushed at least `minViewStandoff` outside the shape edge.
     private func basePosition(for dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> CGPoint {
         let key = VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
         let anchorView = document.viewport.documentToView(dimension.anchor)
@@ -142,27 +143,15 @@ struct DimensionOverlayView: View {
             let docPoint = CGPoint(x: dimension.anchor.x + offset.x, y: dimension.anchor.y + offset.y)
             return document.viewport.documentToView(docPoint)
         }
-        return outsidePosition(
-            preferred: document.viewport.documentToView(dimension.midPoint),
-            from: anchorView
-        )
-    }
-
-    /// Ensures the label center sits at least `minViewStandoff` from the edge along the
-    /// outward direction implied by `preferred`.
-    private func outsidePosition(preferred: CGPoint, from anchor: CGPoint) -> CGPoint {
-        var dx = preferred.x - anchor.x
-        var dy = preferred.y - anchor.y
-        var length = hypot(dx, dy)
-        if length < 0.001 {
-            dx = 0
-            dy = -1
-            length = 1
-        }
-        let distance = max(length, Self.minViewStandoff)
-        return CGPoint(
-            x: anchor.x + dx / length * distance,
-            y: anchor.y + dy / length * distance
+        let preferred = document.viewport.documentToView(dimension.midPoint)
+        let measured = labelClusterSizes[dimension.id]
+        let halfSize = measured.map {
+            CGSize(width: max($0.width / 2, 1), height: max($0.height / 2, 1))
+        } ?? DimensionLabelStyle.labeledHalfSize
+        return DimensionLabelStyle.outsideLabelCenter(
+            preferred: preferred,
+            from: anchorView,
+            halfSize: halfSize
         )
     }
 
@@ -172,26 +161,70 @@ struct DimensionOverlayView: View {
         return CGPoint(x: base.x + dragTranslation.width, y: base.y + dragTranslation.height)
     }
 
+    private func viewOutward(for dimension: ShapeGeometry.SemanticDimension) -> CGPoint {
+        DimensionLabelStyle.outwardUnit(
+            preferred: document.viewport.documentToView(dimension.midPoint),
+            from: document.viewport.documentToView(dimension.anchor)
+        )
+    }
+
     @ViewBuilder
     private func dimensionLabel(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
         let anchorPoint = document.viewport.documentToView(dimension.anchor)
         let labelPoint = livePosition(for: dimension, strokeID: strokeID)
+        let outward = viewOutward(for: dimension)
         let leaderLength = hypot(labelPoint.x - anchorPoint.x, labelPoint.y - anchorPoint.y)
 
         if leaderLength > 12 {
             leader(from: anchorPoint, to: labelPoint)
         }
 
-        HStack(spacing: 4) {
+        labelCluster(dimension: dimension, strokeID: strokeID, outward: outward)
+            .fixedSize()
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: DimensionLabelSizeKey.self,
+                        value: [dimension.id: geo.size]
+                    )
+                }
+            )
+            .onPreferenceChange(DimensionLabelSizeKey.self) { sizes in
+                for (id, size) in sizes where labelClusterSizes[id] != size {
+                    labelClusterSizes[id] = size
+                }
+            }
+            .position(labelPoint)
+    }
+
+    /// Keep the lock on the outside of the shape so the value sits closer to the edge
+    /// and the cluster's outward half isn't wasted on empty space.
+    @ViewBuilder
+    private func labelCluster(
+        dimension: ShapeGeometry.SemanticDimension,
+        strokeID: UUID,
+        outward: CGPoint
+    ) -> some View {
+        let value = Group {
             if editingID == dimension.id {
                 editorField(dimension: dimension, strokeID: strokeID)
             } else {
                 valueLabel(dimension: dimension, strokeID: strokeID)
             }
-
-            lockButton(dimension: dimension, strokeID: strokeID)
         }
-        .position(labelPoint)
+        let lock = lockButton(dimension: dimension, strokeID: strokeID)
+        // Left-side labels: lock then value. Everywhere else: value then lock.
+        if outward.x < -0.3 {
+            HStack(spacing: 4) {
+                lock
+                value
+            }
+        } else {
+            HStack(spacing: 4) {
+                value
+                lock
+            }
+        }
     }
 
     private func editorField(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
@@ -422,5 +455,13 @@ struct DimensionOverlayView: View {
             prefix = ""
         }
         return "\(prefix)\(formattedValue) \(document.settings.units.shortLabel)"
+    }
+}
+
+private struct DimensionLabelSizeKey: PreferenceKey {
+    static var defaultValue: [String: CGSize] = [:]
+
+    static func reduce(value: inout [String: CGSize], nextValue: () -> [String: CGSize]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }

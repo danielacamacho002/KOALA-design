@@ -18,7 +18,13 @@ struct LiveDimensionOverlay: View {
         ForEach(labels, id: \.id) { label in
             Text(label.text)
                 .dimensionLabelAppearance()
-                .position(document.viewport.documentToView(label.point))
+                .position(
+                    DimensionLabelStyle.outsideLabelCenter(
+                        preferred: document.viewport.documentToView(label.point),
+                        from: document.viewport.documentToView(label.anchor),
+                        halfSize: DimensionLabelStyle.textOnlyHalfSize
+                    )
+                )
         }
     }
 
@@ -26,6 +32,7 @@ struct LiveDimensionOverlay: View {
         var id: String
         var text: String
         var point: CGPoint
+        var anchor: CGPoint
     }
 
     private var liveLabels: [LiveLabel] {
@@ -44,30 +51,37 @@ struct LiveDimensionOverlay: View {
             return [LiveLabel(
                 id: "length",
                 text: format(length, units: units),
-                point: CGPoint(x: mid.x + normal.x * standoff, y: mid.y + normal.y * standoff)
+                point: CGPoint(x: mid.x + normal.x * standoff, y: mid.y + normal.y * standoff),
+                anchor: mid
             )]
         case .circle:
             switch circleVariant {
             case .center:
                 let radius = hypot(end.x - start.x, end.y - start.y)
+                let top = CGPoint(x: start.x, y: start.y - radius)
                 return [LiveLabel(
                     id: "radius",
                     text: "r " + format(radius, units: units),
-                    point: CGPoint(x: start.x, y: start.y - radius - standoff)
+                    point: CGPoint(x: top.x, y: top.y - standoff),
+                    anchor: top
                 )]
             case .ellipse:
                 let rx = abs(end.x - start.x)
                 let ry = abs(end.y - start.y)
+                let top = CGPoint(x: start.x, y: start.y - ry)
+                let left = CGPoint(x: start.x - rx, y: start.y)
                 return [
                     LiveLabel(
                         id: "rx",
                         text: "rx " + format(rx, units: units),
-                        point: CGPoint(x: start.x, y: start.y - ry - standoff)
+                        point: CGPoint(x: top.x, y: top.y - standoff),
+                        anchor: top
                     ),
                     LiveLabel(
                         id: "ry",
                         text: "ry " + format(ry, units: units),
-                        point: CGPoint(x: start.x - rx - standoff, y: start.y)
+                        point: CGPoint(x: left.x - standoff, y: left.y),
+                        anchor: left
                     )
                 ]
             default:
@@ -78,16 +92,20 @@ struct LiveDimensionOverlay: View {
             case .center:
                 let halfW = abs(end.x - start.x)
                 let halfH = abs(end.y - start.y)
+                let top = CGPoint(x: start.x, y: start.y - halfH)
+                let right = CGPoint(x: start.x + halfW, y: start.y)
                 return [
                     LiveLabel(
                         id: "w",
                         text: format(halfW * 2, units: units),
-                        point: CGPoint(x: start.x, y: start.y - halfH - standoff)
+                        point: CGPoint(x: top.x, y: top.y - standoff),
+                        anchor: top
                     ),
                     LiveLabel(
                         id: "h",
                         text: format(halfH * 2, units: units),
-                        point: CGPoint(x: start.x + halfW + standoff, y: start.y)
+                        point: CGPoint(x: right.x + standoff, y: right.y),
+                        anchor: right
                     )
                 ]
             default:
