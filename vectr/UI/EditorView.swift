@@ -1134,18 +1134,26 @@ struct EditorView: View {
                 return
             }
             let threshold = store.document.viewport.viewToDocument(distance: 24)
-            // 1. Edge/line tap: tapping on or near an outline deletes that shape entirely.
+            // 1. Arc-on-edge knife: tapping inside the piece an arc slices off removes
+            //    that piece. Attempted before the outline delete because the region being
+            //    removed is bounded by the arc, so the tap is inherently near the arc line
+            //    (which would otherwise be deleted as a whole shape).
+            if store.document.sliceArcCut(at: documentPoint) {
+                refreshCanvas()
+                return
+            }
+            // 2. Edge/line tap: tapping on or near an outline deletes that shape entirely.
             if let outline = store.document.strokeOutlineHit(near: documentPoint, threshold: threshold) {
                 store.document.removeStroke(id: outline.id)
                 refreshCanvas()
                 return
             }
-            // 2. Interior fill tap over an overlap: punch a hole (base MINUS target).
+            // 3. Interior fill tap over an overlap: punch a hole (base MINUS target).
             if store.document.punchOverlapHole(at: documentPoint) {
                 refreshCanvas()
                 return
             }
-            // 3. Interior fill tap with nothing beneath: delete the filled shape.
+            // 4. Interior fill tap with nothing beneath: delete the filled shape.
             if let fill = store.document.strokeFillHit(at: documentPoint) {
                 store.document.removeStroke(id: fill.id)
                 refreshCanvas()

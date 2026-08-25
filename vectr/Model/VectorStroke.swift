@@ -40,6 +40,14 @@ struct VectorStroke: Identifiable, Codable, Equatable {
     var rotationBaseCenter: CGPoint? = nil
     /// Nested closed contours subtracted from the fill (even-odd), e.g. inner circle holes.
     var cutoutPoints: [[CGPoint]] = []
+    /// Indices `i` (into `points`) whose outgoing edge `points[i] → points[i+1]` is a
+    /// Boolean *cut* edge: it bounds a notch carved out of an edge and must be filled
+    /// through but NOT stroked, so a through-cut has no outline along the removed area.
+    var openEdgeStarts: [Int]? = nil
+    /// Indices into `cutoutPoints` for holes punched by a Boolean cut. They still carve
+    /// the fill (even-odd) but are NOT stroked, so a punched hole has no outline —
+    /// unlike donut rings, whose inner circle is a real, stroked edge.
+    var openCutoutIndices: Set<Int>? = nil
     /// Editable Bezier tangent handles for `.curve` strokes, one entry per anchor in `points`.
     /// When nil, curves fall back to the auto-computed cardinal spline.
     var curveHandles: [CurveHandle]? = nil
@@ -65,6 +73,8 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         rotationBasePoints: [CGPoint]? = nil,
         rotationBaseCenter: CGPoint? = nil,
         cutoutPoints: [[CGPoint]] = [],
+        openEdgeStarts: [Int]? = nil,
+        openCutoutIndices: Set<Int>? = nil,
         curveHandles: [CurveHandle]? = nil,
         fillOpacity: CGFloat? = nil
     ) {
@@ -83,6 +93,8 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         self.rotationBasePoints = rotationBasePoints
         self.rotationBaseCenter = rotationBaseCenter
         self.cutoutPoints = cutoutPoints
+        self.openEdgeStarts = openEdgeStarts
+        self.openCutoutIndices = openCutoutIndices
         self.curveHandles = curveHandles
         self.fillOpacity = fillOpacity
     }

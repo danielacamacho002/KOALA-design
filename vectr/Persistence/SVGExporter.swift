@@ -19,11 +19,25 @@ enum SVGExporter {
         for stroke in document.visibleStrokes() {
             let points = ShapeGeometry.renderPoints(for: stroke)
             guard points.count >= 2 else { continue }
-            let pathData = pathData(from: points, closed: stroke.isClosed)
             let color = stroke.strokeColor
             let strokeHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
-            let fill = stroke.isClosed && !stroke.isConstruction ? " fill=\"#CCCCCC\" fill-opacity=\"\(stroke.resolvedFillOpacity)\"" : " fill=\"none\""
-            svg += "  <path d=\"\(pathData)\" stroke=\"\(strokeHex)\" stroke-width=\"\(stroke.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"\(fill)/>\n"
+            let isFilled = stroke.isClosed && !stroke.isConstruction
+            let cutEdges = Set(stroke.openEdgeStarts ?? [])
+
+            if isFilled, !cutEdges.isEmpty {
+                // Fill the full contour, then stroke only the retained (non-cut) edges so
+                // the carved notch has no outline.
+                let fillData = pathData(from: points, closed: true)
+                svg += "  <path d=\"\(fillData)\" fill=\"#CCCCCC\" fill-opacity=\"\(stroke.resolvedFillOpacity)\" stroke=\"none\"/>\n"
+                let strokeData = strokePathData(from: points, cutEdges: cutEdges)
+                if !strokeData.isEmpty {
+                    svg += "  <path d=\"\(strokeData)\" fill=\"none\" stroke=\"\(strokeHex)\" stroke-width=\"\(stroke.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
+                }
+            } else {
+                let pathData = pathData(from: points, closed: stroke.isClosed)
+                let fill = isFilled ? " fill=\"#CCCCCC\" fill-opacity=\"\(stroke.resolvedFillOpacity)\"" : " fill=\"none\""
+                svg += "  <path d=\"\(pathData)\" stroke=\"\(strokeHex)\" stroke-width=\"\(stroke.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"\(fill)/>\n"
+            }
         }
 
         for element in document.visibleTextElements() {
@@ -82,5 +96,31 @@ enum SVGExporter {
         }
         if closed, points.count > 2 { data += " Z" }
         return data
+    }
+
+    /// Open subpaths tracing only the non-cut edges of a closed contour, so cut edges
+    /// (`cutEdges` = start indices of edge `points[i] → points[i+1]`) are not stroked.
+    private static func strokePathData(from points: [CGPoint], cutEdges: Set<Int>) -> String {
+        let count = points.count
+        guard count >= 2, let firstCut = (0..<count).first(where: { cutEdges.contains($0) }) else {
+            return pathData(from: points, closed: true)
+        }
+        var data = ""
+        var subpathOpen = false
+        for step in 1...count {
+            let edge = (firstCut + step) % count
+            if cutEdges.contains(edge) {
+                subpathOpen = false
+            } else {
+                let start = points[edge]
+                let end = points[(edge + 1) % count]
+                if !subpathOpen {
+                    data += "M \(start.x) \(start.y) "
+                    subpathOpen = true
+                }
+                data += "L \(end.x) \(end.y) "
+            }
+        }
+        return data.trimmingCharacters(in: .whitespaces)
     }
 }

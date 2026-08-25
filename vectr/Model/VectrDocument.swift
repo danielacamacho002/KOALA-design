@@ -1924,8 +1924,10 @@ final class VectrDocument {
 
     /// Interior fill tap for the Delete tool: when the topmost filled shape under
     /// `documentPoint` overlaps a closed shape beneath it, subtracts the top shape
-    /// (Boolean: base MINUS target) to punch a hole in the base and removes the top
-    /// shape. Returns `true` when a subtraction was performed.
+    /// (Boolean: base MINUS target) and removes the top shape. When the target sits
+    /// fully inside the base a hole is punched; when it crosses the base's edge the
+    /// base outline is reshaped into the notch/bite instead of leaving a seam.
+    /// Returns `true` when a subtraction was performed.
     @discardableResult
     func punchOverlapHole(at documentPoint: CGPoint) -> Bool {
         let candidates = selectableStrokes()
@@ -1943,16 +1945,26 @@ final class VectrDocument {
             guard base.id != target.id, base.isClosed, !base.isConstruction else { continue }
             let baseContour = ShapeGeometry.renderPoints(for: base)
             guard baseContour.count >= 3 else { continue }
-            guard let cutouts = ShapeBooleanEngine.subtractionCutouts(
+            guard let outcome = ShapeBooleanEngine.subtract(
                 baseContour: baseContour,
                 targetContour: targetContour
             ) else { continue }
             guard let baseArrayIndex = strokes.firstIndex(where: { $0.id == base.id }) else { continue }
 
+            // A curved cutter (circle/ellipse/arc) reshapes into a true curve so the
+            // carved bite stays crisp; straight-edged cutters stay polylines.
+            let cutterIsCurved: Bool
+            switch target.shapeType {
+            case .circle, .ellipse, .arc, .curve: cutterIsCurved = true
+            default: cutterIsCurved = false
+            }
+
             pushUndo()
-            var updatedBase = strokes[baseArrayIndex]
-            updatedBase.cutoutPoints.append(contentsOf: cutouts)
-            strokes[baseArrayIndex] = updatedBase
+            applySubtraction(
+                outcome,
+                toBaseAt: baseArrayIndex,
+                curvedAlong: cutterIsCurved ? targetContour : nil
+            )
             strokes.removeAll { $0.id == target.id }
             pruneGroups()
             deselectStrokeAfterMutation(target.id)
@@ -1960,6 +1972,228 @@ final class VectrDocument {
             return true
         }
         return false
+    }
+
+    /// Uses an open arc as a knife to slice the base into two pieces and remove the piece
+    /// the user tapped. The arc cuts when it is "on the edge" — either it pokes through the
+    /// boundary, or it lies inside with its endpoints on/near an edge (within `attachTol`).
+    /// A fully-interior arc floating away from every edge leaves the shape untouched.
+    /// Returns `true` when a slice occurred.
+    @discardableResult
+    func sliceArcCut(at documentPoint: CGPoint) -> Bool {
+        let candidates = selectableStrokes()
+        let arcs = candidates.filter { $0.shapeType == .arc && !$0.isConstruction }
+        guard !arcs.isEmpty else { return false }
+
+        // Endpoints must sit within ~24pt (in document space) of the edge to count as
+        // "on the edge" when the arc doesn't poke through the boundary.
+        let attachTol = viewport.viewToDocument(distance: 24)
+
+        for arc in arcs {
+            let arcPoints = ShapeGeometry.renderPoints(for: arc)
+            guard arcPoints.count >= 2 else { continue }
+
+            for base in candidates where base.id != arc.id && base.isClosed && !base.isConstruction {
+                guard base.contains(documentPoint) else { continue }
+                let baseContour = ShapeGeometry.renderPoints(for: base)
+                guard baseContour.count >= 3 else { continue }
+                guard let pieces = PolygonBoolean.split(
+                    polygon: baseContour,
+                    byOpenPath: arcPoints,
+                    maxEndpointAttach: attachTol
+                ), pieces.count == 2 else { continue }
+                guard let removeIndex = pieces.firstIndex(where: {
+                    PolygonBoolean.pointInPolygon(documentPoint, $0)
+                }) else { continue }
+                guard let baseArrayIndex = strokes.firstIndex(where: { $0.id == base.id }) else { continue }
+
+                let keepIndex = removeIndex == 0 ? 1 : 0
+                let keptPiece = pieces[keepIndex]
+
+                pushUndo()
+                var updated = reshaped(
+                    strokes[baseArrayIndex],
+                    toPoints: keptPiece,
+                    curvedAlong: arcPoints
+                )
+                // Keep holes only where they still fall inside the retained piece.
+                updated.cutoutPoints = strokes[baseArrayIndex].cutoutPoints.filter { hole in
+                    PolygonBoolean.pointInPolygon(centroid(hole), keptPiece)
+                }
+                strokes[baseArrayIndex] = updated
+                strokes.removeAll { $0.id == arc.id }
+                pruneGroups()
+                deselectStrokeAfterMutation(arc.id)
+                geometryRevision += 1
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Mutates the base stroke at `baseArrayIndex` according to a Boolean subtraction
+    /// outcome, spawning additional strokes when a cut splits the base into pieces.
+    private func applySubtraction(
+        _ outcome: ShapeBooleanEngine.Subtraction,
+        toBaseAt baseArrayIndex: Int,
+        curvedAlong cutter: [CGPoint]?
+    ) {
+        switch outcome {
+        case let .interiorHole(cutouts):
+            var updatedBase = strokes[baseArrayIndex]
+            updatedBase.cutoutPoints.append(contentsOf: cutouts)
+            strokes[baseArrayIndex] = updatedBase
+
+        case let .boundaryCut(contours):
+            guard let primary = contours.first else { return }
+            let baseID = strokes[baseArrayIndex].id
+            var updatedBase = reshaped(strokes[baseArrayIndex], toPoints: primary.points, curvedAlong: cutter)
+            // Keep existing holes only where they still fall inside the reshaped outline.
+            updatedBase.cutoutPoints = updatedBase.cutoutPoints.filter { hole in
+                let holeCenter = centroid(hole)
+                return PolygonBoolean.pointInPolygon(holeCenter, primary.points)
+            }
+            strokes[baseArrayIndex] = updatedBase
+
+            // Remaining contours are disjoint pieces carved off the original shape.
+            let extraContours = contours.dropFirst()
+            guard !extraContours.isEmpty else { return }
+            var newPieces: [VectorStroke] = []
+            for contour in extraContours {
+                var piece = reshaped(updatedBase, toPoints: contour.points, curvedAlong: cutter)
+                piece.id = UUID()
+                piece.cutoutPoints = []
+                newPieces.append(piece)
+            }
+            let insertionIndex = min(baseArrayIndex + 1, strokes.count)
+            strokes.insert(contentsOf: newPieces, at: insertionIndex)
+            // New fragments join whatever group the base belonged to.
+            for i in groups.indices where groups[i].strokeIDs.contains(baseID) {
+                groups[i].strokeIDs.append(contentsOf: newPieces.map(\.id))
+            }
+
+        case .baseRemoved:
+            let baseID = strokes[baseArrayIndex].id
+            strokes.remove(at: baseArrayIndex)
+            deselectStrokeAfterMutation(baseID)
+        }
+    }
+
+    /// Returns a copy of `stroke` reshaped into an arbitrary closed contour, clearing
+    /// parametric/shape-specific state so the Boolean-cut result renders as new geometry.
+    ///
+    /// When `cutter` is supplied (a curved cutter's outline: circle/ellipse/arc), the run
+    /// of edges lying on that outline is rebuilt as a true Bézier `.curve` so the carved
+    /// bite stays crisp and re-editable; the straight base edges keep sharp corners.
+    private func reshaped(
+        _ stroke: VectorStroke,
+        toPoints points: [CGPoint],
+        curvedAlong cutter: [CGPoint]? = nil
+    ) -> VectorStroke {
+        var copy = stroke
+        copy.points = points
+        copy.isClosed = true
+        copy.shapeRotation = nil
+        copy.rotationBasePoints = nil
+        copy.rotationBaseCenter = nil
+        copy.cornerRadius = 0
+        copy.cornerRadiiByIndex = nil
+        copy.smoothCornerIndices = nil
+        copy.openEdgeStarts = nil
+        copy.openCutoutIndices = nil
+
+        if let cutter,
+           let handles = curveHandlesAlongCutter(points: points, cutter: cutter) {
+            copy.shapeType = .curve
+            copy.curveHandles = handles
+        } else {
+            copy.shapeType = .polyline
+            copy.curveHandles = nil
+        }
+        return copy
+    }
+
+    /// Builds per-anchor Bézier handles that reproduce the curved cutter edge as a true
+    /// curve while keeping straight base edges straight. An edge is "curved" when both its
+    /// endpoints lie on the cutter outline; those runs get Catmull-Rom-style tangents,
+    /// everything else stays a straight segment. Returns `nil` when nothing is curved so
+    /// the caller keeps a plain polyline.
+    private func curveHandlesAlongCutter(points: [CGPoint], cutter: [CGPoint]) -> [CurveHandle]? {
+        let n = points.count
+        guard n >= 3, cutter.count >= 2 else { return nil }
+        let eps = max(0.05, boundingDiagonalOf(cutter) * 1e-3)
+        let onCutter = points.map { distanceToPolyline($0, cutter) <= eps }
+
+        // edgeCurved[i] describes the edge points[i] → points[(i + 1) % n].
+        var edgeCurved = [Bool](repeating: false, count: n)
+        var anyCurved = false
+        for i in 0..<n where onCutter[i] && onCutter[(i + 1) % n] {
+            edgeCurved[i] = true
+            anyCurved = true
+        }
+        guard anyCurved else { return nil }
+
+        var handles = [CurveHandle](repeating: CurveHandle(), count: n)
+        for i in 0..<n {
+            let prev = points[(i + n - 1) % n]
+            let cur = points[i]
+            let next = points[(i + 1) % n]
+            let inCurved = edgeCurved[(i + n - 1) % n]   // edge prev → cur
+            let outCurved = edgeCurved[i]                // edge cur → next
+            if inCurved, outCurved {
+                let tangent = CGPoint(x: (next.x - prev.x) / 6, y: (next.y - prev.y) / 6)
+                handles[i] = CurveHandle(
+                    inOffset: CGPoint(x: -tangent.x, y: -tangent.y),
+                    outOffset: tangent
+                )
+            } else if outCurved {
+                handles[i].outOffset = CGPoint(x: (next.x - cur.x) / 3, y: (next.y - cur.y) / 3)
+            } else if inCurved {
+                handles[i].inOffset = CGPoint(x: (prev.x - cur.x) / 3, y: (prev.y - cur.y) / 3)
+            }
+        }
+        return handles
+    }
+
+    private func boundingDiagonalOf(_ points: [CGPoint]) -> CGFloat {
+        guard let first = points.first else { return 0 }
+        var minX = first.x, maxX = first.x, minY = first.y, maxY = first.y
+        for p in points {
+            minX = min(minX, p.x); maxX = max(maxX, p.x)
+            minY = min(minY, p.y); maxY = max(maxY, p.y)
+        }
+        return hypot(maxX - minX, maxY - minY)
+    }
+
+    private func distanceToPolyline(_ point: CGPoint, _ polyline: [CGPoint]) -> CGFloat {
+        guard polyline.count >= 2 else {
+            if let only = polyline.first { return hypot(point.x - only.x, point.y - only.y) }
+            return .greatestFiniteMagnitude
+        }
+        var best = CGFloat.greatestFiniteMagnitude
+        for i in 0..<(polyline.count - 1) {
+            best = min(best, distanceFromPoint(point, toSegment: polyline[i], polyline[i + 1]))
+        }
+        return best
+    }
+
+    private func distanceFromPoint(_ p: CGPoint, toSegment a: CGPoint, _ b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let lenSq = dx * dx + dy * dy
+        if lenSq <= .ulpOfOne { return hypot(p.x - a.x, p.y - a.y) }
+        var t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq
+        t = max(0, min(1, t))
+        return hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+    }
+
+    private func centroid(_ points: [CGPoint]) -> CGPoint {
+        guard !points.isEmpty else { return .zero }
+        var sum = CGPoint.zero
+        for point in points {
+            sum.x += point.x
+            sum.y += point.y
+        }
+        return CGPoint(x: sum.x / CGFloat(points.count), y: sum.y / CGFloat(points.count))
     }
 
     /// Removes a stroke id from every selection set after it has been deleted/consumed.
