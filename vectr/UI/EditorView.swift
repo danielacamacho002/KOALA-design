@@ -536,14 +536,15 @@ struct EditorView: View {
     private var canvasOverlayAcceptsHits: Bool {
         if commandSession.isActive { return false }
         switch store.document.activeCategory {
-        case .move, .scale, .trim, .fillet:
+        case .move, .scale, .fillet:
             return true
         case .type:
             // With a text selected, the overlay handles move/scale/tap-to-edit;
             // with nothing selected, taps pass through so a new text can be placed.
             return store.document.selectedTextID != nil
-        case .delete, .addAnchor, .pattern:
-            // Let canvas taps pass through so delete/add-anchor/pattern can target the shape directly.
+        case .delete, .addAnchor, .pattern, .trim:
+            // Let canvas taps pass through so delete/add-anchor/pattern/trim can
+            // target the shape directly (trim has no overlay handles).
             return false
         default:
             if store.document.dimensionsVisible { return false }
