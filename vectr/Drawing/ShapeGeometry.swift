@@ -1187,18 +1187,61 @@ enum ShapeGeometry {
     }
 
     /// Distance in document units between a dimension's anchor point on the shape and
-    /// its resting label position.
-    private static let labelStandoff: CGFloat = 20
+    /// its resting label position. The overlay may push farther in view space so the
+    /// on-screen label clears the stroke at any zoom.
+    private static let labelStandoff: CGFloat = 28
+
+    /// Unit normal of the edge `start→end` that points away from `reference` (typically
+    /// the shape centroid). Falls back to the CCW perpendicular when the reference sits
+    /// on the edge (e.g. a two-point line).
+    private static func outwardNormal(
+        from start: CGPoint,
+        to end: CGPoint,
+        awayFrom reference: CGPoint
+    ) -> CGPoint {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let length = hypot(dx, dy)
+        guard length > 0.001 else { return CGPoint(x: 0, y: -1) }
+        let ccw = CGPoint(x: -dy / length, y: dx / length)
+        let mid = midpoint(start, end)
+        let away = CGPoint(x: mid.x - reference.x, y: mid.y - reference.y)
+        if hypot(away.x, away.y) < 0.001 {
+            return ccw
+        }
+        return ccw.x * away.x + ccw.y * away.y >= 0
+            ? ccw
+            : CGPoint(x: -ccw.x, y: -ccw.y)
+    }
+
+    private static func labelPlacement(
+        edgeStart: CGPoint,
+        edgeEnd: CGPoint,
+        awayFrom reference: CGPoint,
+        standoff: CGFloat = labelStandoff
+    ) -> (anchor: CGPoint, midPoint: CGPoint) {
+        let anchor = midpoint(edgeStart, edgeEnd)
+        let normal = outwardNormal(from: edgeStart, to: edgeEnd, awayFrom: reference)
+        let midPoint = CGPoint(
+            x: anchor.x + normal.x * standoff,
+            y: anchor.y + normal.y * standoff
+        )
+        return (anchor, midPoint)
+    }
+
+    private static func pointsCentroid(_ points: [CGPoint]) -> CGPoint {
+        guard !points.isEmpty else { return .zero }
+        let sum = points.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
+        let count = CGFloat(points.count)
+        return CGPoint(x: sum.x / count, y: sum.y / count)
+    }
 
     /// One editable pill per quad edge. Each pill shows its own edge's length (they
     /// differ on a trapezoid), placed just outside the shape past the edge midpoint.
     private static func quadDimensions(for stroke: VectorStroke) -> [SemanticDimension] {
         guard isEditableQuad(stroke) else { return [] }
         let p = stroke.points
-        let centroid = CGPoint(
-            x: (p[0].x + p[1].x + p[2].x + p[3].x) / 4,
-            y: (p[0].y + p[1].y + p[2].y + p[3].y) / 4
-        )
+        let centroid = pointsCentroid(p)
         let edges: [(edge: RectangleEdge, start: CGPoint, end: CGPoint, kind: SemanticDimension.Kind)] = [
             (.top, p[0], p[1], .rectangleWidth),
             (.bottom, p[3], p[2], .rectangleWidth),
@@ -1208,22 +1251,18 @@ enum ShapeGeometry {
         return edges.compactMap { entry in
             let length = hypot(entry.end.x - entry.start.x, entry.end.y - entry.start.y)
             guard length > 0.001 else { return nil }
-            let m = midpoint(entry.start, entry.end)
-            var outward = CGPoint(x: m.x - centroid.x, y: m.y - centroid.y)
-            let outwardLength = hypot(outward.x, outward.y)
-            outward = outwardLength > 0.001
-                ? CGPoint(x: outward.x / outwardLength, y: outward.y / outwardLength)
-                : CGPoint(x: 0, y: -1)
+            let placement = labelPlacement(
+                edgeStart: entry.start,
+                edgeEnd: entry.end,
+                awayFrom: centroid
+            )
             return SemanticDimension(
                 id: entry.edge.rawValue,
                 label: String(format: "%.3f", length),
-                midPoint: CGPoint(
-                    x: m.x + outward.x * labelStandoff,
-                    y: m.y + outward.y * labelStandoff
-                ),
+                midPoint: placement.midPoint,
                 value: length,
                 kind: entry.kind,
-                anchor: m
+                anchor: placement.anchor
             )
         }
     }
@@ -1233,32 +1272,35 @@ enum ShapeGeometry {
         case .circle:
             guard let circle = circleFromCardinalPoints(stroke.points) else { return [] }
             let diameter = circle.radius * 2
+            let top = CGPoint(x: circle.center.x, y: circle.center.y - circle.radius)
             return [SemanticDimension(
                 id: "diameter",
                 label: String(format: "%.3f", diameter),
-                midPoint: CGPoint(x: circle.center.x, y: circle.center.y - circle.radius - 20),
+                midPoint: CGPoint(x: top.x, y: top.y - labelStandoff),
                 value: diameter,
                 kind: .circleDiameter,
-                anchor: CGPoint(x: circle.center.x, y: circle.center.y - circle.radius)
+                anchor: top
             )]
         case .ellipse:
             guard let ellipse = ellipseFromCardinalPoints(stroke.points) else { return [] }
+            let top = CGPoint(x: ellipse.center.x, y: ellipse.center.y - ellipse.ry)
+            let left = CGPoint(x: ellipse.center.x - ellipse.rx, y: ellipse.center.y)
             return [
                 SemanticDimension(
                     id: "rx",
                     label: String(format: "rx %.3f", ellipse.rx),
-                    midPoint: CGPoint(x: ellipse.center.x + ellipse.rx / 2, y: ellipse.center.y - 24),
+                    midPoint: CGPoint(x: top.x, y: top.y - labelStandoff),
                     value: ellipse.rx,
                     kind: .ellipseRX,
-                    anchor: CGPoint(x: ellipse.center.x + ellipse.rx / 2, y: ellipse.center.y)
+                    anchor: top
                 ),
                 SemanticDimension(
                     id: "ry",
                     label: String(format: "ry %.3f", ellipse.ry),
-                    midPoint: CGPoint(x: ellipse.center.x - ellipse.rx - 24, y: ellipse.center.y),
+                    midPoint: CGPoint(x: left.x - labelStandoff, y: left.y),
                     value: ellipse.ry,
                     kind: .ellipseRY,
-                    anchor: CGPoint(x: ellipse.center.x - ellipse.rx, y: ellipse.center.y)
+                    anchor: left
                 )
             ]
         case .rectangle:
@@ -1269,18 +1311,25 @@ enum ShapeGeometry {
             }
             let points = stroke.points
             guard points.count >= 2 else { return [] }
+            let centroid = pointsCentroid(points)
             let count = stroke.isClosed ? points.count : points.count - 1
-            return (0..<count).map { index in
+            return (0..<count).compactMap { index in
                 let start = points[index]
                 let end = points[(index + 1) % points.count]
                 let length = hypot(end.x - start.x, end.y - start.y)
+                guard length > 0.001 else { return nil }
+                let placement = labelPlacement(
+                    edgeStart: start,
+                    edgeEnd: end,
+                    awayFrom: centroid
+                )
                 return SemanticDimension(
                     id: "seg-\(index)",
                     label: String(format: "%.3f", length),
-                    midPoint: midpoint(start, end),
+                    midPoint: placement.midPoint,
                     value: length,
                     kind: .segmentLength(segmentIndex: index),
-                    anchor: midpoint(start, end)
+                    anchor: placement.anchor
                 )
             }
         }

@@ -1880,9 +1880,9 @@ final class VectrDocument {
         if let lineVariant { self.lineVariant = lineVariant }
         if let circleVariant { self.circleVariant = circleVariant }
         if let rectangleVariant { self.rectangleVariant = rectangleVariant }
-        if category == .dimensions {
-            dimensionsVisible.toggle()
-        }
+        // Dimensions is a measurement overlay, not an edit mode — show labels only while
+        // the tool is active, and never leave visibility stuck on after switching away.
+        dimensionsVisible = (category == .dimensions)
     }
 
     var isDrawingToolActive: Bool {
