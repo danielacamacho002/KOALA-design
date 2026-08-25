@@ -981,7 +981,10 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
                     return shouldAcceptDrawingTouch(touch)
                 }
             case .trim, .delete, .addAnchor:
-                return shouldAcceptDrawingTouch(touch)
+                // These tools used to hit-test via SwiftUI overlays (finger-friendly).
+                // Always accept finger taps so trim/delete/add-anchor keep working when
+                // "finger drawing" is off.
+                return true
             default:
                 break
             }

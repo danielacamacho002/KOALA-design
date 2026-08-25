@@ -536,15 +536,15 @@ struct EditorView: View {
     private var canvasOverlayAcceptsHits: Bool {
         if commandSession.isActive { return false }
         switch store.document.activeCategory {
-        case .move, .scale, .trim, .fillet:
+        case .move, .scale, .fillet:
             return true
         case .type:
             // With a text selected, the overlay handles move/scale/tap-to-edit;
             // with nothing selected, taps pass through so a new text can be placed.
             return store.document.selectedTextID != nil
-        case .delete, .addAnchor, .pattern, .dimensions:
-            // Let canvas taps pass through so delete/add-anchor/pattern can target the shape
-            // directly, and so dimensions mode only shows labels (selection via canvas tap).
+        case .delete, .addAnchor, .pattern, .trim, .dimensions:
+            // Let canvas taps pass through so delete/add-anchor/pattern/trim/dimensions can
+            // target the shape directly (trim has no overlay handles; dimensions shows labels only).
             return false
         default:
             return store.document.selectedStrokeID != nil
@@ -885,9 +885,9 @@ struct EditorView: View {
             commandSession.cancel()
             store.document.clearToolSelections()
             if store.document.selectedStrokeID == nil {
-                statusMessage = "Tap a shape to select it, then tap the portion to trim away"
+                statusMessage = "Tap a shape to select it, then tap the line to trim away"
             } else {
-                statusMessage = "Tap the portion to trim away (circle quadrants, or spans between intersections)"
+                statusMessage = "Tap the line segment to trim away"
             }
         case .fillet:
             commandSession.cancel()
@@ -1068,11 +1068,36 @@ struct EditorView: View {
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             if store.document.trimAt(documentPoint, threshold: threshold) {
                 refreshCanvas()
-            } else if store.document.selectedStrokeID == nil {
+            } else if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
+                // Non-CAD shapes previously trimmed via edge/vertex handles. Keep that
+                // behavior by tapping the geometry itself (no overlay handles).
+                let usesCADTrim = stroke.shapeType == .circle
+                    || stroke.shapeType == .ellipse
+                    || stroke.shapeType == .arc
+                if !usesCADTrim {
+                    if let edgeIndex = StrokeEditor.nearestEdgeIndex(
+                        in: stroke,
+                        point: documentPoint,
+                        threshold: threshold
+                    ) {
+                        store.document.deleteStrokeEdge(at: edgeIndex)
+                        refreshCanvas()
+                    } else if let pointIndex = StrokeEditor.nearestHandleIndex(
+                        in: stroke,
+                        point: documentPoint,
+                        threshold: threshold
+                    ) {
+                        store.document.deleteStrokePoint(at: pointIndex)
+                        refreshCanvas()
+                    } else {
+                        statusMessage = "Tap the line segment to trim away"
+                    }
+                } else {
+                    statusMessage = "Tap the line segment to trim away"
+                }
+            } else {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
                 refreshCanvas()
-            } else {
-                statusMessage = "Tap a span between cut points (quadrants or intersections) to trim it"
             }
         case .addAnchor:
             let threshold = store.document.viewport.viewToDocument(distance: 28)

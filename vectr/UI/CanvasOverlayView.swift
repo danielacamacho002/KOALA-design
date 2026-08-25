@@ -5,7 +5,7 @@
 
 import SwiftUI
 
-/// Handles node editing, multi-anchor move, scale, trim, fillet, and command-preview point dragging.
+/// Handles node editing, multi-anchor move, scale, fillet, and command-preview point dragging.
 struct CanvasOverlayView: View {
     @Bindable var document: VectrDocument
     @Bindable var commandSession: ShapeCommandSession
@@ -96,8 +96,6 @@ struct CanvasOverlayView: View {
                     }
                 } else if document.activeCategory == .type {
                     textTypeOverlay
-                } else if document.activeCategory == .trim {
-                    trimOverlay
                 } else if document.activeCategory == .fillet {
                     filletOverlay
                 } else if document.activeCategory == .addAnchor {
@@ -1157,138 +1155,6 @@ struct CanvasOverlayView: View {
         activeSnap = nil
     }
 
-    // MARK: - Trim
-
-    @ViewBuilder
-    private var trimOverlay: some View {
-        if let strokeID = document.selectedStrokeID,
-           let stroke = document.stroke(with: strokeID) {
-            let usesCADTrim = stroke.shapeType == .circle
-                || stroke.shapeType == .ellipse
-                || stroke.shapeType == .arc
-            let cutPoints = trimCutMarkers(for: stroke)
-            let edgeCount = stroke.isClosed ? cutPoints.count : max(cutPoints.count - 1, 0)
-            let trimThreshold = document.viewport.viewToDocument(distance: 16)
-
-            // Cut markers (quadrants / vertices). For circles these are cut boundaries,
-            // not delete targets — tapping trims the nearest adjacent span.
-            ForEach(Array(cutPoints.enumerated()), id: \.offset) { index, point in
-                handleView(style: .trim)
-                    .position(document.viewport.documentToView(point))
-                    .onTapGesture {
-                        if usesCADTrim {
-                            _ = document.trimAt(point, threshold: trimThreshold)
-                        } else {
-                            document.deleteStrokePoint(at: index)
-                        }
-                        onChanged()
-                    }
-            }
-
-            ForEach(0..<edgeCount, id: \.self) { edgeIndex in
-                let start = cutPoints[edgeIndex]
-                let end = cutPoints[(edgeIndex + 1) % cutPoints.count]
-                let mid = trimEdgeMidpoint(stroke: stroke, start: start, end: end)
-                Capsule()
-                    .fill(Color.red.opacity(0.45))
-                    .frame(width: 28, height: 10)
-                    .overlay(Capsule().stroke(Color.red, lineWidth: 1.5))
-                    .position(document.viewport.documentToView(mid))
-                    .onTapGesture {
-                        if usesCADTrim {
-                            _ = document.trimAt(mid, threshold: trimThreshold)
-                        } else {
-                            document.deleteStrokeEdge(at: edgeIndex)
-                        }
-                        onChanged()
-                    }
-            }
-
-            centerHandle(strokeID: strokeID, stroke: stroke)
-        }
-    }
-
-    /// Sparse cut markers for trim UI: cardinals for circles, endpoints + on-arc
-    /// cardinals for arcs, otherwise editable handles.
-    private func trimCutMarkers(for stroke: VectorStroke) -> [CGPoint] {
-        switch stroke.shapeType {
-        case .circle, .ellipse:
-            return ShapeGeometry.handlePoints(for: stroke)
-        case .arc:
-            var markers: [CGPoint] = []
-            if let first = stroke.points.first { markers.append(first) }
-            if let last = stroke.points.last,
-               markers.last.map({ hypot($0.x - last.x, $0.y - last.y) > 0.001 }) ?? true {
-                markers.append(last)
-            }
-            if let circle = ShapeGeometry.arcCircle(for: stroke) {
-                for cardinal in ShapeGeometry.circleCardinalPoints(
-                    center: circle.center,
-                    radius: circle.radius
-                ) where stroke.distance(to: cardinal) <= 0.5 {
-                    if markers.contains(where: { hypot($0.x - cardinal.x, $0.y - cardinal.y) <= 0.5 }) {
-                        continue
-                    }
-                    markers.append(cardinal)
-                }
-            }
-            // Keep contour order so open-arc edge markers stay on the remaining geometry.
-            let contour = ShapeGeometry.renderPoints(for: stroke)
-            return markers.sorted { a, b in
-                contourProjectionDistance(a, on: contour) < contourProjectionDistance(b, on: contour)
-            }
-        default:
-            return ShapeGeometry.handlePoints(for: stroke)
-        }
-    }
-
-    private func contourProjectionDistance(_ point: CGPoint, on points: [CGPoint]) -> CGFloat {
-        guard points.count >= 2 else { return 0 }
-        var bestDistance = CGFloat.greatestFiniteMagnitude
-        var bestParam = CGFloat.greatestFiniteMagnitude
-        var accrued: CGFloat = 0
-        for index in 0..<(points.count - 1) {
-            let start = points[index]
-            let end = points[index + 1]
-            let dx = end.x - start.x
-            let dy = end.y - start.y
-            let lenSq = dx * dx + dy * dy
-            let t: CGFloat
-            if lenSq <= 0 {
-                t = 0
-            } else {
-                t = max(0, min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lenSq))
-            }
-            let projected = CGPoint(x: start.x + t * dx, y: start.y + t * dy)
-            let distance = hypot(point.x - projected.x, point.y - projected.y)
-            let length = hypot(dx, dy)
-            if distance < bestDistance {
-                bestDistance = distance
-                bestParam = accrued + length * t
-            }
-            accrued += length
-        }
-        return bestParam
-    }
-
-    /// For circles/ellipses, place the marker on the curved rim (not the chord midpoint).
-    private func trimEdgeMidpoint(stroke: VectorStroke, start: CGPoint, end: CGPoint) -> CGPoint {
-        let chord = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
-        if let circle = ShapeGeometry.arcCircle(for: stroke)
-            ?? ShapeGeometry.circleFromCardinalPoints(ShapeGeometry.handlePoints(for: stroke)) {
-            let dx = chord.x - circle.center.x
-            let dy = chord.y - circle.center.y
-            let length = hypot(dx, dy)
-            if length > 0.0001 {
-                return CGPoint(
-                    x: circle.center.x + dx / length * circle.radius,
-                    y: circle.center.y + dy / length * circle.radius
-                )
-            }
-        }
-        return chord
-    }
-
     // MARK: - Pattern preview
 
     @ViewBuilder
@@ -1824,7 +1690,7 @@ struct CanvasOverlayView: View {
     // MARK: - Handle appearance
 
     private enum HandleStyle {
-        case edit, move, command, selectedAnchor, trim, fillet, addAnchor
+        case edit, move, command, selectedAnchor, fillet, addAnchor
     }
 
     private func handleView(style: HandleStyle) -> some View {
@@ -1833,7 +1699,6 @@ struct CanvasOverlayView: View {
         case .move: .orange
         case .command: .blue
         case .selectedAnchor: .mint
-        case .trim: .red
         case .fillet: .purple
         case .addAnchor: .green
         }
