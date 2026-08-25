@@ -28,6 +28,113 @@ enum StrokeEditor {
         return set.isEmpty ? nil : set
     }
 
+    /// Result of deleting a single anchor. `additionalStroke` is only produced when an
+    /// interior corner on an open path splits the path into two pieces.
+    struct AnchorDeletionResult {
+        var stroke: VectorStroke
+        var additionalStroke: VectorStroke?
+    }
+
+    /// Deletes the anchor at `index` using tap-friendly semantics:
+    /// - A collinear anchor (sitting on a straight run between its neighbors) is removed
+    ///   while the surrounding geometry stays identical.
+    /// - A corner anchor removes the two edges meeting at that vertex: a closed contour
+    ///   reopens at the gap, and an interior corner on an open path splits it in two.
+    static func deleteAnchor(
+        _ stroke: VectorStroke,
+        at index: Int,
+        collinearToleranceDegrees: CGFloat = 6
+    ) -> AnchorDeletionResult? {
+        var points = ShapeGeometry.handlePoints(for: stroke)
+        if stroke.isClosed,
+           points.count > 1,
+           hypot(points[0].x - points[points.count - 1].x, points[0].y - points[points.count - 1].y) <= 0.001 {
+            points.removeLast()
+        }
+        guard points.indices.contains(index) else { return nil }
+        let count = points.count
+
+        // Neighbors that bound the vertex. Endpoints of an open path only have one edge,
+        // so they can never be a two-edge corner.
+        let hasBothNeighbors = stroke.isClosed || (index > 0 && index < count - 1)
+
+        if hasBothNeighbors {
+            let prev = points[(index - 1 + count) % count]
+            let next = points[(index + 1) % count]
+            let straight = isStraightVertex(
+                prev: prev,
+                point: points[index],
+                next: next,
+                toleranceDegrees: collinearToleranceDegrees
+            )
+            if straight {
+                // Collinear point: drop it, geometry is unchanged.
+                guard count > 2 else { return nil }
+                points.remove(at: index)
+                let closed = stroke.isClosed && points.count > 2
+                let smooth = remappedSmoothForDeletion(stroke.smoothCornerIndices, removedIndex: index)
+                let updated = updatedStroke(stroke, points: points, isClosed: closed, smoothMiddles: smooth)
+                return AnchorDeletionResult(stroke: updated, additionalStroke: nil)
+            }
+
+            // Corner: remove both adjacent edges.
+            if stroke.isClosed {
+                guard count >= 3 else { return nil }
+                // Reopen the contour starting just past the removed vertex, keeping every
+                // other point. The gap left behind spans the vertex's two former edges.
+                let reopened = (0..<(count - 1)).map { points[(index + 1 + $0) % count] }
+                guard reopened.count >= 2 else { return nil }
+                let updated = updatedStroke(stroke, points: reopened, isClosed: false)
+                return AnchorDeletionResult(stroke: updated, additionalStroke: nil)
+            }
+
+            // Interior corner on an open path: split into two open paths at the gap.
+            let left = Array(points[0..<index])
+            let right = Array(points[(index + 1)...])
+            let leftValid = left.count >= 2
+            let rightValid = right.count >= 2
+            guard leftValid || rightValid else { return nil }
+            if leftValid, rightValid {
+                let primary = updatedStroke(stroke, points: left, isClosed: false)
+                var secondary = updatedStroke(stroke, points: right, isClosed: false)
+                secondary.id = UUID()
+                return AnchorDeletionResult(stroke: primary, additionalStroke: secondary)
+            }
+            let kept = leftValid ? left : right
+            return AnchorDeletionResult(
+                stroke: updatedStroke(stroke, points: kept, isClosed: false),
+                additionalStroke: nil
+            )
+        }
+
+        // Open-path endpoint: only one edge, so just trim the endpoint off.
+        guard count > 2 else { return nil }
+        points.remove(at: index)
+        let smooth = remappedSmoothForDeletion(stroke.smoothCornerIndices, removedIndex: index)
+        let updated = updatedStroke(stroke, points: points, isClosed: false, smoothMiddles: smooth)
+        return AnchorDeletionResult(stroke: updated, additionalStroke: nil)
+    }
+
+    /// True when `point` lies on a (near) straight run between `prev` and `next`, i.e. the two
+    /// edges meeting there point in opposite directions (interior angle ~180°).
+    private static func isStraightVertex(
+        prev: CGPoint,
+        point: CGPoint,
+        next: CGPoint,
+        toleranceDegrees: CGFloat
+    ) -> Bool {
+        let v1x = prev.x - point.x
+        let v1y = prev.y - point.y
+        let v2x = next.x - point.x
+        let v2y = next.y - point.y
+        let l1 = hypot(v1x, v1y)
+        let l2 = hypot(v2x, v2y)
+        guard l1 > 0.0001, l2 > 0.0001 else { return true }
+        let cosAngle = max(-1, min(1, (v1x * v2x + v1y * v2y) / (l1 * l2)))
+        let angle = acos(cosAngle) * 180 / .pi
+        return angle >= 180 - toleranceDegrees
+    }
+
     /// Removes one side from a closed shape (reopens as polyline), or removes a vertex from an open path.
     static func deleteEdge(_ stroke: VectorStroke, edgeIndex: Int) -> VectorStroke? {
         let points = ShapeGeometry.handlePoints(for: stroke)

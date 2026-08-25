@@ -348,17 +348,59 @@ enum TrimEngine {
             }
         }
 
-        // Existing vertices that sit on another stroke also act as cut points
-        // (baked intersection anchors on demoted circles / closed polygons).
+        // Existing vertices act as cut points when they are true corners (so tapping a
+        // polygon/rectangle edge removes only that edge, even when a line crosses the
+        // shape) or when they sit on another stroke (baked intersection anchors). Near-
+        // collinear points on demoted circles / curves are skipped so those keep trimming
+        // by intersection spans instead of shedding a single tessellation segment.
         if target.shapeType != .circle, target.shapeType != .ellipse {
             for (index, vertex) in renderPoints.enumerated() {
-                guard touchesAnyStroke(vertex, strokes: otherStrokes, tolerance: 0.5) else { continue }
+                let isCorner = isCornerVertex(renderPoints, index: index, closed: closed)
+                let touches = touchesAnyStroke(vertex, strokes: otherStrokes, tolerance: 0.5)
+                guard isCorner || touches else { continue }
                 let distance = distanceToSegmentStart(segmentIndex: index, t: 0, points: renderPoints)
                 cuts.append(Cut(distance: distance, point: vertex))
             }
         }
 
         return dedupeCuts(cuts, totalLength: totalLength, closed: closed)
+    }
+
+    /// True when the vertex is a real corner: the incoming and outgoing edges change
+    /// direction by more than `toleranceDegrees`. Open-path endpoints (one edge) are not
+    /// corners. The threshold sits well above the per-vertex turn of tessellated circles
+    /// (~5.6° at 64 segments) so curved geometry is not mistaken for corners.
+    private static func isCornerVertex(
+        _ points: [CGPoint],
+        index: Int,
+        closed: Bool,
+        toleranceDegrees: CGFloat = 15
+    ) -> Bool {
+        let count = points.count
+        guard count >= 3 else { return false }
+        let prevIndex: Int
+        let nextIndex: Int
+        if closed {
+            prevIndex = (index - 1 + count) % count
+            nextIndex = (index + 1) % count
+        } else {
+            guard index > 0, index < count - 1 else { return false }
+            prevIndex = index - 1
+            nextIndex = index + 1
+        }
+        let prev = points[prevIndex]
+        let point = points[index]
+        let next = points[nextIndex]
+        let v1x = point.x - prev.x
+        let v1y = point.y - prev.y
+        let v2x = next.x - point.x
+        let v2y = next.y - point.y
+        let l1 = hypot(v1x, v1y)
+        let l2 = hypot(v2x, v2y)
+        guard l1 > 0.0001, l2 > 0.0001 else { return false }
+        let cosTurn = max(-1, min(1, (v1x * v2x + v1y * v2y) / (l1 * l2)))
+        let turnDegrees = acos(cosTurn) * 180 / .pi
+        return turnDegrees >= toleranceDegrees
     }
 
     private static func touchesAnyStroke(
@@ -543,10 +585,6 @@ enum TrimEngine {
         guard totalLength > 0.001 else { return [startPoint, endPoint] }
 
         var result: [CGPoint] = [startPoint]
-        let segmentCount = closed ? points.count : points.count - 1
-        let start = closed ? wrapDistance(startDistance, totalLength: totalLength) : startDistance
-        let end = closed ? wrapDistance(endDistance, totalLength: totalLength) : endDistance
-        let crossesSeam = closed && end + 0.0001 < start
 
         func appendUnique(_ point: CGPoint) {
             if let last = result.last,
@@ -556,26 +594,44 @@ enum TrimEngine {
             result.append(point)
         }
 
-        func isKept(_ distance: CGFloat) -> Bool {
-            if !closed {
-                return distance > start + 0.0001 && distance < end - 0.0001
+        if closed {
+            // Walk forward from `start` to `end`, wrapping across the seam, so the kept
+            // vertices are emitted in traversal order. Appending in raw index order would
+            // scramble a wrapping span into diagonal chords across the shape.
+            let start = wrapDistance(startDistance, totalLength: totalLength)
+            let end = wrapDistance(endDistance, totalLength: totalLength)
+            var spanLength = end - start
+            if spanLength <= 0.0001 { spanLength += totalLength }
+
+            var interior: [(offset: CGFloat, point: CGPoint)] = []
+            var accrued: CGFloat = 0
+            for index in 0..<points.count {
+                var offset = accrued - start
+                if offset < 0 { offset += totalLength }
+                if offset > 0.0001, offset < spanLength - 0.0001 {
+                    interior.append((offset, points[index]))
+                }
+                accrued += segmentLength(points[index], points[(index + 1) % points.count])
             }
-            let d = wrapDistance(distance, totalLength: totalLength)
-            if crossesSeam {
-                return d > start + 0.0001 || d < end - 0.0001
+            interior.sort { $0.offset < $1.offset }
+            for item in interior {
+                appendUnique(item.point)
             }
-            return d > start + 0.0001 && d < end - 0.0001
+            appendUnique(endPoint)
+            return result
         }
 
+        let start = startDistance
+        let end = endDistance
         var accrued: CGFloat = 0
-        for index in 0..<segmentCount {
+        for index in 0..<(points.count - 1) {
             let a = points[index]
-            let b = points[(index + 1) % points.count]
+            let b = points[index + 1]
             let length = segmentLength(a, b)
-            if isKept(accrued) {
+            if accrued > start + 0.0001, accrued < end - 0.0001 {
                 appendUnique(a)
             }
-            if isKept(accrued + length) {
+            if accrued + length > start + 0.0001, accrued + length < end - 0.0001 {
                 appendUnique(b)
             }
             accrued += length

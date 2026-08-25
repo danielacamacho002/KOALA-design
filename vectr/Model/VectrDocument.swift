@@ -967,6 +967,52 @@ final class VectrDocument {
         ClosedShapeDetector.reconcile(document: self)
     }
 
+    /// Trim-tool tap that lands on an anchor: deletes the vertex. A corner removes the two
+    /// edges that form it (reopening/splitting the path); a collinear point is removed without
+    /// changing the shape. Returns `true` when the tap was on a vertex and handled.
+    @discardableResult
+    func deleteStrokeAnchor(near documentPoint: CGPoint, threshold: CGFloat) -> Bool {
+        guard let id = selectedStrokeID, let stroke = stroke(with: id) else { return false }
+        // Circles / ellipses / arcs are trimmed parametrically, not by anchor deletion.
+        guard stroke.shapeType != .circle,
+              stroke.shapeType != .ellipse,
+              stroke.shapeType != .arc else { return false }
+
+        guard let index = StrokeEditor.nearestHandleIndex(
+            in: stroke,
+            point: documentPoint,
+            threshold: threshold
+        ) else { return false }
+
+        // Reject taps that are clearly on the interior of an edge (those should trim the edge,
+        // not delete a vertex). A tap near a corner projects onto an edge at its endpoint.
+        let handle = ShapeGeometry.handlePoints(for: stroke)[index]
+        let handleDistance = hypot(handle.x - documentPoint.x, handle.y - documentPoint.y)
+        if let edge = StrokeEditor.projectPointOnNearestEdge(
+            in: stroke,
+            point: documentPoint,
+            threshold: threshold
+        ), edge.t > 0.2, edge.t < 0.8 {
+            let edgeDistance = hypot(edge.projected.x - documentPoint.x, edge.projected.y - documentPoint.y)
+            if edgeDistance < handleDistance - 0.0001 { return false }
+        }
+
+        guard let result = StrokeEditor.deleteAnchor(stroke, at: index) else { return false }
+        pushUndo()
+        updateStroke(result.stroke, recordUndo: false)
+        var affected: Set<UUID> = [result.stroke.id]
+        if let additional = result.additionalStroke {
+            strokes.append(additional)
+            affected.insert(additional.id)
+        }
+        selectedStrokeID = result.stroke.id
+        reconcileIntersectionAnchors(around: affected)
+        ClosedShapeDetector.reconcile(document: self)
+        DonutDetector.reconcile(document: self)
+        geometryRevision += 1
+        return true
+    }
+
     /// CAD-style trim: remove the contour span between cut points that bounds `documentPoint`.
     @discardableResult
     func trimAt(_ documentPoint: CGPoint, threshold: CGFloat) -> Bool {

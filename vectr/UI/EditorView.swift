@@ -1098,7 +1098,11 @@ struct EditorView: View {
             }
         case .trim:
             let threshold = store.document.viewport.viewToDocument(distance: 16)
-            if store.document.trimAt(documentPoint, threshold: threshold) {
+            // Anchor-first: tapping a vertex deletes it. A corner drops its two edges and
+            // opens the shape; a collinear point is removed without changing the geometry.
+            if store.document.deleteStrokeAnchor(near: documentPoint, threshold: threshold) {
+                refreshCanvas()
+            } else if store.document.trimAt(documentPoint, threshold: threshold) {
                 refreshCanvas()
             } else if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
                 // Non-CAD shapes previously trimmed via edge/vertex handles. Keep that
@@ -1106,24 +1110,14 @@ struct EditorView: View {
                 let usesCADTrim = stroke.shapeType == .circle
                     || stroke.shapeType == .ellipse
                     || stroke.shapeType == .arc
-                if !usesCADTrim {
-                    if let edgeIndex = StrokeEditor.nearestEdgeIndex(
-                        in: stroke,
-                        point: documentPoint,
-                        threshold: threshold
-                    ) {
-                        store.document.deleteStrokeEdge(at: edgeIndex)
-                        refreshCanvas()
-                    } else if let pointIndex = StrokeEditor.nearestHandleIndex(
-                        in: stroke,
-                        point: documentPoint,
-                        threshold: threshold
-                    ) {
-                        store.document.deleteStrokePoint(at: pointIndex)
-                        refreshCanvas()
-                    } else {
-                        statusMessage = "Tap the line segment to trim away"
-                    }
+                if !usesCADTrim,
+                   let edgeIndex = StrokeEditor.nearestEdgeIndex(
+                       in: stroke,
+                       point: documentPoint,
+                       threshold: threshold
+                   ) {
+                    store.document.deleteStrokeEdge(at: edgeIndex)
+                    refreshCanvas()
                 } else {
                     statusMessage = "Tap the line segment to trim away"
                 }
