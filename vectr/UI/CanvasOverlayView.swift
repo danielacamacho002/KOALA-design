@@ -104,8 +104,7 @@ struct CanvasOverlayView: View {
                     patternPreviewOverlay
                 } else if document.selectedStrokeID != nil,
                           !document.dimensionsVisible,
-                          document.activeCategory != .delete,
-                          document.activeCategory != .trim {
+                          document.activeCategory != .delete {
                     strokeNodeHandles
                 }
             }
