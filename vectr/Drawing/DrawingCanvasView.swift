@@ -31,6 +31,7 @@ struct DrawingCanvasView: UIViewRepresentable {
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
     var onCurveCommitted: (([CGPoint]) -> Void)?
+    var onLayoutMetrics: ((CGSize, UIEdgeInsets) -> Void)?
 
     func makeUIView(context: Context) -> DrawingCanvasUIView {
         let view = DrawingCanvasUIView(document: document)
@@ -148,6 +149,7 @@ struct DrawingCanvasView: UIViewRepresentable {
         uiView.onDragDrawChanged = onDragDrawChanged
         uiView.onDragDrawEnded = onDragDrawEnded
         uiView.onCurveCommitted = onCurveCommitted
+        uiView.onLayoutMetrics = onLayoutMetrics
     }
 
     func makeCoordinator() -> Coordinator {

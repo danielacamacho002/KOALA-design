@@ -129,35 +129,22 @@ struct ViewportTransform: Codable, Equatable {
         translation = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
     }
 
-    /// Frames the whole canvas sheet inside the visible drawing area and centers the document
-    /// origin (and therefore the sheet, which is symmetric about the origin) in it.
+    /// Frames the whole canvas sheet inside `visibleRect` and places the document origin
+    /// (the X/Y axis intersection) on the midpoint of that rect.
     ///
-    /// `viewSize` is the `GeometryReader` size, which is already reduced by the top toolbar
-    /// (applied via `safeAreaInset`). The canvas surface itself uses `.ignoresSafeArea()`, so it
-    /// draws the full window height with its origin at the very top — `topToolbar` above the
-    /// visible area. That is why the vertical center adds `topToolbar`: the visible region is
-    /// `[topToolbar, topToolbar + viewSize.height]` in surface coordinates. Horizontally the
-    /// surface is not inset, so only the `leadingPanel` overlay needs to be cleared.
-    ///
-    /// `fillFactor` scales the fit: 1.0 fits the sheet exactly in the visible area, values above
-    /// 1.0 zoom in so the sheet overflows it (more zoomed-in), below 1.0 leave a gap.
+    /// `visibleRect` is in canvas-view coordinates — the area of the UIView that is not
+    /// covered by the top toolbar. `fillFactor` scales the fit: 1.0 fits the sheet exactly,
+    /// values above 1.0 zoom in so the sheet overflows the visible area.
     mutating func frameCanvasInDrawableArea(
         canvasSize: CGSize,
-        in viewSize: CGSize,
-        leadingPanel: CGFloat,
-        topToolbar: CGFloat,
+        visibleRect: CGRect,
         fillFactor: CGFloat = 1.2
     ) {
         guard canvasSize.width > 0, canvasSize.height > 0,
-              viewSize.width > 0, viewSize.height > 0 else { return }
-        let drawableWidth = max(1, viewSize.width - leadingPanel)
-        let drawableHeight = max(1, viewSize.height)
-        let fit = min(drawableWidth / canvasSize.width, drawableHeight / canvasSize.height) * fillFactor
+              visibleRect.width > 0, visibleRect.height > 0 else { return }
+        let fit = min(visibleRect.width / canvasSize.width, visibleRect.height / canvasSize.height) * fillFactor
         scale = min(Self.maxScale, max(Self.minScale, fit))
-        translation = CGPoint(
-            x: (viewSize.width + leadingPanel) / 2,
-            y: viewSize.height / 2 + topToolbar
-        )
+        translation = CGPoint(x: visibleRect.midX, y: visibleRect.midY)
     }
 
     /// Default view for a new empty project: reasonable zoom with origin centered.
