@@ -727,12 +727,18 @@ final class VectrDocument {
         }
 
         func finalizeOpenPolyline(_ stroke: inout VectorStroke) {
-            if stroke.points.count >= 3,
-               pointsConnect(stroke.points.first!, stroke.points.last!) {
-                stroke.isClosed = true
-                // Normalize closure to avoid duplicate first/last corner vertices.
-                stroke.points.removeLast()
+            let points = stroke.points
+            guard points.count >= 3, let first = points.first, let last = points.last else { return }
+            let gap = hypot(first.x - last.x, first.y - last.y)
+            guard gap <= connectTolerance else { return }
+            var length: CGFloat = 0
+            for index in 0..<(points.count - 1) {
+                length += hypot(points[index + 1].x - points[index].x, points[index + 1].y - points[index].y)
             }
+            // A V / star point whose feet sit in the same grid cell is not a loop.
+            guard gap <= max(1, min(connectTolerance, length * 0.05)) else { return }
+            stroke.isClosed = true
+            stroke.points.removeLast()
         }
 
         if let index = strokes.lastIndex(where: { stroke in
@@ -1388,7 +1394,6 @@ final class VectrDocument {
         strokes.removeAll { removeIDs.contains($0.id) }
         strokes.append(contentsOf: joined)
         pruneGroups()
-        ClosedShapeDetector.reconcile(document: self)
         let joinedIDs = Set(joined.map(\.id))
         reconcileIntersectionAnchors(around: joinedIDs)
         geometryRevision += 1
