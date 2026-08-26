@@ -280,6 +280,142 @@ enum PolygonBoolean {
         return inside
     }
 
+    /// True when `point` lies on the straight run between `prev` and `next` and can be
+    /// dropped without changing the silhouette.
+    ///
+    /// Boolean leftovers often cluster along an otherwise straight edge. Those short
+    /// edges make the local angle look like a corner even though the vertex is only a
+    /// fraction of a point off the line. A true geometric corner (≈90°) stays well
+    /// below 120° and sits far from the neighbor-to-neighbor chord.
+    static func isCollinearVertex(
+        prev: CGPoint,
+        point: CGPoint,
+        next: CGPoint,
+        angleToleranceDegrees: CGFloat = 6,
+        maxDeviation: CGFloat = 1.0
+    ) -> Bool {
+        let v1x = prev.x - point.x
+        let v1y = prev.y - point.y
+        let v2x = next.x - point.x
+        let v2y = next.y - point.y
+        let l1 = hypot(v1x, v1y)
+        let l2 = hypot(v2x, v2y)
+        if l1 <= 0.0001 || l2 <= 0.0001 { return true }
+
+        let cosAngle = max(-1, min(1, (v1x * v2x + v1y * v2y) / (l1 * l2)))
+        let angle = acos(cosAngle) * 180 / .pi
+        if angle >= 180 - angleToleranceDegrees { return true }
+
+        let chordX = next.x - prev.x
+        let chordY = next.y - prev.y
+        let chord = hypot(chordX, chordY)
+        if chord <= 0.0001 { return true }
+        let deviation = abs((point.x - prev.x) * chordY - (point.y - prev.y) * chordX) / chord
+        return deviation <= maxDeviation && angle >= 120
+    }
+
+    /// Turn at `index`, in degrees: 0 = straight, 90 = square corner, 180 = reversal.
+    static func vertexTurnDegrees(_ points: [CGPoint], index: Int, closed: Bool) -> CGFloat? {
+        let count = points.count
+        guard count >= 3 else { return nil }
+        let prevIndex: Int
+        let nextIndex: Int
+        if closed {
+            prevIndex = (index - 1 + count) % count
+            nextIndex = (index + 1) % count
+        } else {
+            guard index > 0, index < count - 1 else { return nil }
+            prevIndex = index - 1
+            nextIndex = index + 1
+        }
+        let prev = points[prevIndex]
+        let point = points[index]
+        let next = points[nextIndex]
+        let v1x = point.x - prev.x
+        let v1y = point.y - prev.y
+        let v2x = next.x - point.x
+        let v2y = next.y - point.y
+        let l1 = hypot(v1x, v1y)
+        let l2 = hypot(v2x, v2y)
+        guard l1 > 0.0001, l2 > 0.0001 else { return nil }
+        let cosTurn = max(-1, min(1, (v1x * v2x + v1y * v2y) / (l1 * l2)))
+        return acos(cosTurn) * 180 / .pi
+    }
+
+    /// True for a real geometric corner (square tooth, rectangle) as opposed to a
+    /// leftover jog on a straight run. Zigzag Boolean extras typically turn ~20–30°.
+    static func isStructuralCorner(
+        _ points: [CGPoint],
+        index: Int,
+        closed: Bool,
+        minimumTurnDegrees: CGFloat = 40
+    ) -> Bool {
+        guard let turn = vertexTurnDegrees(points, index: index, closed: closed) else { return false }
+        return turn >= minimumTurnDegrees
+    }
+
+    /// True when vertex `index` can be dropped without changing the silhouette —
+    /// including leftover points on the short edges between teeth, whose immediate
+    /// neighbors are other extras rather than the two structural corners of that edge.
+    static func isRedundantContourVertex(
+        _ points: [CGPoint],
+        index: Int,
+        closed: Bool,
+        maxDeviation: CGFloat = 2.5
+    ) -> Bool {
+        let count = points.count
+        guard count >= 3, points.indices.contains(index) else { return false }
+        if !closed, index == 0 || index == count - 1 { return false }
+
+        let prev = points[(index - 1 + count) % count]
+        let next = points[(index + 1) % count]
+        if isCollinearVertex(prev: prev, point: points[index], next: next) {
+            return true
+        }
+
+        // A real tooth/rectangle corner must never be dropped as "on the long chord"
+        // between farther corners (that chord is a diagonal across the tooth).
+        if isStructuralCorner(points, index: index, closed: closed) {
+            return false
+        }
+
+        let sigPrev = firstStructuralCorner(in: points, from: index, step: -1, closed: closed)
+        let sigNext = firstStructuralCorner(in: points, from: index, step: 1, closed: closed)
+        guard sigPrev != index, sigNext != index, sigPrev != sigNext else { return false }
+        return isCollinearVertex(
+            prev: points[sigPrev],
+            point: points[index],
+            next: points[sigNext],
+            maxDeviation: maxDeviation
+        )
+    }
+
+    /// Walks `step` from `index` to the next vertex with a sharp turn. Returns `from`
+    /// when the walk wraps without finding one.
+    private static func firstStructuralCorner(
+        in points: [CGPoint],
+        from index: Int,
+        step: Int,
+        closed: Bool
+    ) -> Int {
+        let count = points.count
+        guard count >= 3, step != 0 else { return index }
+        var current = index
+        for _ in 0..<count {
+            if closed {
+                current = (current + step + count) % count
+            } else {
+                current += step
+                if current <= 0 || current >= count - 1 { return index }
+            }
+            if current == index { return index }
+            if isStructuralCorner(points, index: current, closed: closed) {
+                return current
+            }
+        }
+        return index
+    }
+
     static func signedArea(_ polygon: [CGPoint]) -> CGFloat {
         guard polygon.count >= 3 else { return 0 }
         var sum: CGFloat = 0
@@ -507,9 +643,19 @@ enum PolygonBoolean {
                     didChange = true
                     break
                 }
-                // Antiparallel incoming/outgoing edges ⇒ `cur` is a spur tip.
                 let cosTheta = (v1x * v2x + v1y * v2y) / (len1 * len2)
+                // Antiparallel incoming/outgoing edges ⇒ `cur` is a spur tip.
                 if cosTheta < -0.9999 {
+                    pts.remove(at: i)
+                    if i < cuts.count { cuts.remove(at: i) }
+                    didChange = true
+                    break
+                }
+                // Collinear midpoint on a straight run. Boolean intersection inserts
+                // extra vertices onto existing edges; dropping them keeps the silhouette
+                // and leaves a clean outline for later trim. Tessellated curves turn ~5°
+                // per sample (cos ≈ 0.995) so they are not flattened.
+                if cosTheta > 0.9995 {
                     pts.remove(at: i)
                     if i < cuts.count { cuts.remove(at: i) }
                     didChange = true

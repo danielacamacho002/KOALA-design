@@ -36,6 +36,12 @@ enum IntersectionAnchorEngine {
             for secondIndex in strokes.indices where secondIndex > firstIndex {
                 let secondStroke = strokes[secondIndex]
                 guard !secondStroke.isConstruction else { continue }
+                guard firstStroke.layerID == secondStroke.layerID else { continue }
+                // Open lines are reference geometry (centerlines on the x/y axis,
+                // construction-style guides drawn with the line tool). Crossing them
+                // must not stamp extra vertices into a closed shape. Only two closed
+                // shapes may split each other at their intersections.
+                guard firstStroke.isClosed, secondStroke.isClosed else { continue }
 
                 if let candidateIDs,
                    !candidateIDs.contains(firstStroke.id),
@@ -160,8 +166,11 @@ enum IntersectionAnchorEngine {
     /// extra anchors into it. Parametric shapes (circles, ellipses, arcs) are also left
     /// untouched: a circle/ellipse must always keep exactly its 4 cardinal quadrant anchors and
     /// an arc must always keep exactly its 3 (start / mid / end) anchors. The only way to add
-    /// anchors to any of these is through the Add Anchor tool. Other closed shapes (rectangles,
-    /// closed polygons) still gain anchors where other geometry crosses them.
+    /// anchors to any of these is through the Add Anchor tool.
+    ///
+    /// Closed polygons/rectangles still gain anchors where another *same-layer* closed
+    /// shape crosses them. Layers are independent: dragging a shape over geometry on
+    /// another layer must not mutate either outline.
     private static func acceptsInsertedAnchors(_ stroke: VectorStroke) -> Bool {
         switch stroke.shapeType {
         case .circle, .ellipse, .arc, .curve:
