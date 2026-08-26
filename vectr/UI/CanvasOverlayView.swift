@@ -1105,7 +1105,7 @@ struct CanvasOverlayView: View {
         let update = snapSession.update(
             rawPoint: raw,
             engine: snapEngine,
-            strokes: document.strokes,
+            strokes: document.interactiveStrokes(),
             enabledKinds: document.enabledSnapKinds,
             snapRadius: SnapTuning.snapRadiusPoints / scale,
             breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
@@ -1141,7 +1141,7 @@ struct CanvasOverlayView: View {
             centerOrigins: centerOrigins,
             rawDelta: rawDelta,
             engine: snapEngine,
-            strokes: document.strokes,
+            strokes: document.interactiveStrokes(),
             enabledKinds: document.enabledSnapKinds,
             snapRadius: SnapTuning.snapRadiusPoints / scale,
             breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
