@@ -401,7 +401,7 @@ final class DrawingCanvasUIView: UIView {
             if isCommandMode {
                 onCanvasTap?(documentPoint)
             }
-        case .trim, .delete, .addAnchor, .type:
+        case .trim, .delete, .addAnchor, .type, .copy:
             onCanvasTap?(documentPoint)
         case .curve:
             // Curve points come from Pencil drags; a double-tap finishes it.
@@ -506,7 +506,7 @@ final class DrawingCanvasUIView: UIView {
         let update = snapSession.update(
             rawPoint: rawPoint,
             engine: snapEngine,
-            strokes: document.strokes,
+            strokes: document.interactiveStrokes(),
             enabledKinds: enabledKinds,
             snapRadius: SnapTuning.snapRadiusPoints / scale,
             breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
@@ -544,9 +544,10 @@ final class DrawingCanvasUIView: UIView {
     }
 
     /// Snap a new circle's center to an existing circle center when starting a concentric ring.
+    /// Only geometry on the active layer is considered so other layers stay independent.
     private func snappedCircleCenter(from point: CGPoint) -> CGPoint {
         let tolerance = document.grid.visualSpacing(for: document.settings) * 0.5
-        for stroke in document.strokes.reversed() {
+        for stroke in document.interactiveStrokes().reversed() {
             guard stroke.shapeType == .circle,
                   stroke.isClosed,
                   let circle = ShapeGeometry.circleFromCardinalPoints(stroke.points) else { continue }
@@ -980,9 +981,9 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
                 if isCommandMode {
                     return shouldAcceptDrawingTouch(touch)
                 }
-            case .trim, .delete, .addAnchor:
+            case .trim, .delete, .addAnchor, .copy:
                 // These tools used to hit-test via SwiftUI overlays (finger-friendly).
-                // Always accept finger taps so trim/delete/add-anchor keep working when
+                // Always accept finger taps so trim/delete/add-anchor/copy keep working when
                 // "finger drawing" is off.
                 return true
             default:

@@ -233,6 +233,34 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         )
     }
 
+    /// Independent copy translated by `offset`, keeping every modifier so Duplicate
+    /// matches the original: fillets, baked smooth corners, holes, cut edges, curve
+    /// handles, rotation baseline, and fill.
+    func duplicated(offset: CGPoint) -> VectorStroke {
+        var copy = self
+        copy.id = UUID()
+        return copy.offsettingGeometry(by: offset)
+    }
+
+    /// Shifts every stored point by `offset` without changing identity or modifiers.
+    func offsettingGeometry(by offset: CGPoint) -> VectorStroke {
+        guard offset != .zero else { return self }
+        var copy = self
+        copy.points = copy.points.map { CGPoint(x: $0.x + offset.x, y: $0.y + offset.y) }
+        copy.cutoutPoints = copy.cutoutPoints.map { contour in
+            contour.map { CGPoint(x: $0.x + offset.x, y: $0.y + offset.y) }
+        }
+        if let basePoints = copy.rotationBasePoints {
+            copy.rotationBasePoints = basePoints.map {
+                CGPoint(x: $0.x + offset.x, y: $0.y + offset.y)
+            }
+        }
+        if let center = copy.rotationBaseCenter {
+            copy.rotationBaseCenter = CGPoint(x: center.x + offset.x, y: center.y + offset.y)
+        }
+        return copy
+    }
+
     func distance(to point: CGPoint) -> CGFloat {
         let samplePoints = ShapeGeometry.renderPoints(for: self)
         guard samplePoints.count >= 2 else {

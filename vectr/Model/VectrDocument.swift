@@ -77,6 +77,9 @@ final class VectrDocument {
     var selectedFilletCornerIndices: Set<Int> = []
     /// When set, move-tool rotation pivots around this anchor index; nil uses shape center.
     var moveRotationPivotAnchorIndex: Int?
+    /// Session clipboard for copying items from one layer and pasting onto another.
+    /// Not persisted; switching layers clears selection, so copies live here until paste.
+    var clipboard: ElementClipboard = ElementClipboard()
     var activeCategory: ToolCategory = .line
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
@@ -195,6 +198,13 @@ final class VectrDocument {
     func selectableStrokes() -> [VectorStroke] {
         let lockedLayerIDs = Set(layers.filter(\.isLocked).map(\.id))
         return visibleStrokes().filter { $0.layerID == activeLayerID && !lockedLayerIDs.contains($0.layerID) }
+    }
+
+    /// Geometry that editing tools, snaps, and constraints may interact with.
+    /// Restricted to the active, visible, unlocked layer so other layers stay fully
+    /// independent until they are grouped and merged into this one.
+    func interactiveStrokes() -> [VectorStroke] {
+        selectableStrokes()
     }
 
     func stroke(with id: UUID) -> VectorStroke? {
@@ -1028,7 +1038,7 @@ final class VectrDocument {
         guard let result = TrimEngine.trim(
             at: documentPoint,
             threshold: threshold,
-            strokes: strokes,
+            strokes: interactiveStrokes(),
             preferredStrokeID: selectedStrokeID
         ) else { return false }
 
@@ -1347,7 +1357,10 @@ final class VectrDocument {
     }
 
     private var joinableSelectedStrokes: [VectorStroke] {
-        strokes.filter { selectedStrokeIDs.contains($0.id) && isJoinable($0) }
+        let selected = strokes.filter { selectedStrokeIDs.contains($0.id) && isJoinable($0) }
+        // Join welds geometry; only fuse shapes that already share a layer.
+        guard let layerID = selected.first?.layerID else { return [] }
+        return selected.filter { $0.layerID == layerID }
     }
 
     /// True when selected shapes can be fused: either two have anchors within
@@ -1402,33 +1415,135 @@ final class VectrDocument {
         geometryRevision += 1
     }
 
-    /// Duplicates the selection, offsetting the copies and selecting them.
-    func duplicateSelectedElements(offset: CGPoint) {
-        guard !selectionIsEmpty else { return }
+    /// Copies the current selection (including any parent groups) into the session clipboard.
+    /// Geometry stays in place; paste assigns new IDs on the active layer.
+    @discardableResult
+    func copySelectedElementsToClipboard() -> Int {
+        expandSelectionToGroupsIfNeeded()
+        guard !selectionIsEmpty else { return 0 }
+        let copiedStrokes = strokes.filter { selectedStrokeIDs.contains($0.id) }
+        let copiedText = textElements.filter { selectedTextIDs.contains($0.id) }
+        let copiedGroups = groups.filter { group in
+            group.strokeIDs.contains(where: selectedStrokeIDs.contains)
+                || group.textIDs.contains(where: selectedTextIDs.contains)
+        }
+        clipboard = ElementClipboard(
+            strokes: copiedStrokes,
+            textElements: copiedText,
+            groups: copiedGroups
+        )
+        return clipboard.itemCount
+    }
+
+    /// True when the clipboard has content and the active layer can receive it.
+    var canPasteClipboard: Bool {
+        !clipboard.isEmpty && activeLayer?.isLocked != true
+    }
+
+    /// Pastes clipboard contents onto the active layer at the original document position.
+    /// Returns the number of items created, or 0 when paste is not possible.
+    @discardableResult
+    func pasteClipboardToActiveLayer() -> Int {
+        guard canPasteClipboard else { return 0 }
         pushUndo()
+
+        var strokeIDMap: [UUID: UUID] = [:]
+        var textIDMap: [UUID: UUID] = [:]
         var newStrokeIDs: Set<UUID> = []
         var newTextIDs: Set<UUID> = []
-        for id in selectedStrokeIDs {
-            guard var copy = stroke(with: id) else { continue }
-            copy.id = UUID()
-            copy.points = copy.points.map { CGPoint(x: $0.x + offset.x, y: $0.y + offset.y) }
-            copy.cutoutPoints = copy.cutoutPoints.map { contour in
-                contour.map { CGPoint(x: $0.x + offset.x, y: $0.y + offset.y) }
-            }
-            copy.rotationBasePoints = nil
-            copy.rotationBaseCenter = nil
-            strokes.append(copy)
-            newStrokeIDs.insert(copy.id)
+
+        for stroke in clipboard.strokes {
+            var copy = stroke
+            let newID = UUID()
+            strokeIDMap[stroke.id] = newID
+            copy.id = newID
+            copy.layerID = activeLayerID
+            strokes.append(ShapeGeometry.captureRotationBaseIfNeeded(copy))
+            newStrokeIDs.insert(newID)
         }
-        for id in selectedTextIDs {
+        for text in clipboard.textElements {
+            var copy = text
+            let newID = UUID()
+            textIDMap[text.id] = newID
+            copy.id = newID
+            copy.layerID = activeLayerID
+            textElements.append(copy)
+            newTextIDs.insert(newID)
+        }
+        for group in clipboard.groups {
+            let mappedStrokes = group.strokeIDs.compactMap { strokeIDMap[$0] }
+            let mappedTexts = group.textIDs.compactMap { textIDMap[$0] }
+            guard mappedStrokes.count + mappedTexts.count >= 2 else { continue }
+            groups.append(ObjectGroup(strokeIDs: mappedStrokes, textIDs: mappedTexts))
+        }
+
+        geometryRevision += 1
+        setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs)
+        return clipboard.itemCount
+    }
+
+    /// Duplicates the selection, offsetting the copies and selecting them.
+    /// Copies geometry and modifiers as-is (fillets, holes, curve handles, rotation).
+    func duplicateSelectedElements(offset: CGPoint) {
+        expandSelectionToGroupsIfNeeded()
+        guard !selectionIsEmpty else { return }
+        pushUndo()
+
+        let sourceStrokeIDs = selectedStrokeIDs
+        let sourceTextIDs = selectedTextIDs
+        let groupsToClone = groups.filter { group in
+            group.strokeIDs.contains(where: sourceStrokeIDs.contains)
+                || group.textIDs.contains(where: sourceTextIDs.contains)
+        }
+
+        var newStrokeIDs: Set<UUID> = []
+        var newTextIDs: Set<UUID> = []
+        var strokeIDMap: [UUID: UUID] = [:]
+        var textIDMap: [UUID: UUID] = [:]
+
+        for id in sourceStrokeIDs {
+            guard let original = stroke(with: id) else { continue }
+            let copy = original.duplicated(offset: offset)
+            strokes.append(copy)
+            strokeIDMap[id] = copy.id
+            newStrokeIDs.insert(copy.id)
+            copyStrokeMetadata(from: id, to: copy.id)
+        }
+        for id in sourceTextIDs {
             guard var copy = textElement(with: id) else { continue }
             copy.id = UUID()
             copy.position = CGPoint(x: copy.position.x + offset.x, y: copy.position.y + offset.y)
             textElements.append(copy)
+            textIDMap[id] = copy.id
             newTextIDs.insert(copy.id)
         }
+
+        for group in groupsToClone {
+            let clonedStrokes = group.strokeIDs.compactMap { strokeIDMap[$0] }
+            let clonedTexts = group.textIDs.compactMap { textIDMap[$0] }
+            guard !clonedStrokes.isEmpty || !clonedTexts.isEmpty else { continue }
+            groups.append(ObjectGroup(strokeIDs: clonedStrokes, textIDs: clonedTexts))
+        }
+
         geometryRevision += 1
         setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs)
+    }
+
+    /// Copies document-level per-stroke data (print placement, dimension pins) onto a clone.
+    private func copyStrokeMetadata(from oldID: UUID, to newID: UUID) {
+        if let transform = printStrokeTransforms[oldID] {
+            printStrokeTransforms[newID] = transform
+        }
+        let oldPrefix = oldID.uuidString + ":"
+        let newPrefix = newID.uuidString + ":"
+        for (key, value) in dimensionOffsets where key.hasPrefix(oldPrefix) {
+            let suffix = String(key.dropFirst(oldPrefix.count))
+            dimensionOffsets[newPrefix + suffix] = value
+        }
+        for key in dimensionLocks where key.hasPrefix(oldPrefix) {
+            let suffix = String(key.dropFirst(oldPrefix.count))
+            dimensionLocks.insert(newPrefix + suffix)
+        }
     }
 
     /// Rotates every selected element by `degrees` around the selection's combined

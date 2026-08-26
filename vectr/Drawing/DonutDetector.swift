@@ -7,15 +7,36 @@ import CoreGraphics
 import Foundation
 
 /// Detects concentric circles and merges inner rings into outer strokes as cutout holes.
+/// Rings only merge within a single layer; other layers stay independent until merged.
 enum DonutDetector {
     static func reconcile(document: VectrDocument) {
         let centerTolerance = document.grid.visualSpacing(for: document.settings) * 0.5
         var removed = Set<UUID>()
 
-        let circleIDs = document.strokes.filter {
-            $0.shapeType == .circle && $0.isClosed
-        }.map(\.id)
+        let circlesByLayer = Dictionary(
+            grouping: document.strokes.filter { $0.shapeType == .circle && $0.isClosed },
+            by: \.layerID
+        )
 
+        for circleIDs in circlesByLayer.values.map({ $0.map(\.id) }) {
+            mergeConcentricRings(
+                circleIDs: circleIDs,
+                in: document,
+                centerTolerance: centerTolerance,
+                removed: &removed
+            )
+        }
+
+        guard !removed.isEmpty else { return }
+        document.strokes.removeAll { removed.contains($0.id) }
+    }
+
+    private static func mergeConcentricRings(
+        circleIDs: [UUID],
+        in document: VectrDocument,
+        centerTolerance: CGFloat,
+        removed: inout Set<UUID>
+    ) {
         for i in 0..<circleIDs.count {
             let hostID = circleIDs[i]
             guard !removed.contains(hostID),
@@ -46,9 +67,6 @@ enum DonutDetector {
                 }
             }
         }
-
-        guard !removed.isEmpty else { return }
-        document.strokes.removeAll { removed.contains($0.id) }
     }
 
     private static func areConcentric(
