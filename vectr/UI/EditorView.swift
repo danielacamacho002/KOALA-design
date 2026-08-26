@@ -1174,14 +1174,20 @@ struct EditorView: View {
                 refreshCanvas()
                 return
             }
-            // 2. Edge/line tap: tapping on or near an outline deletes that shape entirely.
-            if let outline = store.document.strokeOutlineHit(near: documentPoint, threshold: threshold) {
-                store.document.removeStroke(id: outline.id)
+            // 2. Interior fill tap over an overlap: punch a hole (base MINUS target).
+            //    Attempted before the outline delete so a thin cutter still cuts:
+            //    tapping inside a narrow shape lands within the outline threshold of
+            //    its own edges, which would otherwise be misread as an edge tap and
+            //    delete the whole cutter. `punchOverlapHole` only fires when the tap is
+            //    inside a top shape that overlaps a shape beneath, so true edge taps on
+            //    standalone shapes still fall through to the outline delete below.
+            if store.document.punchOverlapHole(at: documentPoint) {
                 refreshCanvas()
                 return
             }
-            // 3. Interior fill tap over an overlap: punch a hole (base MINUS target).
-            if store.document.punchOverlapHole(at: documentPoint) {
+            // 3. Edge/line tap: tapping on or near an outline deletes that shape entirely.
+            if let outline = store.document.strokeOutlineHit(near: documentPoint, threshold: threshold) {
+                store.document.removeStroke(id: outline.id)
                 refreshCanvas()
                 return
             }
@@ -1191,7 +1197,7 @@ struct EditorView: View {
                 refreshCanvas()
                 return
             }
-            // 4. Fall back to the current selection.
+            // 5. Fall back to the current selection.
             if let selected = store.document.selectedStrokeID {
                 store.document.removeStroke(id: selected)
                 refreshCanvas()

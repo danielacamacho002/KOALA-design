@@ -71,6 +71,16 @@ enum ShapeBooleanEngine {
             .map { CutContour(points: $0.points, cutEdgeStarts: $0.cutEdgeStarts) }
 
         guard !contours.isEmpty else { return .baseRemoved }
+
+        // Require that a meaningful area was actually carved away. Two shapes that only
+        // touch along a shared edge (adjacent grid cells) pass `polygonsOverlap` because
+        // a boundary vertex reads as "inside" in the even-odd test, yet `difference`
+        // returns the base essentially unchanged. Reporting that as a cut would delete
+        // the target while leaving the base untouched, so callers must keep searching
+        // for a base the target genuinely overlaps.
+        let remainingArea = contours.reduce(CGFloat.zero) { $0 + abs(signedArea($1.points)) }
+        guard baseArea - remainingArea > minArea else { return nil }
+
         return .boundaryCut(contours)
     }
 

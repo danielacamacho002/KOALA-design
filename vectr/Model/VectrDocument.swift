@@ -1939,8 +1939,15 @@ final class VectrDocument {
         let targetContour = ShapeGeometry.renderPoints(for: target)
         guard targetContour.count >= 3 else { return false }
 
-        // Search shapes beneath the target (front-to-back below it) for an overlap.
-        for index in stride(from: targetIndex - 1, through: 0, by: -1) {
+        // Search shapes beneath the target for an overlap, but try the shape directly
+        // under the tap first. In a grid of adjacent cells, a neighbor that merely abuts
+        // (or slightly overlaps) the target sits beneath it in draw order; without this
+        // ordering it could steal the cut, deleting the target while leaving the real
+        // base untouched. The shape under the finger is the one the user means to carve.
+        let beneath = Array(stride(from: targetIndex - 1, through: 0, by: -1))
+        let orderedBeneath = beneath.filter { candidates[$0].contains(documentPoint) }
+            + beneath.filter { !candidates[$0].contains(documentPoint) }
+        for index in orderedBeneath {
             let base = candidates[index]
             guard base.id != target.id, base.isClosed, !base.isConstruction else { continue }
             let baseContour = ShapeGeometry.renderPoints(for: base)
