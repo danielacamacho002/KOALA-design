@@ -57,6 +57,8 @@ struct TextElement: Identifiable, Codable, Equatable {
     var isOutline: Bool = false
     /// CCW rotation in radians around the block center.
     var rotation: CGFloat = 0
+    /// When `true`, omitted from canvas, hit-testing, and export.
+    var isHidden: Bool = false
 
     init(
         id: UUID = UUID(),
@@ -69,7 +71,8 @@ struct TextElement: Identifiable, Codable, Equatable {
         strokeColor: CodableColor = CodableColor(.primary),
         strokeWidth: CGFloat = TextElement.defaultStrokeWidth,
         isOutline: Bool = false,
-        rotation: CGFloat = 0
+        rotation: CGFloat = 0,
+        isHidden: Bool = false
     ) {
         self.id = id
         self.layerID = layerID
@@ -82,11 +85,12 @@ struct TextElement: Identifiable, Codable, Equatable {
         self.strokeWidth = strokeWidth
         self.isOutline = isOutline
         self.rotation = rotation
+        self.isHidden = isHidden
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, layerID, text, position, fontRef, fontSize, color
-        case strokeColor, strokeWidth, isOutline, rotation
+        case strokeColor, strokeWidth, isOutline, rotation, isHidden
     }
 
     // Custom decoding so documents saved before stroke/outline support (which
@@ -104,6 +108,7 @@ struct TextElement: Identifiable, Codable, Equatable {
         strokeWidth = try container.decodeIfPresent(CGFloat.self, forKey: .strokeWidth) ?? TextElement.defaultStrokeWidth
         isOutline = try container.decodeIfPresent(Bool.self, forKey: .isOutline) ?? false
         rotation = try container.decodeIfPresent(CGFloat.self, forKey: .rotation) ?? 0
+        isHidden = try container.decodeIfPresent(Bool.self, forKey: .isHidden) ?? false
     }
 
     /// Fill color as a `CGColor` (used when `isOutline` is `false`).

@@ -17,6 +17,7 @@ struct EditorToolbarView: View {
     var onSave: () -> Void
     var onToolSelected: (ToolCategory) -> Void
     var onSwitchToPrintLayout: (() -> Void)?
+    var onVisibilityToggled: () -> Void
 
     static let height: CGFloat = 48
     private var toolbarHeight: CGFloat { Self.height }
@@ -44,6 +45,15 @@ struct EditorToolbarView: View {
             HStack(spacing: 4) {
                 toolbarIconButton("arrow.uturn.backward", disabled: !canUndo, action: onUndo)
                 toolbarIconButton("arrow.uturn.forward", disabled: !canRedo, action: onRedo)
+                toolbarIconButton(
+                    document.visibilityToolbarImage,
+                    disabled: !document.canToggleElementVisibility,
+                    action: {
+                        document.toggleSelectedElementsHidden()
+                        onVisibilityToggled()
+                    },
+                    accessibilityLabel: document.visibilityToolbarAccessibilityLabel
+                )
             }
 
             ToolPaletteSeparator()

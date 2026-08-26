@@ -14,8 +14,8 @@ enum LayerThumbnailRenderer {
         layerID: UUID,
         size: CGSize
     ) -> UIImage? {
-        let strokes = document.strokes(for: layerID)
-        let texts = document.textElements.filter { $0.layerID == layerID }
+        let strokes = document.strokes(for: layerID).filter { !$0.isHiddenFromCanvas }
+        let texts = document.textElements.filter { $0.layerID == layerID && !$0.isHidden }
 
         var points = strokes.flatMap { ShapeGeometry.renderPoints(for: $0) }
         for element in texts {

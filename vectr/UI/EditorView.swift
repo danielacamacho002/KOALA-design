@@ -423,7 +423,11 @@ struct EditorView: View {
                 onShare: { showExportSheet = true },
                 onSave: { saveDocumentNow() },
                 onToolSelected: handleToolSelected,
-                onSwitchToPrintLayout: { switchToPrintLayoutMode() }
+                onSwitchToPrintLayout: { switchToPrintLayoutMode() },
+                onVisibilityToggled: {
+                    store.markDirty()
+                    refreshCanvas()
+                }
             )
         }
     }
