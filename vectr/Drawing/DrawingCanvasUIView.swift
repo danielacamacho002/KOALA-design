@@ -506,7 +506,7 @@ final class DrawingCanvasUIView: UIView {
         let update = snapSession.update(
             rawPoint: rawPoint,
             engine: snapEngine,
-            strokes: document.strokes,
+            strokes: document.interactiveStrokes(),
             enabledKinds: enabledKinds,
             snapRadius: SnapTuning.snapRadiusPoints / scale,
             breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
@@ -544,9 +544,10 @@ final class DrawingCanvasUIView: UIView {
     }
 
     /// Snap a new circle's center to an existing circle center when starting a concentric ring.
+    /// Only geometry on the active layer is considered so other layers stay independent.
     private func snappedCircleCenter(from point: CGPoint) -> CGPoint {
         let tolerance = document.grid.visualSpacing(for: document.settings) * 0.5
-        for stroke in document.strokes.reversed() {
+        for stroke in document.interactiveStrokes().reversed() {
             guard stroke.shapeType == .circle,
                   stroke.isClosed,
                   let circle = ShapeGeometry.circleFromCardinalPoints(stroke.points) else { continue }

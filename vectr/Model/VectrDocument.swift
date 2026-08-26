@@ -197,6 +197,13 @@ final class VectrDocument {
         return visibleStrokes().filter { $0.layerID == activeLayerID && !lockedLayerIDs.contains($0.layerID) }
     }
 
+    /// Geometry that editing tools, snaps, and constraints may interact with.
+    /// Restricted to the active, visible, unlocked layer so other layers stay fully
+    /// independent until they are grouped and merged into this one.
+    func interactiveStrokes() -> [VectorStroke] {
+        selectableStrokes()
+    }
+
     func stroke(with id: UUID) -> VectorStroke? {
         strokes.first { $0.id == id }
     }
@@ -1028,7 +1035,7 @@ final class VectrDocument {
         guard let result = TrimEngine.trim(
             at: documentPoint,
             threshold: threshold,
-            strokes: strokes,
+            strokes: interactiveStrokes(),
             preferredStrokeID: selectedStrokeID
         ) else { return false }
 
@@ -1347,7 +1354,10 @@ final class VectrDocument {
     }
 
     private var joinableSelectedStrokes: [VectorStroke] {
-        strokes.filter { selectedStrokeIDs.contains($0.id) && isJoinable($0) }
+        let selected = strokes.filter { selectedStrokeIDs.contains($0.id) && isJoinable($0) }
+        // Join welds geometry; only fuse shapes that already share a layer.
+        guard let layerID = selected.first?.layerID else { return [] }
+        return selected.filter { $0.layerID == layerID }
     }
 
     /// True when selected shapes can be fused: either two have anchors within

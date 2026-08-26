@@ -535,7 +535,7 @@ struct EditorView: View {
         return objectSnapEngine.closestCandidate(
             to: point,
             within: SnapTuning.snapRadiusPoints / scale,
-            strokes: store.document.strokes,
+            strokes: store.document.interactiveStrokes(),
             excludedStrokeID: commandSession.attachedStrokeID,
             enabledKinds: enabledKinds,
             referenceStarts: referenceStart.map { [$0] } ?? []
