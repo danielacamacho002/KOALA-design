@@ -211,7 +211,10 @@ extension VectrDocument {
     /// Selects the top-most selectable (visible, unlocked layer) text element hit by `documentPoint`.
     @discardableResult
     func selectTextElement(at documentPoint: CGPoint) -> TextElement? {
-        let hit = selectableTextElements().reversed().first { $0.contains(documentPoint) }
+        if isHitOnInactiveLayer(near: documentPoint, threshold: 0) {
+            return nil
+        }
+        let hit = textElement(at: documentPoint)
         if let hit {
             selectTextConsideringGroups(hit.id)
         } else {
@@ -221,16 +224,24 @@ extension VectrDocument {
     }
 
     /// The top-most selectable text element hit by `documentPoint`, without changing selection.
+    /// Returns nil when another layer's text is in front, so tools cannot punch through.
     func textElement(at documentPoint: CGPoint) -> TextElement? {
-        selectableTextElements().reversed().first { $0.contains(documentPoint) }
+        guard let hit = occupyingTextElements().reversed().first(where: { $0.contains(documentPoint) }) else {
+            return nil
+        }
+        return isSelectableText(hit) ? hit : nil
     }
 
     /// Unified selection: prefers a hit text element, otherwise falls back to
     /// stroke hit testing. Text and strokes share a single active selection so
     /// the standard manipulation tools (move/scale/delete) treat text like a shape.
     /// Selecting any member of a group expands to the whole group.
+    /// A tap on another layer's item is ignored (does not select or clear).
     @discardableResult
     func selectElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
+        if isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
+            return .none
+        }
         if let text = textElement(at: documentPoint) {
             selectTextConsideringGroups(text.id)
             return .text(text.id)
