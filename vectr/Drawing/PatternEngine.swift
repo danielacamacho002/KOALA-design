@@ -225,22 +225,7 @@ enum PatternEngine {
             copy = ShapeGeometry.rotatedStroke(copy, around: pivot, by: rotation)
         }
 
-        copy.points = PrintLayoutCoordinateSpace.offsetPoints(copy.points, by: translation)
-        if !copy.cutoutPoints.isEmpty {
-            copy.cutoutPoints = copy.cutoutPoints.map {
-                PrintLayoutCoordinateSpace.offsetPoints($0, by: translation)
-            }
-        }
-        if let basePoints = copy.rotationBasePoints {
-            copy.rotationBasePoints = PrintLayoutCoordinateSpace.offsetPoints(basePoints, by: translation)
-        }
-        if let baseCenter = copy.rotationBaseCenter {
-            copy.rotationBaseCenter = CGPoint(
-                x: baseCenter.x + translation.x,
-                y: baseCenter.y + translation.y
-            )
-        }
-
+        copy = copy.offsettingGeometry(by: translation)
         return ShapeGeometry.captureRotationBaseIfNeeded(copy)
     }
 
