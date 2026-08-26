@@ -158,7 +158,9 @@ enum IntersectionAnchorEngine {
             cornerRadius: 0,
             isConstruction: stroke.isConstruction,
             shapeType: normalizedShapeType,
-            cutoutPoints: stroke.cutoutPoints
+            cutoutPoints: stroke.cutoutPoints,
+            openCutoutIndices: stroke.openCutoutIndices,
+            fillOpacity: stroke.fillOpacity
         )
     }
 
@@ -171,7 +173,14 @@ enum IntersectionAnchorEngine {
     /// Closed polygons/rectangles still gain anchors where another *same-layer* closed
     /// shape crosses them. Layers are independent: dragging a shape over geometry on
     /// another layer must not mutate either outline.
+    ///
+    /// Live or baked fillets are also left untouched: rebuilding as a sharp polyline
+    /// would drop rounded corners (the same failure Duplicate used to hit when the
+    /// offset copy overlapped the original and a later move reconciled intersections).
     private static func acceptsInsertedAnchors(_ stroke: VectorStroke) -> Bool {
+        if stroke.hasAnyCornerFillets || stroke.hasBakedSmoothCorners {
+            return false
+        }
         switch stroke.shapeType {
         case .circle, .ellipse, .arc, .curve:
             // Curves carry editable Bezier handles that a flat polyline rebuild would

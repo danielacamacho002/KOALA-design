@@ -1473,32 +1473,67 @@ final class VectrDocument {
     }
 
     /// Duplicates the selection, offsetting the copies and selecting them.
+    /// Copies geometry and modifiers as-is (fillets, holes, curve handles, rotation).
     func duplicateSelectedElements(offset: CGPoint) {
+        expandSelectionToGroupsIfNeeded()
         guard !selectionIsEmpty else { return }
         pushUndo()
+
+        let sourceStrokeIDs = selectedStrokeIDs
+        let sourceTextIDs = selectedTextIDs
+        let groupsToClone = groups.filter { group in
+            group.strokeIDs.contains(where: sourceStrokeIDs.contains)
+                || group.textIDs.contains(where: sourceTextIDs.contains)
+        }
+
         var newStrokeIDs: Set<UUID> = []
         var newTextIDs: Set<UUID> = []
-        for id in selectedStrokeIDs {
-            guard var copy = stroke(with: id) else { continue }
-            copy.id = UUID()
-            copy.points = copy.points.map { CGPoint(x: $0.x + offset.x, y: $0.y + offset.y) }
-            copy.cutoutPoints = copy.cutoutPoints.map { contour in
-                contour.map { CGPoint(x: $0.x + offset.x, y: $0.y + offset.y) }
-            }
-            copy.rotationBasePoints = nil
-            copy.rotationBaseCenter = nil
+        var strokeIDMap: [UUID: UUID] = [:]
+        var textIDMap: [UUID: UUID] = [:]
+
+        for id in sourceStrokeIDs {
+            guard let original = stroke(with: id) else { continue }
+            let copy = original.duplicated(offset: offset)
             strokes.append(copy)
+            strokeIDMap[id] = copy.id
             newStrokeIDs.insert(copy.id)
+            copyStrokeMetadata(from: id, to: copy.id)
         }
-        for id in selectedTextIDs {
+        for id in sourceTextIDs {
             guard var copy = textElement(with: id) else { continue }
             copy.id = UUID()
             copy.position = CGPoint(x: copy.position.x + offset.x, y: copy.position.y + offset.y)
             textElements.append(copy)
+            textIDMap[id] = copy.id
             newTextIDs.insert(copy.id)
         }
+
+        for group in groupsToClone {
+            let clonedStrokes = group.strokeIDs.compactMap { strokeIDMap[$0] }
+            let clonedTexts = group.textIDs.compactMap { textIDMap[$0] }
+            guard !clonedStrokes.isEmpty || !clonedTexts.isEmpty else { continue }
+            groups.append(ObjectGroup(strokeIDs: clonedStrokes, textIDs: clonedTexts))
+        }
+
         geometryRevision += 1
         setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs)
+    }
+
+    /// Copies document-level per-stroke data (print placement, dimension pins) onto a clone.
+    private func copyStrokeMetadata(from oldID: UUID, to newID: UUID) {
+        if let transform = printStrokeTransforms[oldID] {
+            printStrokeTransforms[newID] = transform
+        }
+        let oldPrefix = oldID.uuidString + ":"
+        let newPrefix = newID.uuidString + ":"
+        for (key, value) in dimensionOffsets where key.hasPrefix(oldPrefix) {
+            let suffix = String(key.dropFirst(oldPrefix.count))
+            dimensionOffsets[newPrefix + suffix] = value
+        }
+        for key in dimensionLocks where key.hasPrefix(oldPrefix) {
+            let suffix = String(key.dropFirst(oldPrefix.count))
+            dimensionLocks.insert(newPrefix + suffix)
+        }
     }
 
     /// Rotates every selected element by `degrees` around the selection's combined
