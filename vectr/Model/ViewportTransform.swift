@@ -38,28 +38,15 @@ struct ViewportTransform: Codable, Equatable {
         return max(minScale, fitScale * canvasFitPadding)
     }
 
-    /// Constrains pan/zoom so the canvas stays framed: you can zoom out until the whole
-    /// canvas is visible (surrounded by pasteboard) and can't scroll the canvas off-screen.
+    /// Constrains the zoom level to the supported range. Panning is intentionally left free so the
+    /// canvas can be dragged anywhere on (or off) screen, behaving identically when zoomed in or
+    /// out; the two-finger gesture is what naturally limits how far it travels.
     mutating func clampToCanvasSize(in viewSize: CGSize, canvasSize: CGSize) {
         guard canvasSize.width > 0, canvasSize.height > 0,
               viewSize.width > 0, viewSize.height > 0 else { return }
 
         let minAllowedScale = Self.minimumScaleToFitCanvas(in: viewSize, canvasSize: canvasSize)
         scale = min(Self.maxScale, max(scale, minAllowedScale))
-
-        let halfWidth = canvasSize.width / 2
-        let halfHeight = canvasSize.height / 2
-
-        // The two bounds swap roles depending on whether the scaled canvas is larger
-        // (zoomed in: clamp so you can't pan past the canvas edges) or smaller than the
-        // view (zoomed out: clamp so the canvas stays fully on-screen within the pasteboard).
-        let boundA_X = viewSize.width - halfWidth * scale
-        let boundB_X = halfWidth * scale
-        translation.x = min(max(translation.x, min(boundA_X, boundB_X)), max(boundA_X, boundB_X))
-
-        let boundA_Y = viewSize.height - halfHeight * scale
-        let boundB_Y = halfHeight * scale
-        translation.y = min(max(translation.y, min(boundA_Y, boundB_Y)), max(boundA_Y, boundB_Y))
     }
 
     func viewToDocument(_ point: CGPoint) -> CGPoint {
