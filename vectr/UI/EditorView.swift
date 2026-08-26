@@ -213,12 +213,13 @@ struct EditorView: View {
                 )
                 .ignoresSafeArea()
 
-                if isDragDrawing, let start = dragDrawStart, let end = dragDrawEnd {
+                if isDragDrawing, let start = dragDrawStart, let end = dragDrawEnd,
+                   let category = store.document.activeCategory {
                     LiveDimensionOverlay(
                         document: store.document,
                         start: start,
                         end: end,
-                        category: store.document.activeCategory,
+                        category: category,
                         circleVariant: store.document.circleVariant,
                         rectangleVariant: store.document.rectangleVariant
                     )
@@ -581,9 +582,10 @@ struct EditorView: View {
             // With a text selected, the overlay handles move/scale/tap-to-edit;
             // with nothing selected, taps pass through so a new text can be placed.
             return store.document.selectedTextID != nil
-        case .delete, .addAnchor, .pattern, .trim, .dimensions, .copy:
+        case .delete, .addAnchor, .pattern, .trim, .dimensions, .copy, nil:
             // Let canvas taps pass through so delete/add-anchor/pattern/trim/dimensions/copy can
             // target the shape directly (trim has no overlay handles; dimensions shows labels only).
+            // Idle (no tool) taps also pass through so a shape hit can switch to the move tool.
             return false
         default:
             return store.document.selectedStrokeID != nil
@@ -911,8 +913,8 @@ struct EditorView: View {
         )
     }
 
-    private func handleToolSelected(_ category: ToolCategory) {
-        showCommandPanel = category.isDrawingTool
+    private func handleToolSelected(_ category: ToolCategory?) {
+        showCommandPanel = category?.isDrawingTool ?? false
         if category != .copy {
             showLayersPanel = false
         }
@@ -921,6 +923,13 @@ struct EditorView: View {
         }
         if category != .pattern {
             patternPreviewStrokes = []
+        }
+        guard let category else {
+            commandSession.cancel()
+            resetArcDragState()
+            updateChromeInsets()
+            refreshCanvas()
+            return
         }
         switch category {
         case .type:
@@ -1024,7 +1033,7 @@ struct EditorView: View {
     }
 
     private func startDrawingSessionIfNeeded(anchor: CGPoint? = nil) {
-        guard store.document.activeCategory.isDrawingTool else {
+        guard let category = store.document.activeCategory, category.isDrawingTool else {
             commandSession.cancel()
             resetArcDragState()
             updateChromeInsets()
@@ -1033,7 +1042,7 @@ struct EditorView: View {
         resetArcDragState()
         store.document.selectedStrokeID = nil
         commandSession.start(
-            category: store.document.activeCategory,
+            category: category,
             lineVariant: store.document.lineVariant,
             circleVariant: store.document.circleVariant,
             rectangleVariant: store.document.rectangleVariant
@@ -1101,6 +1110,8 @@ struct EditorView: View {
             showLayersPanel = false
         }
         switch store.document.activeCategory {
+        case nil:
+            activateMoveIfHit(at: documentPoint)
         case .type:
             endTextEditingIfNeeded()
             if let hit = store.document.selectTextElement(at: documentPoint) {
@@ -1120,6 +1131,7 @@ struct EditorView: View {
                 refreshCanvas()
             }
         case .line, .circle, .rectangle:
+            guard let category = store.document.activeCategory else { return }
             if commandSession.isRefiningAttachedStroke {
                 startDrawingSessionIfNeeded()
             }
@@ -1128,7 +1140,7 @@ struct EditorView: View {
             let projected = ShapeGeometry.projectCommandPoint(
                 snapped,
                 controlPoints: commandSession.controlPoints,
-                category: store.document.activeCategory,
+                category: category,
                 lineVariant: store.document.lineVariant,
                 circleVariant: store.document.circleVariant,
                 rectangleVariant: store.document.rectangleVariant
@@ -1269,6 +1281,30 @@ struct EditorView: View {
         }
     }
 
+    /// Idle canvas tap: if the tap hits a shape, line, or text, switch to the
+    /// move/select/edit tool and select that element.
+    private func activateMoveIfHit(at documentPoint: CGPoint) {
+        let threshold = store.document.viewport.viewToDocument(distance: 16)
+        let hit = store.document.elementHit(near: documentPoint, threshold: threshold)
+        let groupHit = hit == .none ? store.document.group(at: documentPoint) : nil
+        guard hit != .none || groupHit != nil else { return }
+
+        switch hit {
+        case .stroke(let id):
+            store.document.selectStrokeConsideringGroups(id)
+        case .text(let id):
+            store.document.selectTextConsideringGroups(id)
+        case .none:
+            if let groupHit {
+                store.document.selectGroup(groupHit)
+            }
+        }
+
+        store.document.selectTool(.move)
+        handleToolSelected(.move)
+        refreshCanvas()
+    }
+
     private func commitDragDraw(start: CGPoint, end: CGPoint) {
         let snappedStart = snapDrawingInput(start)
         // Re-snap the end with the start as the tangent reference so a live tangent lock is
@@ -1286,8 +1322,13 @@ struct EditorView: View {
             return
         }
 
+        guard let category = store.document.activeCategory else {
+            startDrawingSessionIfNeeded()
+            return
+        }
+
         commandSession.start(
-            category: store.document.activeCategory,
+            category: category,
             lineVariant: store.document.lineVariant,
             circleVariant: store.document.circleVariant,
             rectangleVariant: store.document.rectangleVariant
@@ -1304,7 +1345,7 @@ struct EditorView: View {
         // Use the same commit pathway as point-by-point entry.
         commitCommandShape(restart: false)
 
-        if store.document.activeCategory.isDrawingTool {
+        if store.document.isDrawingToolActive {
             startDrawingSessionIfNeeded()
         } else {
             commandSession.cancel()
@@ -1401,7 +1442,7 @@ struct EditorView: View {
             if syncAttachedStrokeFromSession(recordUndo: false) {
                 store.markDirty()
             }
-            if restart, store.document.activeCategory.isDrawingTool {
+            if restart, store.document.isDrawingToolActive {
                 startDrawingSessionIfNeeded()
             } else {
                 commandSession.finish()
@@ -1441,7 +1482,7 @@ struct EditorView: View {
         store.markDirty()
         refreshCanvas()
 
-        if restart, store.document.activeCategory.isDrawingTool {
+        if restart, store.document.isDrawingToolActive {
             startDrawingSessionIfNeeded()
         } else {
             store.document.selectedStrokeID = stroke.id

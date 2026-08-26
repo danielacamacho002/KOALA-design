@@ -15,7 +15,7 @@ struct EditorToolbarView: View {
     var onSettings: () -> Void
     var onShare: () -> Void
     var onSave: () -> Void
-    var onToolSelected: (ToolCategory) -> Void
+    var onToolSelected: (ToolCategory?) -> Void
     var onSwitchToPrintLayout: (() -> Void)?
 
     static let height: CGFloat = 48

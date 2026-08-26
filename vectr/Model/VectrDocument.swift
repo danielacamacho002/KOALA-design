@@ -80,7 +80,9 @@ final class VectrDocument {
     /// Session clipboard for copying items from one layer and pasting onto another.
     /// Not persisted; switching layers clears selection, so copies live here until paste.
     var clipboard: ElementClipboard = ElementClipboard()
-    var activeCategory: ToolCategory = .line
+    /// Currently selected drawing or edit tool. `nil` means no tool is active;
+    /// tapping a shape or line in that state selects it and switches to Move.
+    var activeCategory: ToolCategory?
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
@@ -2055,8 +2057,13 @@ final class VectrDocument {
         dimensionsVisible = (category == .dimensions)
     }
 
+    func clearActiveTool() {
+        activeCategory = nil
+        dimensionsVisible = false
+    }
+
     var isDrawingToolActive: Bool {
-        activeCategory.isDrawingTool
+        activeCategory?.isDrawingTool ?? false
     }
 
     func syncGridFromSettings() {

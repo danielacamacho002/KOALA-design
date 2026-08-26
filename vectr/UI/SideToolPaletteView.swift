@@ -7,7 +7,7 @@ import SwiftUI
 
 struct SideToolPaletteView: View {
     @Bindable var document: VectrDocument
-    var onToolSelected: (ToolCategory) -> Void
+    var onToolSelected: (ToolCategory?) -> Void
 
     private let iconSize: CGFloat = 34
 
@@ -38,8 +38,13 @@ struct SideToolPaletteView: View {
             size: iconSize,
             inactiveColor: .white
         ) {
-            document.selectTool(category)
-            onToolSelected(category)
+            if document.activeCategory == category {
+                document.clearActiveTool()
+                onToolSelected(nil)
+            } else {
+                document.selectTool(category)
+                onToolSelected(category)
+            }
         }
         .accessibilityLabel(category.label)
     }
