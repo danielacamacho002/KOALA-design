@@ -18,6 +18,7 @@ enum ToolCategory: String, CaseIterable, Codable {
     case fillet
     case addAnchor
     case pattern
+    case copy
     case delete
 
     var isDrawingTool: Bool {
@@ -41,6 +42,7 @@ enum ToolCategory: String, CaseIterable, Codable {
         case .fillet: return "Fillet"
         case .addAnchor: return "Add Anchor"
         case .pattern: return "Pattern"
+        case .copy: return "Copy"
         case .delete: return "Delete"
         }
     }
@@ -59,6 +61,7 @@ enum ToolCategory: String, CaseIterable, Codable {
         case .fillet: return "point.topleft.down.to.point.bottomright.curvepath"
         case .addAnchor: return "plus.circle"
         case .pattern: return "square.grid.3x3"
+        case .copy: return "doc.on.doc"
         case .delete: return "trash"
         }
     }
@@ -68,7 +71,7 @@ enum ToolCategory: String, CaseIterable, Codable {
     }
 
     static var actionCategories: [ToolCategory] {
-        [.move, .scale, .dimensions, .trim, .fillet, .addAnchor, .pattern, .delete]
+        [.move, .scale, .dimensions, .trim, .fillet, .addAnchor, .pattern, .copy, .delete]
     }
 }
 

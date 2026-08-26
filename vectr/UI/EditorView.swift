@@ -299,6 +299,13 @@ struct EditorView: View {
                         onStatus: { statusMessage = $0 }
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else if store.document.activeCategory == .copy {
+                    CopyPastePanelView(
+                        document: store.document,
+                        onChanged: { refreshCanvas() },
+                        onStatus: { statusMessage = $0 }
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
             .overlay(alignment: .topLeading) {
@@ -574,8 +581,8 @@ struct EditorView: View {
             // With a text selected, the overlay handles move/scale/tap-to-edit;
             // with nothing selected, taps pass through so a new text can be placed.
             return store.document.selectedTextID != nil
-        case .delete, .addAnchor, .pattern, .trim, .dimensions:
-            // Let canvas taps pass through so delete/add-anchor/pattern/trim/dimensions can
+        case .delete, .addAnchor, .pattern, .trim, .dimensions, .copy:
+            // Let canvas taps pass through so delete/add-anchor/pattern/trim/dimensions/copy can
             // target the shape directly (trim has no overlay handles; dimensions shows labels only).
             return false
         default:
@@ -891,7 +898,7 @@ struct EditorView: View {
     private func updateChromeInsets() {
         let panelWidth: CGFloat
         switch store.document.activeCategory {
-        case .fillet, .addAnchor, .pattern:
+        case .fillet, .addAnchor, .pattern, .copy:
             panelWidth = 188
         default:
             panelWidth = 0
@@ -906,7 +913,9 @@ struct EditorView: View {
 
     private func handleToolSelected(_ category: ToolCategory) {
         showCommandPanel = category.isDrawingTool
-        showLayersPanel = false
+        if category != .copy {
+            showLayersPanel = false
+        }
         if category != .type {
             endTextEditingIfNeeded()
         }
@@ -964,6 +973,21 @@ struct EditorView: View {
                 statusMessage = "Adjust pattern settings, then tap Apply"
             } else {
                 statusMessage = "Select a shape, then choose grid, linear, radial, or spiral"
+            }
+        case .copy:
+            commandSession.cancel()
+            store.document.clearToolSelections()
+            if store.document.selectionIsEmpty,
+               let lastID = store.document.lastSelectedStrokeID,
+               store.document.stroke(with: lastID)?.layerID == store.document.activeLayerID {
+                store.document.selectStrokeConsideringGroups(lastID)
+            } else {
+                store.document.expandSelectionToGroupsIfNeeded()
+            }
+            if store.document.selectionIsEmpty {
+                statusMessage = "Tap a shape to copy, then switch layers and Paste"
+            } else {
+                statusMessage = "Copy the selection, then switch layers and Paste"
             }
         case .curve:
             commandSession.cancel()
@@ -1071,7 +1095,11 @@ struct EditorView: View {
 
     private func handleCanvasTap(_ documentPoint: CGPoint) {
         showCommandPanel = false
-        showLayersPanel = false
+        // Keep layers open for copy/paste so the destination layer can be chosen
+        // without reopening the panel after tapping a shape.
+        if store.document.activeCategory != .copy {
+            showLayersPanel = false
+        }
         switch store.document.activeCategory {
         case .type:
             endTextEditingIfNeeded()
@@ -1168,6 +1196,17 @@ struct EditorView: View {
                 patternPreviewStrokes = []
             }
             updatePatternPreview()
+            refreshCanvas()
+        case .copy:
+            let threshold = store.document.viewport.viewToDocument(distance: 16)
+            let hit = store.document.selectElement(near: documentPoint, threshold: threshold)
+            if hit != .none {
+                let count = store.document.copySelectedElementsToClipboard()
+                if count > 0 {
+                    let noun = count == 1 ? "item" : "items"
+                    statusMessage = "Copied \(count) \(noun). Switch layers, then Paste"
+                }
+            }
             refreshCanvas()
         case .delete:
             if let text = store.document.textElement(at: documentPoint) {
