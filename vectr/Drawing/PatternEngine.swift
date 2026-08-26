@@ -22,17 +22,17 @@ enum PatternEngine {
 
     private static let minimumRadius: CGFloat = 1
 
-    static func defaultSpacing(for stroke: VectorStroke, gap: CGFloat = 4) -> (x: CGFloat, y: CGFloat) {
+    static func boundingSize(for stroke: VectorStroke) -> CGSize {
         let points = ShapeGeometry.renderPoints(for: stroke)
         let rect = PrintLayoutCoordinateSpace.boundingRect(for: points)
-        guard !rect.isNull else { return (50, 50) }
-        return (max(rect.width + gap, 1), max(rect.height + gap, 1))
+        guard !rect.isNull else { return .zero }
+        return rect.size
     }
 
     static func generatedCopies(from stroke: VectorStroke, settings: PatternSettings) -> [VectorStroke] {
         let pivot = ShapeGeometry.shapeCenter(for: stroke)
             ?? strokeCenter(from: stroke)
-        return computePlacements(settings: settings).map { placement in
+        return computePlacements(from: stroke, settings: settings).map { placement in
             transformedCopy(
                 stroke,
                 pivot: pivot,
@@ -49,7 +49,7 @@ enum PatternEngine {
     ) -> Application {
         let pivot = ShapeGeometry.shapeCenter(for: stroke)
             ?? strokeCenter(from: stroke)
-        let placements = computePlacements(settings: settings)
+        let placements = computePlacements(from: stroke, settings: settings)
 
         guard !placements.isEmpty else {
             return Application(repositionedSource: nil, removeSource: false, newStrokes: [])
@@ -109,12 +109,13 @@ enum PatternEngine {
         return PrintLayoutCoordinateSpace.center(of: points)
     }
 
-    private static func computePlacements(settings: PatternSettings) -> [Placement] {
+    private static func computePlacements(from stroke: VectorStroke, settings: PatternSettings) -> [Placement] {
+        let shapeSize = boundingSize(for: stroke)
         switch settings.mode {
         case .grid:
-            return gridPlacements(settings: settings)
+            return gridPlacements(settings: settings, shapeSize: shapeSize)
         case .linear:
-            return linearPlacements(settings: settings)
+            return linearPlacements(settings: settings, shapeSize: shapeSize)
         case .radial:
             return radialPlacements(settings: settings)
         case .spiral:
@@ -122,10 +123,17 @@ enum PatternEngine {
         }
     }
 
-    private static func gridPlacements(settings: PatternSettings) -> [Placement] {
+    /// Center-to-center step: shape size plus the edge gap. Gap 0 tiles copies so they touch.
+    private static func step(shapeLength: CGFloat, gap: CGFloat) -> CGFloat {
+        max(shapeLength, 0) + max(gap, 0)
+    }
+
+    private static func gridPlacements(settings: PatternSettings, shapeSize: CGSize) -> [Placement] {
         let rows = clamp(settings.rows, min: 1, max: PatternSettings.maxCount)
         let columns = clamp(settings.columns, min: 1, max: PatternSettings.maxCount)
         let total = min(rows * columns, PatternSettings.maxCount)
+        let stepX = step(shapeLength: shapeSize.width, gap: settings.spacingX)
+        let stepY = step(shapeLength: shapeSize.height, gap: settings.spacingY)
         var placements: [Placement] = []
 
         for index in 0..<total {
@@ -134,8 +142,8 @@ enum PatternEngine {
             placements.append(
                 Placement(
                     translation: CGPoint(
-                        x: CGFloat(column) * settings.spacingX,
-                        y: CGFloat(row) * settings.spacingY
+                        x: CGFloat(column) * stepX,
+                        y: CGFloat(row) * stepY
                     ),
                     rotation: 0
                 )
@@ -144,7 +152,7 @@ enum PatternEngine {
         return placements
     }
 
-    private static func linearPlacements(settings: PatternSettings) -> [Placement] {
+    private static func linearPlacements(settings: PatternSettings, shapeSize: CGSize) -> [Placement] {
         let count = clamp(settings.count, min: 1, max: PatternSettings.maxCount)
         var placements: [Placement] = []
 
@@ -152,9 +160,12 @@ enum PatternEngine {
             let offset: CGPoint
             switch settings.linearDirection {
             case .horizontal:
-                offset = CGPoint(x: CGFloat(index) * settings.spacingX, y: 0)
+                let sign: CGFloat = settings.flipLinearDirection ? -1 : 1
+                let stepX = step(shapeLength: shapeSize.width, gap: settings.spacingX)
+                offset = CGPoint(x: CGFloat(index) * stepX * sign, y: 0)
             case .vertical:
-                offset = CGPoint(x: 0, y: CGFloat(index) * settings.spacingY)
+                let stepY = step(shapeLength: shapeSize.height, gap: settings.spacingY)
+                offset = CGPoint(x: 0, y: CGFloat(index) * stepY)
             }
             placements.append(Placement(translation: offset, rotation: 0))
         }
@@ -163,7 +174,7 @@ enum PatternEngine {
 
     private static func radialPlacements(settings: PatternSettings) -> [Placement] {
         let count = clamp(settings.count, min: 1, max: PatternSettings.maxCount)
-        let startRadius = max(settings.spacingX, minimumRadius)
+        let startRadius = max(settings.startRadius, minimumRadius)
         let tightness = max(settings.tightness, minimumRadius)
         var placements: [Placement] = []
 
@@ -187,7 +198,7 @@ enum PatternEngine {
 
     private static func spiralPlacements(settings: PatternSettings) -> [Placement] {
         let count = clamp(settings.count, min: 1, max: PatternSettings.maxCount)
-        let startRadius = max(settings.spacingX, minimumRadius)
+        let startRadius = max(settings.startRadius, minimumRadius)
         let tightness = max(settings.tightness, minimumRadius)
         let radiusGrowthPerRadian = tightness / (2 * .pi)
         var placements: [Placement] = []
