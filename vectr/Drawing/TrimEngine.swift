@@ -44,6 +44,18 @@ enum TrimEngine {
             preferredStrokeID: preferredStrokeID
         ) else { return nil }
 
+        // Closed arc / pie: the straight last→first chord is only implied by `isClosed`,
+        // not stored as geometry. Tapping it should open the arc, not treat the pie as
+        // a full circle (which cannot drop that chord).
+        if let opened = openedStrokeIfTappingClosingChord(
+            match.stroke,
+            renderPoints: match.renderPoints,
+            segmentIndex: match.segmentIndex,
+            t: match.t
+        ) {
+            return TrimResult(stroke: opened, strokeID: match.stroke.id, additionalStroke: nil)
+        }
+
         let others = strokes.filter { $0.id != match.stroke.id }
         let cuts = collectCuts(
             for: match.stroke,
@@ -85,8 +97,10 @@ enum TrimEngine {
         }
 
         // Prefer circular arc result so curvature survives quadrant trims.
-        // Keep samples from the original tessellation so the shape cannot drift.
-        if let arcStroke = trimmedCircleArc(
+        // Skip when the closed contour is a pie (arc + chord): length ratios are not
+        // a circle sweep, and snapping the chord onto the circle invents geometry.
+        if contourLiesOnCircle(target, renderPoints: renderPoints),
+           let arcStroke = trimmedCircleArc(
             target,
             renderPoints: renderPoints,
             from: bounds.next,
@@ -105,11 +119,69 @@ enum TrimEngine {
             endPoint: bounds.prev.point
         )
         guard kept.count >= 2 else { return nil }
+        let keepAsArc = target.shapeType == .arc
+            && kept.count >= 3
+            && keptPointsLieOnCircle(kept, target: target)
         return TrimResult(
-            stroke: openStroke(from: target, points: kept, shapeType: .polyline),
+            stroke: openStroke(
+                from: target,
+                points: keepAsArc ? collapsedArcAnchors(kept) : kept,
+                shapeType: keepAsArc ? .arc : .polyline
+            ),
             strokeID: target.id,
             additionalStroke: nil
         )
+    }
+
+    /// Opens a closed arc (pie) when the tap lands on the implied closing chord.
+    /// That chord is not stored — `isClosed` just connects the last sample back to the first.
+    private static func openedStrokeIfTappingClosingChord(
+        _ target: VectorStroke,
+        renderPoints: [CGPoint],
+        segmentIndex: Int,
+        t: CGFloat
+    ) -> VectorStroke? {
+        guard target.isClosed,
+              target.shapeType == .arc,
+              renderPoints.count >= 2,
+              segmentIndex == renderPoints.count - 1,
+              t > 0.02,
+              t < 0.98 else { return nil }
+
+        let chordLength = segmentLength(renderPoints[renderPoints.count - 1], renderPoints[0])
+        guard chordLength > 0.5 else { return nil }
+
+        var opened = target
+        opened.isClosed = false
+        opened.cutoutPoints = []
+        return opened
+    }
+
+    /// True when the closed contour itself lies on the underlying circle (a full
+    /// circle or a tessellated closed ring), not a pie whose last→first edge is a chord.
+    private static func contourLiesOnCircle(_ target: VectorStroke, renderPoints: [CGPoint]) -> Bool {
+        guard renderPoints.count >= 2, let circle = circularSource(for: target) else { return false }
+        guard target.isClosed else { return true }
+        let first = renderPoints[0]
+        let last = renderPoints[renderPoints.count - 1]
+        let mid = CGPoint(x: (first.x + last.x) * 0.5, y: (first.y + last.y) * 0.5)
+        let dist = hypot(mid.x - circle.center.x, mid.y - circle.center.y)
+        return abs(dist - circle.radius) <= max(0.5, circle.radius * 0.02)
+    }
+
+    /// Collapse a circular tessellation back to the three anchors an `.arc` stroke stores.
+    private static func collapsedArcAnchors(_ points: [CGPoint]) -> [CGPoint] {
+        ShapeGeometry.arcAnchorPoints(points) ?? points
+    }
+
+    private static func keptPointsLieOnCircle(_ points: [CGPoint], target: VectorStroke) -> Bool {
+        guard let circle = circularSource(for: target) else { return false }
+        let tolerance = max(0.5, circle.radius * 0.02)
+        for point in points {
+            let dist = hypot(point.x - circle.center.x, point.y - circle.center.y)
+            if abs(dist - circle.radius) > tolerance { return false }
+        }
+        return true
     }
 
     // MARK: - Open trim
@@ -311,6 +383,14 @@ enum TrimEngine {
                 // Keep the true handle location (on the circle), not the chord projection.
                 cuts.append(Cut(distance: hit.distance, point: handle))
             }
+        }
+
+        // A closed arc's start and end are always cut points, so the implied
+        // closing chord can be removed even when nothing else intersects it.
+        if closed, target.shapeType == .arc, renderPoints.count >= 2 {
+            let openLength = contourLength(renderPoints, closed: false)
+            cuts.append(Cut(distance: 0, point: renderPoints[0]))
+            cuts.append(Cut(distance: openLength, point: renderPoints[renderPoints.count - 1]))
         }
 
         // Intersections with every other stroke (full contours).
@@ -529,8 +609,8 @@ enum TrimEngine {
         threshold: CGFloat,
         strokes: [VectorStroke],
         preferredStrokeID: UUID?
-    ) -> (stroke: VectorStroke, renderPoints: [CGPoint], distance: CGFloat)? {
-        var best: (stroke: VectorStroke, renderPoints: [CGPoint], distance: CGFloat, screenDistance: CGFloat)?
+    ) -> (stroke: VectorStroke, renderPoints: [CGPoint], distance: CGFloat, segmentIndex: Int, t: CGFloat)? {
+        var best: (stroke: VectorStroke, renderPoints: [CGPoint], distance: CGFloat, screenDistance: CGFloat, segmentIndex: Int, t: CGFloat)?
 
         for stroke in strokes where !stroke.isConstruction {
             let renderPoints = ShapeGeometry.renderPoints(for: stroke)
@@ -539,11 +619,11 @@ enum TrimEngine {
             let preferredBoost: CGFloat = (stroke.id == preferredStrokeID) ? -threshold * 0.25 : 0
             let score = hit.radialDistance + preferredBoost
             if best == nil || score < best!.screenDistance {
-                best = (stroke, renderPoints, hit.distance, score)
+                best = (stroke, renderPoints, hit.distance, score, hit.segmentIndex, hit.t)
             }
         }
         guard let best else { return nil }
-        return (best.stroke, best.renderPoints, best.distance)
+        return (best.stroke, best.renderPoints, best.distance, best.segmentIndex, best.t)
     }
 
     private static func projectOntoContour(

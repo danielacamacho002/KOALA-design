@@ -21,6 +21,10 @@ enum ClosedShapeDetector {
     private static func closeSingleStrokeLoops(in document: VectrDocument, tolerance: CGFloat) {
         for index in document.strokes.indices {
             guard isLoopCandidate(document.strokes[index]) else { continue }
+            // Arcs are open curves. Closing one when its endpoints sit within a grid
+            // cell draws a chord across the pie, then immediately re-closes it after
+            // trim — the chord looks impossible to remove.
+            guard document.strokes[index].shapeType != .arc else { continue }
 
             let points = ShapeGeometry.renderPoints(for: document.strokes[index])
             guard points.count >= 3,
