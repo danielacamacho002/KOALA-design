@@ -77,6 +77,9 @@ final class VectrDocument {
     var selectedFilletCornerIndices: Set<Int> = []
     /// When set, move-tool rotation pivots around this anchor index; nil uses shape center.
     var moveRotationPivotAnchorIndex: Int?
+    /// Session clipboard for copying items from one layer and pasting onto another.
+    /// Not persisted; switching layers clears selection, so copies live here until paste.
+    var clipboard: ElementClipboard = ElementClipboard()
     var activeCategory: ToolCategory = .line
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
@@ -1400,6 +1403,73 @@ final class VectrDocument {
         isSyncingSelection = false
         clearAnchorSelection()
         geometryRevision += 1
+    }
+
+    /// Copies the current selection (including any parent groups) into the session clipboard.
+    /// Geometry stays in place; paste assigns new IDs on the active layer.
+    @discardableResult
+    func copySelectedElementsToClipboard() -> Int {
+        expandSelectionToGroupsIfNeeded()
+        guard !selectionIsEmpty else { return 0 }
+        let copiedStrokes = strokes.filter { selectedStrokeIDs.contains($0.id) }
+        let copiedText = textElements.filter { selectedTextIDs.contains($0.id) }
+        let copiedGroups = groups.filter { group in
+            group.strokeIDs.contains(where: selectedStrokeIDs.contains)
+                || group.textIDs.contains(where: selectedTextIDs.contains)
+        }
+        clipboard = ElementClipboard(
+            strokes: copiedStrokes,
+            textElements: copiedText,
+            groups: copiedGroups
+        )
+        return clipboard.itemCount
+    }
+
+    /// True when the clipboard has content and the active layer can receive it.
+    var canPasteClipboard: Bool {
+        !clipboard.isEmpty && activeLayer?.isLocked != true
+    }
+
+    /// Pastes clipboard contents onto the active layer at the original document position.
+    /// Returns the number of items created, or 0 when paste is not possible.
+    @discardableResult
+    func pasteClipboardToActiveLayer() -> Int {
+        guard canPasteClipboard else { return 0 }
+        pushUndo()
+
+        var strokeIDMap: [UUID: UUID] = [:]
+        var textIDMap: [UUID: UUID] = [:]
+        var newStrokeIDs: Set<UUID> = []
+        var newTextIDs: Set<UUID> = []
+
+        for stroke in clipboard.strokes {
+            var copy = stroke
+            let newID = UUID()
+            strokeIDMap[stroke.id] = newID
+            copy.id = newID
+            copy.layerID = activeLayerID
+            strokes.append(ShapeGeometry.captureRotationBaseIfNeeded(copy))
+            newStrokeIDs.insert(newID)
+        }
+        for text in clipboard.textElements {
+            var copy = text
+            let newID = UUID()
+            textIDMap[text.id] = newID
+            copy.id = newID
+            copy.layerID = activeLayerID
+            textElements.append(copy)
+            newTextIDs.insert(newID)
+        }
+        for group in clipboard.groups {
+            let mappedStrokes = group.strokeIDs.compactMap { strokeIDMap[$0] }
+            let mappedTexts = group.textIDs.compactMap { textIDMap[$0] }
+            guard mappedStrokes.count + mappedTexts.count >= 2 else { continue }
+            groups.append(ObjectGroup(strokeIDs: mappedStrokes, textIDs: mappedTexts))
+        }
+
+        geometryRevision += 1
+        setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs)
+        return clipboard.itemCount
     }
 
     /// Duplicates the selection, offsetting the copies and selecting them.

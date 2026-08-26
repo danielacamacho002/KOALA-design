@@ -102,6 +102,8 @@ struct CanvasOverlayView: View {
                     addAnchorOverlay
                 } else if document.activeCategory == .pattern {
                     patternPreviewOverlay
+                } else if document.activeCategory == .copy {
+                    copySelectionOverlay
                 } else if document.activeCategory == .dimensions {
                     // Measurement labels only — never show edit anchors in this mode.
                     EmptyView()
@@ -1153,6 +1155,24 @@ struct CanvasOverlayView: View {
     private func clearMoveSnap() {
         snapSession.reset()
         activeSnap = nil
+    }
+
+    // MARK: - Copy selection
+
+    @ViewBuilder
+    private var copySelectionOverlay: some View {
+        if let bbox = document.selectionBoundingBox() {
+            let viewCorners = [
+                CGPoint(x: bbox.minX, y: bbox.minY),
+                CGPoint(x: bbox.maxX, y: bbox.minY),
+                CGPoint(x: bbox.maxX, y: bbox.maxY),
+                CGPoint(x: bbox.minX, y: bbox.maxY)
+            ].map { document.viewport.documentToView($0) }
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                .allowsHitTesting(false)
+        }
     }
 
     // MARK: - Pattern preview
