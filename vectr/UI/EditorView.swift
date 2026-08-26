@@ -1196,10 +1196,18 @@ struct EditorView: View {
                 return
             }
             // 3. Edge/line tap: tapping on or near an outline deletes that shape entirely.
+            //    If the tap is *inside* a different filled shape, that shape is what was
+            //    targeted — typically a small cutter sitting on a larger outline, where
+            //    the base edge is closer than the cutter's own outline. Deleting the
+            //    underlying outline would swallow the large shape. Fall through so the
+            //    fill-delete below removes the shape under the finger instead.
             if let outline = store.document.strokeOutlineHit(near: documentPoint, threshold: threshold) {
-                store.document.removeStroke(id: outline.id)
-                refreshCanvas()
-                return
+                let fillUnderTap = store.document.strokeFillHit(at: documentPoint)
+                if fillUnderTap == nil || fillUnderTap?.id == outline.id {
+                    store.document.removeStroke(id: outline.id)
+                    refreshCanvas()
+                    return
+                }
             }
             // 4. Interior fill tap with nothing beneath: delete the filled shape.
             if let fill = store.document.strokeFillHit(at: documentPoint) {

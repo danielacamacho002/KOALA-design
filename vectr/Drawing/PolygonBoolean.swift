@@ -38,17 +38,42 @@ enum PolygonBoolean {
             return [Contour(points: subject, cutEdges: Array(repeating: false, count: subject.count))]
         }
 
-        // Retry with a tiny per-vertex jitter of the clip polygon when a degenerate
-        // configuration (a clip vertex/edge lying exactly on a subject edge, or
-        // collinear overlap) makes a pass find no clean crossing set. The jitter is
-        // scaled to the geometry so it reliably nudges points off an edge while staying
-        // far below anything visible.
+        // Degenerate configurations (a clip vertex/edge lying exactly on a subject
+        // edge, or collinear overlap) make a pass find no clean crossing set. Retry
+        // with tiny perturbations, scaled to the geometry so they stay invisible.
+        //
+        // Rigid diagonal translations are tried first: per-vertex jitter along +X
+        // (index 0 of the golden-angle sequence) leaves vertices sitting on a
+        // horizontal edge, so a circle resting on the top/bottom of a rectangle
+        // would never produce a valid crossing set. A diagonal shift moves every
+        // on-edge vertex off both axes at once and keeps the clip's shape intact.
         let diagonal = boundingDiagonal(subj + clp)
-        let base = max(diagonal, 1) * 1e-5
-        let magnitudes: [CGFloat] = [0, base, 3 * base, 10 * base, 30 * base]
-        for magnitude in magnitudes {
-            let clipTry = magnitude == 0 ? clp : jittered(clp, by: magnitude)
+        let eps = max(diagonal, 1) * 1e-5
+        let shifts: [CGPoint] = [
+            .zero,
+            CGPoint(x: eps, y: eps),
+            CGPoint(x: -eps, y: eps),
+            CGPoint(x: eps, y: -eps),
+            CGPoint(x: -eps, y: -eps),
+            CGPoint(x: 0, y: eps),
+            CGPoint(x: 0, y: -eps),
+            CGPoint(x: eps, y: 0),
+            CGPoint(x: -eps, y: 0),
+            CGPoint(x: 3 * eps, y: 3 * eps),
+            CGPoint(x: -3 * eps, y: 3 * eps),
+            CGPoint(x: 10 * eps, y: 10 * eps),
+            CGPoint(x: -10 * eps, y: 10 * eps)
+        ]
+        for shift in shifts {
+            let clipTry = shift == .zero ? clp : clp.map { CGPoint(x: $0.x + shift.x, y: $0.y + shift.y) }
             if let result = differenceOnce(subject: subj, clip: clipTry) {
+                return result
+            }
+        }
+
+        let magnitudes: [CGFloat] = [eps, 3 * eps, 10 * eps, 30 * eps]
+        for magnitude in magnitudes {
+            if let result = differenceOnce(subject: subj, clip: jittered(clp, by: magnitude)) {
                 return result
             }
         }
@@ -480,14 +505,10 @@ enum PolygonBoolean {
             }
         }
 
-        // No proper crossings found. Because callers only invoke `difference` once the
-        // shapes are known to overlap (and non-containment is handled separately), zero
-        // crossings means a degenerate configuration (a clip vertex sits exactly on a
-        // subject edge, so the crossing collapsed onto an endpoint). Signal a retry so
-        // the caller re-runs with a jittered clip that produces clean crossings.
+        // A clean crossing set enters and exits an even number of times. Zero or odd
+        // counts mean a degeneracy (vertex-on-edge, collinear overlap) — retry with a
+        // perturbation rather than tracing a corrupt contour.
         guard crossingCount > 0 else { return nil }
-
-        // A clean crossing set enters and exits an even number of times.
         guard countIntersections(subjectNodes[0]).isMultiple(of: 2),
               countIntersections(clipNodes[0]).isMultiple(of: 2) else { return nil }
 
@@ -712,8 +733,10 @@ enum PolygonBoolean {
     private static func jittered(_ polygon: [CGPoint], by magnitude: CGFloat) -> [CGPoint] {
         polygon.enumerated().map { index, point in
             // Golden-angle stepping spreads directions so no two nearby vertices move
-            // the same way (which would preserve a collinear overlap).
-            let angle = CGFloat(index) * 2.399963229728653
+            // the same way (which would preserve a collinear overlap). The +0.7 phase
+            // keeps index 0 off the +X axis, so a vertex sitting on a horizontal edge
+            // is actually moved off that edge.
+            let angle = CGFloat(index) * 2.399963229728653 + 0.7
             return CGPoint(x: point.x + magnitude * cos(angle), y: point.y + magnitude * sin(angle))
         }
     }
