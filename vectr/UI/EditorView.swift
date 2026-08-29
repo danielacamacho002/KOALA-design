@@ -1133,6 +1133,16 @@ struct EditorView: View {
         }
     }
 
+    /// Closed-arc fallback may only drop the implied closing chord (last→first).
+    /// Opening at start→mid or mid→end would reorder the three anchors and flip
+    /// the arc to the other side of its chord.
+    private func closingEdgeFallbackAllowed(_ stroke: VectorStroke, edgeIndex: Int) -> Bool {
+        if stroke.shapeType == .arc {
+            return stroke.isClosed && edgeIndex == max(stroke.points.count - 1, 0)
+        }
+        return true
+    }
+
     private func handleCanvasTap(_ documentPoint: CGPoint) {
         showCommandPanel = false
         // Keep layers open for copy/paste so the destination layer can be chosen
@@ -1202,13 +1212,14 @@ struct EditorView: View {
                 // behavior by tapping the geometry itself (no overlay handles).
                 let usesCADTrim = stroke.shapeType == .circle
                     || stroke.shapeType == .ellipse
-                    || stroke.shapeType == .arc
+                    || (stroke.shapeType == .arc && !stroke.isClosed)
                 if !usesCADTrim,
                    let edgeIndex = StrokeEditor.nearestEdgeIndex(
                        in: stroke,
                        point: documentPoint,
                        threshold: threshold
-                   ) {
+                   ),
+                   closingEdgeFallbackAllowed(stroke, edgeIndex: edgeIndex) {
                     store.document.deleteStrokeEdge(at: edgeIndex)
                     refreshCanvas()
                 } else {

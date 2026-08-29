@@ -60,6 +60,9 @@ enum PathJoinEngine {
     static func canJoin(_ strokes: [VectorStroke], tolerance: CGFloat) -> Bool {
         let usable = strokes.filter { ShapeGeometry.handlePoints(for: $0).count >= 2 }
         guard usable.count >= 2 else { return false }
+        if usable.allSatisfy(isOutlineChainable) {
+            return canChainOpenContours(usable, tolerance: tolerance)
+        }
         if hasTouchingAnchors(usable, tolerance: tolerance) { return true }
 
         // Closed shapes that overlap (edges cross or one contains the other) can
@@ -80,6 +83,14 @@ enum PathJoinEngine {
         let usable = strokes.filter { ShapeGeometry.handlePoints(for: $0).count >= 2 }
         guard usable.count >= 2, let base = usable.first else { return nil }
 
+        // Lines, arcs, and curves — including ones that were auto-marked closed
+        // (a star point becomes a triangle) — join by chaining outlines at
+        // endpoints. Boolean-union / centroid-weld of those pieces collapses
+        // stars and hearts into a blob.
+        if usable.allSatisfy(isOutlineChainable) {
+            return joinOpenContours(usable, tolerance: tolerance, base: base)
+        }
+
         var paths = usable.map { normalized($0) }
         _ = weldCoincidentAnchors(in: &paths, tolerance: tolerance)
 
@@ -93,33 +104,25 @@ enum PathJoinEngine {
         return fused.map { stroke(from: $0, base: base) }
     }
 
+    private static func isOutlineChainable(_ stroke: VectorStroke) -> Bool {
+        switch stroke.shapeType {
+        case .polyline, .arc, .curve:
+            return true
+        default:
+            return false
+        }
+    }
+
     // MARK: - Normalization
 
     /// Converts a stroke into an editable anchor path plus its dense rendered
-    /// contour. Curve handles are kept when the stroke is already a curve, and
-    /// arcs are approximated with Bezier handles so their curvature survives
-    /// open-path joins. Every other shape stores its *rendered* outline as its
-    /// point list so circles, ellipses and baked fillets keep their real shape.
+    /// contour. Curve handles are kept when the stroke is already a curve.
+    /// Arcs, circles, ellipses and baked fillets store their *rendered* outline
+    /// as the point list so fusion follows the real curve instead of a handful
+    /// of defining anchors (which collapse into straight chords).
     private static func normalized(_ stroke: VectorStroke) -> Path {
         let contour = ShapeGeometry.renderPoints(for: stroke)
         let cutouts = stroke.cutoutPoints
-
-        // Arcs: rebuild the circular geometry as cubic Bezier handles through the
-        // (start, mid, end) anchors so a joined arc stays curved instead of
-        // collapsing into a straight three-point polyline.
-        if stroke.shapeType == .arc,
-           let anchors = ShapeGeometry.arcAnchorPoints(stroke.points),
-           anchors.count == 3,
-           let handles = ShapeGeometry.curveHandlesApproximatingArc(
-               start: anchors[0],
-               mid: anchors[1],
-               end: anchors[2]
-           ) {
-            return Path(
-                points: anchors, handles: handles, isClosed: false, isCurve: true,
-                contour: contour, cutouts: cutouts
-            )
-        }
 
         if stroke.shapeType == .curve,
            let handles = stroke.curveHandles,
@@ -163,17 +166,213 @@ enum PathJoinEngine {
         return result
     }
 
+    // MARK: - Open contour join
+
+    /// Walks lines/arcs/curves as chains of exclusive endpoint pairs and
+    /// concatenates each stroke's outline. Points are never moved.
+    /// Returns every fused component plus leftover originals that did not join.
+    private static func joinOpenContours(
+        _ strokes: [VectorStroke],
+        tolerance: CGFloat,
+        base: VectorStroke
+    ) -> [VectorStroke]? {
+        let pairing = outlineEndpointPairing(strokes, tolerance: tolerance)
+        guard pairing.pairOf.contains(where: { $0 >= 0 }) else { return nil }
+
+        let contours = pairing.contours
+        let endpoints = pairing.endpoints
+        let pairOf = pairing.pairOf
+        let lengths = pairing.lengths
+
+        func otherEnd(of endpoint: Int) -> Int {
+            endpoints[endpoint].isStart ? endpoint + 1 : endpoint - 1
+        }
+
+        func walk(from startIndex: Int, usedStrokes: inout Set<Int>) -> [(stroke: Int, forward: Bool)] {
+            var ordered: [(stroke: Int, forward: Bool)] = []
+            var current = startIndex
+            while true {
+                let strokeIndex = endpoints[current].stroke
+                if usedStrokes.contains(strokeIndex) { break }
+                usedStrokes.insert(strokeIndex)
+                ordered.append((strokeIndex, endpoints[current].isStart))
+                let next = pairOf[otherEnd(of: current)]
+                if next < 0 { break }
+                current = next
+            }
+            return ordered
+        }
+
+        func polyline(from ordered: [(stroke: Int, forward: Bool)]) -> VectorStroke? {
+            guard ordered.count >= 2 else { return nil }
+            var merged: [CGPoint] = []
+            var previousStroke = -1
+            for step in ordered {
+                let contour = contours[step.stroke]
+                let segment = step.forward ? contour : Array(contour.reversed())
+                if merged.isEmpty {
+                    merged.append(contentsOf: segment)
+                } else if let last = merged.last, let first = segment.first {
+                    let joint = joinGapLimit(
+                        lengthA: previousStroke >= 0 ? lengths[previousStroke] : lengths[step.stroke],
+                        lengthB: lengths[step.stroke],
+                        tolerance: tolerance
+                    )
+                    if distance(last, first) <= joint {
+                        merged.append(contentsOf: segment.dropFirst())
+                    } else {
+                        merged.append(contentsOf: segment)
+                    }
+                }
+                previousStroke = step.stroke
+            }
+            guard merged.count >= 2 else { return nil }
+            var closed = false
+            if shouldCloseJoinedContour(merged, tolerance: tolerance) {
+                merged.removeLast()
+                closed = true
+            }
+            guard merged.count >= (closed ? 3 : 2) else { return nil }
+            var path = Path(
+                points: merged,
+                handles: Array(repeating: CurveHandle(), count: merged.count),
+                isClosed: closed,
+                isCurve: false,
+                contour: merged
+            )
+            path.cutouts = ordered.flatMap { strokes[$0.stroke].cutoutPoints }
+            return stroke(from: path, base: base)
+        }
+
+        var unused = Set(strokes.indices)
+        var fused: [VectorStroke] = []
+        while !unused.isEmpty {
+            let unusedEndpoints = endpoints.indices.filter { unused.contains(endpoints[$0].stroke) }
+            let start = unusedEndpoints.first(where: { pairOf[$0] < 0 })
+                ?? unusedEndpoints.first(where: { pairOf[$0] >= 0 })
+            guard let start else { break }
+            var used = Set<Int>()
+            let ordered = walk(from: start, usedStrokes: &used)
+            unused.subtract(used)
+            if let piece = polyline(from: ordered) {
+                fused.append(piece)
+            } else {
+                for index in used {
+                    fused.append(strokes[index])
+                }
+            }
+        }
+        for index in unused {
+            fused.append(strokes[index])
+        }
+
+        return fused.isEmpty ? nil : fused
+    }
+
+    private static func canChainOpenContours(_ strokes: [VectorStroke], tolerance: CGFloat) -> Bool {
+        outlineEndpointPairing(strokes, tolerance: tolerance).pairOf.contains { $0 >= 0 }
+    }
+
+    private struct JoinEndpoint {
+        var stroke: Int
+        var isStart: Bool
+        var point: CGPoint
+    }
+
+    /// Exclusive nearest-endpoint matches, capped so a short star/heart edge is
+    /// not welded to a different nearby vertex just because both sit in the same
+    /// grid cell (join tolerance is often half an inch).
+    private static func outlineEndpointPairing(
+        _ strokes: [VectorStroke],
+        tolerance: CGFloat
+    ) -> (contours: [[CGPoint]], endpoints: [JoinEndpoint], pairOf: [Int], lengths: [CGFloat]) {
+        let contours = strokes.map { joinContour(for: $0) }
+        let lengths = contours.map { contourLength($0) }
+
+        var endpoints: [JoinEndpoint] = []
+        endpoints.reserveCapacity(strokes.count * 2)
+        for (index, contour) in contours.enumerated() {
+            guard let first = contour.first, let last = contour.last, contour.count >= 2 else {
+                continue
+            }
+            endpoints.append(JoinEndpoint(stroke: index, isStart: true, point: first))
+            endpoints.append(JoinEndpoint(stroke: index, isStart: false, point: last))
+        }
+
+        var pairOf = Array(repeating: -1, count: endpoints.count)
+        var pairs: [(Int, Int, CGFloat)] = []
+        for i in 0..<endpoints.count {
+            for j in (i + 1)..<endpoints.count {
+                guard endpoints[i].stroke != endpoints[j].stroke else { continue }
+                let gap = distance(endpoints[i].point, endpoints[j].point)
+                let limit = joinGapLimit(
+                    lengthA: lengths[endpoints[i].stroke],
+                    lengthB: lengths[endpoints[j].stroke],
+                    tolerance: tolerance
+                )
+                if gap <= limit { pairs.append((i, j, gap)) }
+            }
+        }
+        pairs.sort { $0.2 < $1.2 }
+        for (i, j, _) in pairs {
+            if pairOf[i] == -1, pairOf[j] == -1 {
+                pairOf[i] = j
+                pairOf[j] = i
+            }
+        }
+        return (contours, endpoints, pairOf, lengths)
+    }
+
+    /// Polylines join at drawn anchors. Arcs/curves use the rendered outline so
+    /// a lobe stays a curve instead of collapsing to its three handles.
+    private static func joinContour(for stroke: VectorStroke) -> [CGPoint] {
+        switch stroke.shapeType {
+        case .arc, .curve:
+            return ShapeGeometry.renderPoints(for: stroke)
+        default:
+            return stroke.points
+        }
+    }
+
+    private static func contourLength(_ points: [CGPoint]) -> CGFloat {
+        guard points.count >= 2 else { return 0 }
+        var length: CGFloat = 0
+        for index in 0..<(points.count - 1) {
+            length += distance(points[index], points[index + 1])
+        }
+        return length
+    }
+
+    private static func joinGapLimit(lengthA: CGFloat, lengthB: CGFloat, tolerance: CGFloat) -> CGFloat {
+        let shortest = min(lengthA, lengthB)
+        return min(tolerance, max(1.5, shortest * 0.35))
+    }
+
+    /// Close a joined outline only when the remaining gap is tiny next to the
+    /// drawn length. Half a grid cell would otherwise close a small V / star
+    /// point into a triangle (or a blob) just because its feet share a cell.
+    private static func shouldCloseJoinedContour(_ points: [CGPoint], tolerance: CGFloat) -> Bool {
+        guard points.count > 2, let first = points.first, let last = points.last else { return false }
+        let gap = distance(first, last)
+        guard gap <= tolerance else { return false }
+        return gap <= max(1, min(tolerance, contourLength(points) * 0.05))
+    }
+
     // MARK: - Anchor welding
 
-    /// Snaps every anchor that lies within `tolerance` of anchors on *other*
-    /// paths onto a single shared coordinate (the cluster centroid).
+    /// Snaps *structural* anchors that lie within `tolerance` of anchors on
+    /// *other* paths onto a single shared coordinate (the cluster centroid).
+    ///
+    /// Tessellated interiors (arc/circle samples) are not welded: adjacent
+    /// samples sit closer than a grid-cell tolerance, and union-find would then
+    /// chain a whole lobe into the junction and collapse the shape.
     @discardableResult
     private static func weldCoincidentAnchors(in paths: inout [Path], tolerance: CGFloat) -> Bool {
         struct Ref { let path: Int; let point: Int }
 
         var refs: [Ref] = []
         for (p, path) in paths.enumerated() {
-            for i in path.points.indices { refs.append(Ref(path: p, point: i)) }
+            for i in structuralIndices(path) { refs.append(Ref(path: p, point: i)) }
         }
         guard refs.count >= 2 else { return false }
 
@@ -264,10 +463,28 @@ enum PathJoinEngine {
     }
 
     private static func sharesPoint(_ a: Path, _ b: Path, tolerance: CGFloat) -> Bool {
-        for p in a.points {
-            for q in b.points where distance(p, q) <= tolerance { return true }
+        for p in structuralPoints(a) {
+            for q in structuralPoints(b) where distance(p, q) <= tolerance { return true }
         }
         return false
+    }
+
+    /// Anchors that may participate in a weld / connection test.
+    /// Open paths: endpoints only. Sparse closed polygons: every vertex.
+    /// Dense closed tessellations (circles, pies): none — overlap is handled
+    /// by boolean union, not point welding.
+    private static func structuralIndices(_ path: Path) -> [Int] {
+        let count = path.points.count
+        guard count >= 1 else { return [] }
+        if !path.isClosed {
+            return count == 1 ? [0] : [0, count - 1]
+        }
+        if count > 8 { return [] }
+        return Array(0..<count)
+    }
+
+    private static func structuralPoints(_ path: Path) -> [CGPoint] {
+        structuralIndices(path).map { path.points[$0] }
     }
 
     /// True when two closed paths overlap (their rendered contours cross or one
@@ -390,8 +607,8 @@ enum PathJoinEngine {
     }
 
     private static func sharedPoint(_ a: Path, _ b: Path, tolerance: CGFloat) -> CGPoint? {
-        for p in a.points {
-            for q in b.points where distance(p, q) <= tolerance { return p }
+        for p in structuralPoints(a) {
+            for q in structuralPoints(b) where distance(p, q) <= tolerance { return p }
         }
         return nil
     }
@@ -566,13 +783,45 @@ enum PathJoinEngine {
             merged.points.append(contentsOf: tail.points)
             merged.handles.append(contentsOf: tail.handles)
         }
-        // Keep handle array aligned with points for curve results.
+        // Handles that no longer line up with anchors would render as straight
+        // segments through those anchors — an arc becomes two chords through its
+        // midpoint and the shape looks collapsed. Rebuild from tessellated
+        // outlines instead of flattening.
         if merged.handles.count != merged.points.count {
-            merged.handles = Array(repeating: CurveHandle(), count: merged.points.count)
-            merged.isCurve = false
+            return appendContours(head, tail, tolerance: tolerance)
         }
         merged.contour = merged.points
         return merged
+    }
+
+    /// Chains two paths using their tessellated outlines so curvature survives
+    /// even when Bezier handles cannot be spliced.
+    private static func appendContours(_ head: Path, _ tail: Path, tolerance: CGFloat) -> Path {
+        let headPoints = head.contour.count >= 2 ? head.contour : head.points
+        let tailPoints = tail.contour.count >= 2 ? tail.contour : tail.points
+        guard let last = headPoints.last, let first = tailPoints.first else {
+            let points = headPoints + tailPoints
+            return Path(
+                points: points,
+                handles: Array(repeating: CurveHandle(), count: points.count),
+                isClosed: false,
+                isCurve: false,
+                contour: points
+            )
+        }
+        var points = headPoints
+        if distance(last, first) <= tolerance {
+            points.append(contentsOf: tailPoints.dropFirst())
+        } else {
+            points.append(contentsOf: tailPoints)
+        }
+        return Path(
+            points: points,
+            handles: Array(repeating: CurveHandle(), count: points.count),
+            isClosed: false,
+            isCurve: false,
+            contour: points
+        )
     }
 
     private struct Connection {

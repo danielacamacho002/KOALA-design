@@ -21,13 +21,15 @@ enum ClosedShapeDetector {
     private static func closeSingleStrokeLoops(in document: VectrDocument, tolerance: CGFloat) {
         for index in document.strokes.indices {
             guard isLoopCandidate(document.strokes[index]) else { continue }
+            // Arcs are open curves. Closing one when its endpoints sit within a grid
+            // cell draws a chord across the pie, then immediately re-closes it after
+            // trim — the chord looks impossible to remove.
+            guard document.strokes[index].shapeType != .arc else { continue }
 
             let points = ShapeGeometry.renderPoints(for: document.strokes[index])
-            guard points.count >= 3,
-                  let first = points.first,
-                  let last = points.last else { continue }
+            guard points.count >= 3 else { continue }
 
-            if pointsConnect(first, last, tolerance: tolerance) {
+            if shouldCloseOpenContour(points, tolerance: tolerance) {
                 document.strokes[index].isClosed = true
                 if document.strokes[index].shapeType == .polyline,
                    document.strokes[index].points.count >= 3,
@@ -265,6 +267,20 @@ enum ClosedShapeDetector {
     }
 
     // MARK: - Helpers
+
+    /// True when an open contour should be marked closed. A V / star-point whose
+    /// feet sit in the same grid cell is not a loop — only close when the gap is
+    /// tiny next to the drawn length.
+    private static func shouldCloseOpenContour(_ points: [CGPoint], tolerance: CGFloat) -> Bool {
+        guard points.count >= 3, let first = points.first, let last = points.last else { return false }
+        let gap = hypot(first.x - last.x, first.y - last.y)
+        guard gap <= tolerance else { return false }
+        var length: CGFloat = 0
+        for index in 0..<(points.count - 1) {
+            length += hypot(points[index + 1].x - points[index].x, points[index + 1].y - points[index].y)
+        }
+        return gap <= max(1, min(tolerance, length * 0.05))
+    }
 
     private static func isLoopCandidate(_ stroke: VectorStroke) -> Bool {
         guard !stroke.isClosed, !stroke.isConstruction else { return false }
