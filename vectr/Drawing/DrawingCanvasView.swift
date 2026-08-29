@@ -8,7 +8,7 @@ import SwiftUI
 struct DrawingCanvasView: UIViewRepresentable {
     @Bindable var document: VectrDocument
     var isCommandMode: Bool = false
-    var activeCategory: ToolCategory = .line
+    var activeCategory: ToolCategory?
     var commandPreviewPoints: [CGPoint] = []
     var commandControlPoints: [CGPoint] = []
     var commandCanFinish: Bool = false

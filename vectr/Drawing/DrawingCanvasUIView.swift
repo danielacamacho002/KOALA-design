@@ -19,7 +19,7 @@ final class DrawingCanvasUIView: UIView {
     }
 
     var isCommandMode = false
-    var activeCategory: ToolCategory = .line {
+    var activeCategory: ToolCategory? {
         didSet {
             if oldValue == .curve, activeCategory != .curve {
                 // Don't discard an in-progress curve when leaving the tool: commit it
@@ -402,6 +402,9 @@ final class DrawingCanvasUIView: UIView {
                 onCanvasTap?(documentPoint)
             }
         case .trim, .delete, .addAnchor, .type, .copy:
+            onCanvasTap?(documentPoint)
+        case nil:
+            // Idle canvas: let the editor switch to the move tool when a shape is hit.
             onCanvasTap?(documentPoint)
         case .curve:
             // Curve points come from Pencil drags; a double-tap finishes it.
@@ -981,10 +984,10 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
                 if isCommandMode {
                     return shouldAcceptDrawingTouch(touch)
                 }
-            case .trim, .delete, .addAnchor, .copy:
+            case .trim, .delete, .addAnchor, .copy, nil:
                 // These tools used to hit-test via SwiftUI overlays (finger-friendly).
-                // Always accept finger taps so trim/delete/add-anchor/copy keep working when
-                // "finger drawing" is off.
+                // Always accept finger taps so trim/delete/add-anchor/copy (and idle
+                // tap-to-select) keep working when "finger drawing" is off.
                 return true
             default:
                 break
