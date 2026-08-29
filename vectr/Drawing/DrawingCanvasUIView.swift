@@ -56,6 +56,8 @@ final class DrawingCanvasUIView: UIView {
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
     /// Emitted when a curve is finished (double-tap) with its drawn anchor points.
     var onCurveCommitted: (([CGPoint]) -> Void)?
+    /// Bounds size and safe-area insets in this view's own coordinate space.
+    var onLayoutMetrics: ((CGSize, UIEdgeInsets) -> Void)?
 
     private var strokeLayers: [UUID: CAShapeLayer] = [:]
     private var textLayers: [UUID: CAShapeLayer] = [:]
@@ -115,6 +117,7 @@ final class DrawingCanvasUIView: UIView {
         reloadStrokes()
         reloadReferenceImage()
         refreshCommandPreview()
+        onLayoutMetrics?(bounds.size, safeAreaInsets)
     }
 
     override func draw(_ rect: CGRect) {

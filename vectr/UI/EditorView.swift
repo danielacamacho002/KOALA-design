@@ -24,6 +24,8 @@ struct EditorView: View {
     @State private var showShareSheet = false
     @State private var errorMessage: String?
     @State private var canvasSize: CGSize = .zero
+    @State private var canvasViewSize: CGSize = .zero
+    @State private var canvasSafeAreaInsets: UIEdgeInsets = .zero
     @State private var showSettings = false
     @State private var chromeInsets = ViewportTransform.ChromeInsets()
     @State private var statusMessage: String?
@@ -209,7 +211,8 @@ struct EditorView: View {
                         dragDrawStart = nil
                         dragDrawEnd = nil
                     },
-                    onCurveCommitted: commitCurve
+                    onCurveCommitted: commitCurve,
+                    onLayoutMetrics: updateCanvasLayoutMetrics
                 )
                 .ignoresSafeArea()
 
@@ -744,23 +747,50 @@ struct EditorView: View {
         store.fileName = record.name
     }
 
+    /// Visible drawing area in canvas UIView coordinates. The GeometryReader is already the
+    /// region below the toolbar; if the UIView expands under that chrome via
+    /// `ignoresSafeArea()`, the extra height sits above (and below) that region.
+    private var visibleRectInCanvasSpace: CGRect {
+        let geo = canvasSize
+        guard geo.width > 0, geo.height > 0 else { return .zero }
+        let viewSize = canvasViewSize
+        guard viewSize.width > 0, viewSize.height > 0 else {
+            return CGRect(origin: .zero, size: geo)
+        }
+        let extraHeight = max(0, viewSize.height - geo.height)
+        let extraWidth = max(0, viewSize.width - geo.width)
+        let top = max(0, extraHeight - canvasSafeAreaInsets.bottom)
+        let leading = max(0, extraWidth - canvasSafeAreaInsets.right)
+        return CGRect(x: leading, y: top, width: geo.width, height: geo.height)
+    }
+
+    private func updateCanvasLayoutMetrics(size: CGSize, insets: UIEdgeInsets) {
+        let sizeChanged = abs(size.width - canvasViewSize.width) > 0.5
+            || abs(size.height - canvasViewSize.height) > 0.5
+        let insetsChanged = abs(insets.top - canvasSafeAreaInsets.top) > 0.5
+            || abs(insets.bottom - canvasSafeAreaInsets.bottom) > 0.5
+            || abs(insets.left - canvasSafeAreaInsets.left) > 0.5
+            || abs(insets.right - canvasSafeAreaInsets.right) > 0.5
+        guard sizeChanged || insetsChanged else { return }
+        canvasViewSize = size
+        canvasSafeAreaInsets = insets
+        applyInitialViewportLayoutIfNeeded()
+    }
+
     private func applyInitialViewportLayoutIfNeeded() {
-        guard store.needsInitialViewportLayout, canvasSize.width > 0, canvasSize.height > 0 else { return }
+        let visibleRect = visibleRectInCanvasSpace
+        guard store.needsInitialViewportLayout, visibleRect.width > 0, visibleRect.height > 0 else { return }
+        guard canvasViewSize.width > 0 else { return }
         let contentPoints = store.document.visibleStrokes().flatMap { ShapeGeometry.renderPoints(for: $0) }
         if contentPoints.isEmpty {
-            // Fit the whole canvas sheet into the visible drawing area and center it there.
-            // The only chrome overlaying the canvas is the 150pt leading command panel and the
-            // top toolbar; the toolbar is what shifts the vertical center (see method docs).
             store.document.viewport.frameCanvasInDrawableArea(
                 canvasSize: store.document.settings.canvasSize,
-                in: canvasSize,
-                leadingPanel: 150,
-                topToolbar: EditorToolbarView.height
+                visibleRect: visibleRect
             )
         } else {
-            store.document.viewport.fitToPoints(contentPoints, in: canvasSize)
+            store.document.viewport.fitToPoints(contentPoints, in: visibleRect.size)
             store.document.viewport.clampToCanvasSize(
-                in: canvasSize,
+                in: visibleRect.size,
                 canvasSize: store.document.settings.canvasSize
             )
         }
@@ -769,16 +799,13 @@ struct EditorView: View {
     }
 
     private func recenterAnimated() {
-        guard canvasSize.width > 0, canvasSize.height > 0 else { return }
+        let visibleRect = visibleRectInCanvasSpace
+        guard visibleRect.width > 0, visibleRect.height > 0 else { return }
 
-        // Target the framed, centered default view (same framing as the initial layout) so the
-        // canvas always comes fully back into view no matter how far it was panned or zoomed.
         var target = store.document.viewport
         target.frameCanvasInDrawableArea(
             canvasSize: store.document.settings.canvasSize,
-            in: canvasSize,
-            leadingPanel: 150,
-            topToolbar: EditorToolbarView.height
+            visibleRect: visibleRect
         )
 
         let startScale = store.document.viewport.scale
