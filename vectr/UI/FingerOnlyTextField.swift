@@ -31,6 +31,7 @@ struct FingerOnlyTextField: UIViewRepresentable {
     var fontSize: CGFloat = UIFont.labelFontSize
     var cornerRadius: CGFloat = 8
     var onSubmit: (() -> Void)?
+    var onEditingEnded: (() -> Void)?
 
     func makeUIView(context: Context) -> UITextField {
         let field = FingerOnlyUITextField()
@@ -54,19 +55,23 @@ struct FingerOnlyTextField: UIViewRepresentable {
         uiView.placeholder = placeholder
         uiView.keyboardType = keyboardType
         uiView.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        context.coordinator.onSubmit = onSubmit
+        context.coordinator.onEditingEnded = onEditingEnded
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, onSubmit: onSubmit)
+        Coordinator(text: $text, onSubmit: onSubmit, onEditingEnded: onEditingEnded)
     }
 
     final class Coordinator: NSObject, UITextFieldDelegate {
         @Binding var text: String
         var onSubmit: (() -> Void)?
+        var onEditingEnded: (() -> Void)?
 
-        init(text: Binding<String>, onSubmit: (() -> Void)?) {
+        init(text: Binding<String>, onSubmit: (() -> Void)?, onEditingEnded: (() -> Void)?) {
             _text = text
             self.onSubmit = onSubmit
+            self.onEditingEnded = onEditingEnded
         }
 
         @objc func textChanged(_ sender: UITextField) {
@@ -77,6 +82,10 @@ struct FingerOnlyTextField: UIViewRepresentable {
             textField.resignFirstResponder()
             onSubmit?()
             return true
+        }
+
+        func textFieldDidEndEditing(_ textField: UITextField) {
+            onEditingEnded?()
         }
     }
 }
