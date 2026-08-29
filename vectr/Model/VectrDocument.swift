@@ -80,9 +80,9 @@ final class VectrDocument {
     /// Session clipboard for copying items from one layer and pasting onto another.
     /// Not persisted; switching layers clears selection, so copies live here until paste.
     var clipboard: ElementClipboard = ElementClipboard()
-    /// Currently selected drawing or edit tool. `nil` means no tool is active;
-    /// tapping a shape or line in that state selects it and switches to Move.
-    var activeCategory: ToolCategory?
+    /// Currently selected drawing or edit tool. Defaults to Move (select/edit).
+    /// Clearing a tool always falls back here so the canvas is never tool-less.
+    var activeCategory: ToolCategory? = .move
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
@@ -2264,8 +2264,7 @@ final class VectrDocument {
     }
 
     func clearActiveTool() {
-        activeCategory = nil
-        dimensionsVisible = false
+        selectTool(.move)
     }
 
     var isDrawingToolActive: Bool {

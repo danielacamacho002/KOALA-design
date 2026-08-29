@@ -86,7 +86,7 @@ struct CanvasOverlayView: View {
             ZStack {
                 if commandSession.isActive {
                     commandPreviewHandles
-                } else if document.activeCategory == .move {
+                } else if document.activeCategory == .move || document.activeCategory == nil {
                     moveToolOverlay
                 } else if document.activeCategory == .scale {
                     if document.selectedTextID != nil {
