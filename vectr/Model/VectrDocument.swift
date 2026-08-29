@@ -186,7 +186,7 @@ final class VectrDocument {
         let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
         return strokes
             .enumerated()
-            .filter { visibleLayerIDs.contains($0.element.layerID) }
+            .filter { visibleLayerIDs.contains($0.element.layerID) && !$0.element.isHiddenFromCanvas }
             .sorted { lhs, rhs in
                 let l = order[lhs.element.layerID] ?? 0
                 let r = order[rhs.element.layerID] ?? 0
@@ -524,7 +524,7 @@ final class VectrDocument {
         let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
         return textElements
             .enumerated()
-            .filter { visibleLayerIDs.contains($0.element.layerID) }
+            .filter { visibleLayerIDs.contains($0.element.layerID) && !$0.element.isHidden }
             .sorted { lhs, rhs in
                 let l = order[lhs.element.layerID] ?? 0
                 let r = order[rhs.element.layerID] ?? 0
@@ -1396,6 +1396,105 @@ final class VectrDocument {
         geometryRevision += 1
         setElementSelection(strokeIDs: joinedIDs, textIDs: [])
         return true
+    }
+
+    /// True when any stroke or text element is hidden from the canvas.
+    var hasHiddenElements: Bool {
+        strokes.contains { $0.isHiddenFromCanvas } || textElements.contains { $0.isHidden }
+    }
+
+    /// True when every currently selected element is hidden.
+    var selectedElementsAreHidden: Bool {
+        guard !selectionIsEmpty else { return false }
+        for id in selectedStrokeIDs {
+            guard let stroke = stroke(with: id), stroke.isHiddenFromCanvas else { return false }
+        }
+        for id in selectedTextIDs {
+            guard let text = textElement(with: id), text.isHidden else { return false }
+        }
+        return true
+    }
+
+    var canToggleElementVisibility: Bool {
+        !selectionIsEmpty || hasHiddenElements
+    }
+
+    /// Eye when the selection is visible; crossed-out eye when it is hidden
+    /// (or when nothing is selected but hidden objects remain).
+    var visibilityToolbarImage: String {
+        if selectedElementsAreHidden || (selectionIsEmpty && hasHiddenElements) {
+            return "eye.slash"
+        }
+        return "eye"
+    }
+
+    var visibilityToolbarAccessibilityLabel: String {
+        if selectedElementsAreHidden {
+            return "Show selection"
+        }
+        if selectionIsEmpty && hasHiddenElements {
+            return "Show hidden objects"
+        }
+        return "Hide selection"
+    }
+
+    /// Hides or shows the current selection. With nothing selected, reveals every hidden object.
+    func toggleSelectedElementsHidden() {
+        if selectionIsEmpty {
+            unhideAllElements()
+            return
+        }
+        if selectedElementsAreHidden {
+            unhideSelectedElements()
+        } else {
+            hideSelectedElements()
+        }
+    }
+
+    /// Hides the current selection so it is omitted from canvas, hit-testing, and export.
+    /// Selection is kept so the toolbar eye can toggle the same objects back on.
+    func hideSelectedElements() {
+        expandSelectionToGroupsIfNeeded()
+        guard !selectionIsEmpty else { return }
+        pushUndo()
+        let strokeIDs = selectedStrokeIDs
+        let textIDs = selectedTextIDs
+        for index in strokes.indices where strokeIDs.contains(strokes[index].id) {
+            strokes[index].isHidden = true
+        }
+        for index in textElements.indices where textIDs.contains(textElements[index].id) {
+            textElements[index].isHidden = true
+        }
+        geometryRevision += 1
+    }
+
+    /// Reveals the currently selected hidden strokes and text elements.
+    func unhideSelectedElements() {
+        expandSelectionToGroupsIfNeeded()
+        guard !selectionIsEmpty else { return }
+        pushUndo()
+        let strokeIDs = selectedStrokeIDs
+        let textIDs = selectedTextIDs
+        for index in strokes.indices where strokeIDs.contains(strokes[index].id) {
+            strokes[index].isHidden = false
+        }
+        for index in textElements.indices where textIDs.contains(textElements[index].id) {
+            textElements[index].isHidden = false
+        }
+        geometryRevision += 1
+    }
+
+    /// Reveals every hidden stroke and text element in one undoable step.
+    func unhideAllElements() {
+        guard hasHiddenElements else { return }
+        pushUndo()
+        for index in strokes.indices where strokes[index].isHiddenFromCanvas {
+            strokes[index].isHidden = false
+        }
+        for index in textElements.indices where textElements[index].isHidden {
+            textElements[index].isHidden = false
+        }
+        geometryRevision += 1
     }
 
     /// Deletes every selected stroke and text element in one undoable step.

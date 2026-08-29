@@ -53,6 +53,10 @@ struct VectorStroke: Identifiable, Codable, Equatable {
     var curveHandles: [CurveHandle]? = nil
     /// Fill opacity (0...1) for closed shapes. `nil` falls back to `defaultFillOpacity`.
     var fillOpacity: CGFloat? = nil
+    /// When `true`, omitted from canvas, hit-testing, and export.
+    /// Optional so older documents without this key still decode: synthesized
+    /// Codable throws on a missing non-optional key even when a default exists.
+    var isHidden: Bool? = nil
 
     /// Default plane fill opacity for closed shapes that have never been customized.
     static let defaultFillOpacity: CGFloat = 0.25
@@ -76,7 +80,8 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         openEdgeStarts: [Int]? = nil,
         openCutoutIndices: Set<Int>? = nil,
         curveHandles: [CurveHandle]? = nil,
-        fillOpacity: CGFloat? = nil
+        fillOpacity: CGFloat? = nil,
+        isHidden: Bool? = nil
     ) {
         self.id = id
         self.layerID = layerID
@@ -97,7 +102,11 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         self.openCutoutIndices = openCutoutIndices
         self.curveHandles = curveHandles
         self.fillOpacity = fillOpacity
+        self.isHidden = isHidden
     }
+
+    /// True when this stroke should be omitted from canvas, hit-testing, and export.
+    var isHiddenFromCanvas: Bool { isHidden == true }
 
     var resolvedShapeRotation: CGFloat {
         shapeRotation ?? 0
