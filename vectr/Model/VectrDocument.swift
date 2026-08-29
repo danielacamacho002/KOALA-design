@@ -198,8 +198,39 @@ final class VectrDocument {
     /// Visible strokes on the active layer that isn't locked, for hit-testing/selection.
     /// Shapes on other layers are visible but not editable until their layer is active.
     func selectableStrokes() -> [VectorStroke] {
-        let lockedLayerIDs = Set(layers.filter(\.isLocked).map(\.id))
-        return visibleStrokes().filter { $0.layerID == activeLayerID && !lockedLayerIDs.contains($0.layerID) }
+        visibleStrokes().filter(isSelectableStroke)
+    }
+
+    /// True when a stroke can be selected or edited on the current layer.
+    func isSelectableStroke(_ stroke: VectorStroke) -> Bool {
+        isSelectableLayer(stroke.layerID)
+    }
+
+    /// True when a text element can be selected or edited on the current layer.
+    func isSelectableText(_ text: TextElement) -> Bool {
+        isSelectableLayer(text.layerID)
+    }
+
+    /// Active layer that is visible and unlocked.
+    func isSelectableLayer(_ layerID: UUID) -> Bool {
+        guard layerID == activeLayerID,
+              let layer = layers.first(where: { $0.id == layerID }) else { return false }
+        return layer.isVisible && !layer.isLocked
+    }
+
+    /// Visible strokes on the active layer and any layers stacked in front of it.
+    /// Back-layer geometry stays drawn but does not steal taps or block empty canvas.
+    func occupyingStrokes() -> [VectorStroke] {
+        let order = layerIndexByID()
+        let activeIndex = order[activeLayerID] ?? 0
+        return visibleStrokes().filter { (order[$0.layerID] ?? 0) >= activeIndex }
+    }
+
+    /// Visible text on the active layer and any layers stacked in front of it.
+    func occupyingTextElements() -> [TextElement] {
+        let order = layerIndexByID()
+        let activeIndex = order[activeLayerID] ?? 0
+        return visibleTextElements().filter { (order[$0.layerID] ?? 0) >= activeIndex }
     }
 
     /// Geometry that editing tools, snaps, and constraints may interact with.
@@ -536,8 +567,7 @@ final class VectrDocument {
     /// Visible text elements on the active layer that isn't locked, for hit-testing/selection.
     /// Text on other layers is visible but not editable until its layer is active.
     func selectableTextElements() -> [TextElement] {
-        let lockedLayerIDs = Set(layers.filter(\.isLocked).map(\.id))
-        return visibleTextElements().filter { $0.layerID == activeLayerID && !lockedLayerIDs.contains($0.layerID) }
+        visibleTextElements().filter(isSelectableText)
     }
 
     func textElement(with id: UUID) -> TextElement? {
@@ -1037,6 +1067,7 @@ final class VectrDocument {
     /// CAD-style trim: remove the contour span between cut points that bounds `documentPoint`.
     @discardableResult
     func trimAt(_ documentPoint: CGPoint, threshold: CGFloat) -> Bool {
+        if isHitOnInactiveLayer(near: documentPoint, threshold: threshold) { return false }
         guard let result = TrimEngine.trim(
             at: documentPoint,
             threshold: threshold,
@@ -1213,7 +1244,10 @@ final class VectrDocument {
 
     /// Replaces the entire element selection, picking a stable primary so the
     /// single-object tools (fillet/trim/scale/rotate panel) keep working.
+    /// Off-layer items are dropped so Move/Edit cannot target another layer.
     func setElementSelection(strokeIDs: Set<UUID>, textIDs: Set<UUID>) {
+        let strokeIDs = strokeIDs.filter { stroke(with: $0).map(isSelectableStroke) ?? false }
+        let textIDs = textIDs.filter { textElement(with: $0).map(isSelectableText) ?? false }
         isSyncingSelection = true
         selectedStrokeIDs = strokeIDs
         selectedTextIDs = textIDs
@@ -1249,8 +1283,17 @@ final class VectrDocument {
     }
 
     /// Non-mutating topmost stroke hit, mirroring `selectStroke` without changing selection.
+    /// Hits the front-most occupying shape first (active layer or anything stacked
+    /// in front of it). A hit on a front layer is ignored instead of punching
+    /// through to the active layer underneath.
     func strokeHit(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
-        let candidates = selectableStrokes()
+        guard let hit = topmostOccupyingStroke(near: documentPoint, threshold: threshold) else { return nil }
+        return isSelectableStroke(hit) ? hit : nil
+    }
+
+    /// Front-most stroke on the active layer or in front of it.
+    func topmostOccupyingStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
+        let candidates = occupyingStrokes()
         if let fillHit = candidates.reversed().first(where: { $0.contains(documentPoint) }) {
             return fillHit
         }
@@ -1271,26 +1314,60 @@ final class VectrDocument {
     func strokeOutlineHit(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
         var best: VectorStroke?
         var bestDistance = threshold
-        for stroke in selectableStrokes().reversed() {
+        for stroke in occupyingStrokes().reversed() {
             let distance = stroke.distance(to: documentPoint)
             if distance < bestDistance {
                 bestDistance = distance
                 best = stroke
             }
         }
+        guard let best, isSelectableStroke(best) else { return nil }
         return best
     }
 
     /// Topmost closed stroke whose filled interior contains the point, ignoring outline proximity.
     func strokeFillHit(at documentPoint: CGPoint) -> VectorStroke? {
-        selectableStrokes().reversed().first { $0.contains(documentPoint) }
+        guard let hit = occupyingStrokes().reversed().first(where: { $0.contains(documentPoint) }) else { return nil }
+        return isSelectableStroke(hit) ? hit : nil
     }
 
     /// Non-mutating topmost element hit (text preferred over strokes).
     func elementHit(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
-        if let text = textElement(at: documentPoint) { return .text(text.id) }
-        if let stroke = strokeHit(near: documentPoint, threshold: threshold) { return .stroke(stroke.id) }
+        switch occupyingElementHit(near: documentPoint, threshold: threshold) {
+        case .text(let id):
+            guard let text = textElement(with: id), isSelectableText(text) else { return .none }
+            return .text(id)
+        case .stroke(let id):
+            guard let stroke = stroke(with: id), isSelectableStroke(stroke) else { return .none }
+            return .stroke(id)
+        case .none:
+            return .none
+        }
+    }
+
+    /// Front-most text or stroke on the active layer or stacked in front of it.
+    func occupyingElementHit(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
+        if let text = occupyingTextElements().reversed().first(where: { $0.contains(documentPoint) }) {
+            return .text(text.id)
+        }
+        if let stroke = topmostOccupyingStroke(near: documentPoint, threshold: threshold) {
+            return .stroke(stroke.id)
+        }
         return .none
+    }
+
+    /// True when the front-most item under the point belongs to a layer in front of
+    /// the active one (or the active layer is locked). Taps like this must not
+    /// select, delete, or punch through.
+    func isHitOnInactiveLayer(near documentPoint: CGPoint, threshold: CGFloat) -> Bool {
+        switch occupyingElementHit(near: documentPoint, threshold: threshold) {
+        case .none:
+            return false
+        case .stroke(let id):
+            return stroke(with: id).map { !isSelectableStroke($0) } ?? false
+        case .text(let id):
+            return textElement(with: id).map { !isSelectableText($0) } ?? false
+        }
     }
 
     /// True when `point` lies on/near any currently selected element.
@@ -1765,11 +1842,15 @@ final class VectrDocument {
             let touchesGroup = group.strokeIDs.contains(where: strokeIDs.contains)
                 || group.textIDs.contains(where: textIDs.contains)
             guard touchesGroup else { continue }
-            for id in group.strokeIDs where stroke(with: id) != nil {
-                resultStrokes.insert(id)
+            for id in group.strokeIDs {
+                if let stroke = stroke(with: id), isSelectableStroke(stroke) {
+                    resultStrokes.insert(id)
+                }
             }
-            for id in group.textIDs where textElement(with: id) != nil {
-                resultTexts.insert(id)
+            for id in group.textIDs {
+                if let text = textElement(with: id), isSelectableText(text) {
+                    resultTexts.insert(id)
+                }
             }
         }
         return (resultStrokes, resultTexts)
@@ -1793,9 +1874,28 @@ final class VectrDocument {
     }
 
     /// Topmost group whose bounding box contains `documentPoint` (gives thin/open
-    /// members a large, closed-shape-like hit area).
+    /// members a large, closed-shape-like hit area). Only members on the active
+    /// layer count, so a group sitting entirely on another layer is not selectable.
     func group(at documentPoint: CGPoint) -> ObjectGroup? {
-        groups.reversed().first { groupBoundingBox($0)?.contains(documentPoint) == true }
+        groups.reversed().first { group in
+            selectableGroupBoundingBox(group)?.contains(documentPoint) == true
+        }
+    }
+
+    /// Bounds of a group's members that are currently selectable (active layer).
+    private func selectableGroupBoundingBox(_ group: ObjectGroup) -> CGRect? {
+        var rect: CGRect?
+        for id in group.strokeIDs {
+            guard let stroke = stroke(with: id), isSelectableStroke(stroke),
+                  let bounds = stroke.boundingBox() else { continue }
+            rect = rect.map { $0.union(bounds) } ?? bounds
+        }
+        for id in group.textIDs {
+            guard let text = textElement(with: id), isSelectableText(text) else { continue }
+            let bounds = text.boundingBox()
+            rect = rect.map { $0.union(bounds) } ?? bounds
+        }
+        return rect
     }
 
     /// The group whose membership exactly matches the current selection, if any.
@@ -1824,6 +1924,7 @@ final class VectrDocument {
 
     /// Selects a stroke, expanding to its parent group when it belongs to one.
     func selectStrokeConsideringGroups(_ id: UUID) {
+        guard let stroke = stroke(with: id), isSelectableStroke(stroke) else { return }
         if let group = group(containingStroke: id) {
             selectGroup(group)
         } else {
@@ -1833,6 +1934,7 @@ final class VectrDocument {
 
     /// Selects a text element, expanding to its parent group when it belongs to one.
     func selectTextConsideringGroups(_ id: UUID) {
+        guard let text = textElement(with: id), isSelectableText(text) else { return }
         if let group = group(containingText: id) {
             selectGroup(group)
         } else {
@@ -2206,6 +2308,7 @@ final class VectrDocument {
     /// Returns `true` when a subtraction was performed.
     @discardableResult
     func punchOverlapHole(at documentPoint: CGPoint) -> Bool {
+        if isHitOnInactiveLayer(near: documentPoint, threshold: 0) { return false }
         let candidates = selectableStrokes()
         guard let targetIndex = candidates.lastIndex(where: {
             $0.isClosed && !$0.isConstruction && $0.contains(documentPoint)
@@ -2264,6 +2367,7 @@ final class VectrDocument {
     /// Returns `true` when a slice occurred.
     @discardableResult
     func sliceArcCut(at documentPoint: CGPoint) -> Bool {
+        if isHitOnInactiveLayer(near: documentPoint, threshold: 0) { return false }
         let candidates = selectableStrokes()
         let arcs = candidates.filter { $0.shapeType == .arc && !$0.isConstruction }
         guard !arcs.isEmpty else { return false }
@@ -2493,6 +2597,9 @@ final class VectrDocument {
     }
 
     func selectStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
+        if isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
+            return nil
+        }
         guard let hit = strokeHit(near: documentPoint, threshold: threshold) else {
             setElementSelection(strokeIDs: [], textIDs: [])
             return nil

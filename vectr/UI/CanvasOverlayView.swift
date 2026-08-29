@@ -683,6 +683,11 @@ struct CanvasOverlayView: View {
     private func handleMoveTap(at viewPoint: CGPoint) {
         let documentPoint = document.viewport.viewToDocument(viewPoint)
         let threshold = document.viewport.viewToDocument(distance: 16)
+        // Other layers stay visible but must not be selectable; a tap on one of
+        // those shapes is ignored instead of selecting through to this layer.
+        if document.isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
+            return
+        }
         switch document.elementHit(near: documentPoint, threshold: threshold) {
         case .stroke(let id):
             if let group = document.group(containingStroke: id) {

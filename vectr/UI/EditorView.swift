@@ -1145,6 +1145,9 @@ struct EditorView: View {
             activateMoveIfHit(at: documentPoint)
         case .type:
             endTextEditingIfNeeded()
+            if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: 0) {
+                return
+            }
             if let hit = store.document.selectTextElement(at: documentPoint) {
                 beginTextEditing(hit.id)
             } else {
@@ -1185,6 +1188,9 @@ struct EditorView: View {
             }
         case .trim:
             let threshold = store.document.viewport.viewToDocument(distance: 16)
+            if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
+                return
+            }
             // Anchor-first: tapping a vertex deletes it. A corner drops its two edges and
             // opens the shape; a collinear point is removed without changing the geometry.
             if store.document.deleteStrokeAnchor(near: documentPoint, threshold: threshold) {
@@ -1214,6 +1220,9 @@ struct EditorView: View {
             }
         case .addAnchor:
             let threshold = store.document.viewport.viewToDocument(distance: 28)
+            if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
+                return
+            }
             if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
                 if AnchorPointEngine.canEditAnchors(on: stroke) {
                     let snapped = snapDrawingInput(documentPoint)
@@ -1252,6 +1261,9 @@ struct EditorView: View {
             }
             refreshCanvas()
         case .delete:
+            if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: store.document.viewport.viewToDocument(distance: 24)) {
+                return
+            }
             if let text = store.document.textElement(at: documentPoint) {
                 store.document.removeTextElement(id: text.id)
                 refreshCanvas()
