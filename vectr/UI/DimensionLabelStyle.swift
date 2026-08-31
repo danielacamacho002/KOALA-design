@@ -44,6 +44,43 @@ enum DimensionLabelStyle {
             y: anchor.y + n.y * distance
         )
     }
+
+    /// Leader endpoint on the label box, on the same side as the label. Uses the
+    /// actual AABB hit so the line stops at the number instead of a padded gap,
+    /// and never overshoots the anchor (which used to flip the line inside).
+    static func leaderEnd(
+        from anchor: CGPoint,
+        to labelCenter: CGPoint,
+        halfSize: CGSize
+    ) -> CGPoint {
+        let dx = labelCenter.x - anchor.x
+        let dy = labelCenter.y - anchor.y
+        let distance = hypot(dx, dy)
+        guard distance > 0.001 else { return labelCenter }
+
+        let nx = dx / distance
+        let ny = dy / distance
+        let toBoxEdge = aabbDistance(halfSize: halfSize, along: CGPoint(x: nx, y: ny))
+        let gap: CGFloat = 1
+        // Stay between the anchor and the label so a close drag cannot cross the edge.
+        let maxPullback = max(0, distance - 2)
+        let pullback = min(toBoxEdge + gap, maxPullback)
+        return CGPoint(
+            x: labelCenter.x - nx * pullback,
+            y: labelCenter.y - ny * pullback
+        )
+    }
+
+    /// Distance from a box center to its boundary along a unit direction.
+    private static func aabbDistance(halfSize: CGSize, along direction: CGPoint) -> CGFloat {
+        let tx = abs(direction.x) > 0.001
+            ? halfSize.width / abs(direction.x)
+            : CGFloat.greatestFiniteMagnitude
+        let ty = abs(direction.y) > 0.001
+            ? halfSize.height / abs(direction.y)
+            : CGFloat.greatestFiniteMagnitude
+        return min(tx, ty)
+    }
 }
 
 extension View {
