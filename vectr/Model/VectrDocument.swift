@@ -1581,6 +1581,7 @@ final class VectrDocument {
 
     /// Deletes every selected stroke and text element in one undoable step.
     func deleteSelectedElements() {
+        expandSelectionToGroupsIfNeeded()
         guard !selectionIsEmpty else { return }
         pushUndo()
         let strokeIDs = selectedStrokeIDs

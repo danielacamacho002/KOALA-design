@@ -968,11 +968,8 @@ struct EditorView: View {
             store.document.selectedStrokeID = nil
             statusMessage = "Tap to place or edit text; drag to move, corners to scale"
         case .delete:
-            if let id = store.document.selectedStrokeID {
-                store.document.removeStroke(id: id)
-                refreshCanvas()
-            } else if let textID = store.document.selectedTextID {
-                store.document.removeTextElement(id: textID)
+            if !store.document.selectionIsEmpty {
+                store.document.deleteSelectedElements()
                 refreshCanvas()
             } else {
                 statusMessage = "Select a shape or text to delete"
@@ -1321,11 +1318,8 @@ struct EditorView: View {
                 return
             }
             // 5. Fall back to the current selection.
-            if let selected = store.document.selectedStrokeID {
-                store.document.removeStroke(id: selected)
-                refreshCanvas()
-            } else if let selectedText = store.document.selectedTextID {
-                store.document.removeTextElement(id: selectedText)
+            if !store.document.selectionIsEmpty {
+                store.document.deleteSelectedElements()
                 refreshCanvas()
             }
         default:
