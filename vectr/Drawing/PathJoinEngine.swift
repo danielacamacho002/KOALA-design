@@ -163,7 +163,7 @@ enum PathJoinEngine {
         result.cornerRadiiByIndex = nil
         result.smoothCornerIndices = nil
         result.isConstruction = false
-        return result
+        return ShapeGeometry.withCompactedCircularAnchors(result)
     }
 
     // MARK: - Open contour join

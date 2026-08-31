@@ -72,6 +72,8 @@ final class VectrDocument {
     // Dimensions whose edge is pinned, keyed the same way. A pinned edge stays put when
     // the perpendicular dimension is edited.
     var dimensionLocks: Set<String> = []
+    /// Session-only: which dimension labels are on screen. Not persisted or undone.
+    var revealedDimensionKeys: Set<String> = []
     var scaleUniform: Bool = true
     var selectedAnchorIndices: Set<Int> = []
     var selectedFilletCornerIndices: Set<Int> = []
@@ -598,6 +600,7 @@ final class VectrDocument {
         if selectedTextID == id {
             selectedTextID = nil
         }
+        pruneRevealedDimensions(forElementID: id)
         geometryRevision += 1
     }
 
@@ -864,6 +867,25 @@ final class VectrDocument {
 
     func beginInteractiveEdit() {
         pushUndo()
+        compactCircularAnchors(for: selectedStrokeIDs)
+    }
+
+    /// Rewrites tessellated circular runs back to the default 4 / 2–4 anchors so
+    /// move and node-edit operate on the same compact set the overlay shows.
+    func compactCircularAnchors(for ids: Set<UUID>) {
+        var changed = false
+        for id in ids {
+            guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
+            let stroke = strokes[index]
+            let compacted = ShapeGeometry.withCompactedCircularAnchors(stroke)
+            if compacted != stroke {
+                strokes[index] = compacted
+                changed = true
+            }
+        }
+        if changed {
+            geometryRevision += 1
+        }
     }
 
     static func dimensionOffsetKey(strokeID: UUID, dimensionID: String) -> String {
@@ -882,6 +904,140 @@ final class VectrDocument {
 
     func isDimensionLocked(key: String) -> Bool {
         dimensionLocks.contains(key)
+    }
+
+    func isDimensionRevealed(key: String) -> Bool {
+        revealedDimensionKeys.contains(key)
+    }
+
+    func hasRevealedDimensions(for elementID: UUID) -> Bool {
+        let prefix = elementID.uuidString + ":"
+        return revealedDimensionKeys.contains { $0.hasPrefix(prefix) }
+    }
+
+    func revealDimension(key: String) {
+        revealedDimensionKeys.insert(key)
+    }
+
+    func hideDimension(key: String) {
+        revealedDimensionKeys.remove(key)
+    }
+
+    func clearRevealedDimensions() {
+        revealedDimensionKeys.removeAll()
+    }
+
+    func revealAllDimensions(for stroke: VectorStroke) {
+        for dimension in ShapeGeometry.semanticDimensions(for: stroke) {
+            revealedDimensionKeys.insert(
+                Self.dimensionOffsetKey(strokeID: stroke.id, dimensionID: dimension.id)
+            )
+        }
+    }
+
+    func revealAllTextDimensions(for textID: UUID) {
+        for dimensionID in ["text-width", "text-height"] {
+            revealedDimensionKeys.insert(
+                Self.dimensionOffsetKey(strokeID: textID, dimensionID: dimensionID)
+            )
+        }
+    }
+
+    /// Auto-shows dimensions for any currently selected simple shape or text box.
+    func revealDimensionsForCurrentSelection() {
+        for id in selectedStrokeIDs {
+            if let stroke = stroke(with: id), ShapeGeometry.showsDimensionsAutomatically(stroke) {
+                revealAllDimensions(for: stroke)
+            }
+        }
+        for id in selectedTextIDs {
+            revealAllTextDimensions(for: id)
+        }
+    }
+
+    func pruneRevealedDimensions(forElementID id: UUID) {
+        let prefix = id.uuidString + ":"
+        revealedDimensionKeys = revealedDimensionKeys.filter { !$0.hasPrefix(prefix) }
+    }
+
+    enum DimensionTapResult {
+        case revealedEdge
+        case hiddenEdge
+        case autoRevealed
+        case selectedComplex
+        case dismissed
+        case ignored
+    }
+
+    /// Dimensions-mode tap: reveal or hide a specific edge, auto-show simple shapes,
+    /// accumulate across shapes, and clear everything on an empty-canvas tap.
+    @discardableResult
+    func handleDimensionTap(at documentPoint: CGPoint, threshold: CGFloat) -> DimensionTapResult {
+        if isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
+            return .ignored
+        }
+
+        if let hit = nearestDimensionOutlineHit(at: documentPoint, threshold: threshold) {
+            setElementSelection(strokeIDs: [hit.stroke.id], textIDs: [])
+            if ShapeGeometry.showsDimensionsAutomatically(hit.stroke) {
+                revealAllDimensions(for: hit.stroke)
+                return .autoRevealed
+            }
+            let key = Self.dimensionOffsetKey(strokeID: hit.stroke.id, dimensionID: hit.dimensionID)
+            if revealedDimensionKeys.contains(key) {
+                hideDimension(key: key)
+                return .hiddenEdge
+            }
+            revealDimension(key: key)
+            return .revealedEdge
+        }
+
+        if let text = textElement(at: documentPoint) {
+            setElementSelection(strokeIDs: [], textIDs: [text.id])
+            revealAllTextDimensions(for: text.id)
+            return .autoRevealed
+        }
+
+        if let fill = strokeFillHit(at: documentPoint) {
+            setElementSelection(strokeIDs: [fill.id], textIDs: [])
+            if ShapeGeometry.showsDimensionsAutomatically(fill) {
+                revealAllDimensions(for: fill)
+                return .autoRevealed
+            }
+            return .selectedComplex
+        }
+
+        clearRevealedDimensions()
+        clearElementSelection()
+        return .dismissed
+    }
+
+    /// Closest outline/edge among selectable strokes. Simple shapes report a dummy
+    /// dimension id because any outline tap reveals every measurement.
+    private func nearestDimensionOutlineHit(
+        at documentPoint: CGPoint,
+        threshold: CGFloat
+    ) -> (stroke: VectorStroke, dimensionID: String)? {
+        var best: (stroke: VectorStroke, dimensionID: String)?
+        var bestDistance = threshold
+        for stroke in occupyingStrokes().reversed() {
+            guard isSelectableStroke(stroke) else { continue }
+            if ShapeGeometry.showsDimensionsAutomatically(stroke) {
+                let distance = stroke.distance(to: documentPoint)
+                if distance < bestDistance {
+                    bestDistance = distance
+                    best = (stroke, "")
+                }
+            } else if let hit = ShapeGeometry.nearestSegmentDimension(
+                on: stroke,
+                to: documentPoint,
+                threshold: bestDistance
+            ) {
+                bestDistance = hit.distance
+                best = (stroke, hit.dimension.id)
+            }
+        }
+        return best
     }
 
     /// Toggles a pin. `unlocking` names the opposite edge, released in the same undo
@@ -1001,8 +1157,9 @@ final class VectrDocument {
     }
 
     func deleteStrokePoint(at pointIndex: Int) {
-        guard let id = selectedStrokeID,
-              let stroke = stroke(with: id),
+        guard let id = selectedStrokeID else { return }
+        compactCircularAnchors(for: [id])
+        guard let stroke = stroke(with: id),
               let updated = StrokeEditor.deletePoint(stroke, at: pointIndex) else { return }
         pushUndo()
         updateStroke(updated, recordUndo: false)
@@ -1010,8 +1167,9 @@ final class VectrDocument {
     }
 
     func deleteStrokeEdge(at edgeIndex: Int) {
-        guard let id = selectedStrokeID,
-              let stroke = stroke(with: id),
+        guard let id = selectedStrokeID else { return }
+        compactCircularAnchors(for: [id])
+        guard let stroke = stroke(with: id),
               let updated = StrokeEditor.deleteEdge(stroke, edgeIndex: edgeIndex) else { return }
         pushUndo()
         updateStroke(updated, recordUndo: false)
@@ -1023,7 +1181,9 @@ final class VectrDocument {
     /// changing the shape. Returns `true` when the tap was on a vertex and handled.
     @discardableResult
     func deleteStrokeAnchor(near documentPoint: CGPoint, threshold: CGFloat) -> Bool {
-        guard let id = selectedStrokeID, let stroke = stroke(with: id) else { return false }
+        guard let id = selectedStrokeID else { return false }
+        compactCircularAnchors(for: [id])
+        guard let stroke = stroke(with: id) else { return false }
         // Circles / ellipses / arcs are trimmed parametrically, not by anchor deletion.
         guard stroke.shapeType != .circle,
               stroke.shapeType != .ellipse,
@@ -1086,11 +1246,11 @@ final class VectrDocument {
 
         pushUndo()
         if let index = strokes.firstIndex(where: { $0.id == result.strokeID }) {
-            strokes[index] = result.stroke
+            strokes[index] = ShapeGeometry.withCompactedCircularAnchors(result.stroke)
         }
         var affected: Set<UUID> = [result.stroke.id]
         if let additional = result.additionalStroke {
-            strokes.append(additional)
+            strokes.append(ShapeGeometry.withCompactedCircularAnchors(additional))
             affected.insert(additional.id)
         }
         selectedStrokeID = result.stroke.id
@@ -1107,8 +1267,9 @@ final class VectrDocument {
 
     @discardableResult
     func insertAnchor(at documentPoint: CGPoint, threshold: CGFloat) -> Bool {
-        guard let id = selectedStrokeID,
-              let stroke = stroke(with: id),
+        guard let id = selectedStrokeID else { return false }
+        compactCircularAnchors(for: [id])
+        guard let stroke = stroke(with: id),
               AnchorPointEngine.canEditAnchors(on: stroke),
               let updated = AnchorPointEngine.insertAtTap(
                   stroke: stroke,
@@ -1273,6 +1434,7 @@ final class VectrDocument {
         }
         isSyncingSelection = false
         clearAnchorSelection()
+        compactCircularAnchors(for: strokeIDs)
     }
 
     func toggleStrokeSelection(_ id: UUID) {
@@ -1584,6 +1746,7 @@ final class VectrDocument {
 
     /// Deletes every selected stroke and text element in one undoable step.
     func deleteSelectedElements() {
+        expandSelectionToGroupsIfNeeded()
         guard !selectionIsEmpty else { return }
         pushUndo()
         let strokeIDs = selectedStrokeIDs
@@ -2266,7 +2429,11 @@ final class VectrDocument {
         if let rectangleVariant { self.rectangleVariant = rectangleVariant }
         // Dimensions is a measurement overlay, not an edit mode — show labels only while
         // the tool is active, and never leave visibility stuck on after switching away.
-        dimensionsVisible = (category == .dimensions)
+        let showingDimensions = (category == .dimensions)
+        dimensionsVisible = showingDimensions
+        if !showingDimensions {
+            clearRevealedDimensions()
+        }
     }
 
     func clearActiveTool() {
@@ -2314,6 +2481,7 @@ final class VectrDocument {
             clearToolSelections()
             selectedStrokeID = nil
         }
+        pruneRevealedDimensions(forElementID: id)
     }
 
     /// Interior fill tap for the Delete tool: when the topmost filled shape under
@@ -2513,7 +2681,7 @@ final class VectrDocument {
             copy.shapeType = .polyline
             copy.curveHandles = nil
         }
-        return copy
+        return ShapeGeometry.withCompactedCircularAnchors(copy)
     }
 
     /// Builds per-anchor Bézier handles that reproduce the curved cutter edge as a true
@@ -2610,6 +2778,7 @@ final class VectrDocument {
             clearToolSelections()
             selectedStrokeID = nil
         }
+        pruneRevealedDimensions(forElementID: id)
     }
 
     func selectStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {

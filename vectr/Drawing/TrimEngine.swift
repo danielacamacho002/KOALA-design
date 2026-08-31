@@ -122,12 +122,13 @@ enum TrimEngine {
         let keepAsArc = target.shapeType == .arc
             && kept.count >= 3
             && keptPointsLieOnCircle(kept, target: target)
+        let draft = openStroke(
+            from: target,
+            points: keepAsArc ? collapsedArcAnchors(kept) : kept,
+            shapeType: keepAsArc ? .arc : .polyline
+        )
         return TrimResult(
-            stroke: openStroke(
-                from: target,
-                points: keepAsArc ? collapsedArcAnchors(kept) : kept,
-                shapeType: keepAsArc ? .arc : .polyline
-            ),
+            stroke: ShapeGeometry.withCompactedCircularAnchors(draft),
             strokeID: target.id,
             additionalStroke: nil
         )
@@ -307,7 +308,9 @@ enum TrimEngine {
         }
 
         guard points.count >= 2 else { return nil }
-        return openStroke(from: target, points: points, shapeType: .arc)
+        return ShapeGeometry.withCompactedCircularAnchors(
+            openStroke(from: target, points: points, shapeType: .arc)
+        )
     }
 
     private static func snapPointsToCircle(

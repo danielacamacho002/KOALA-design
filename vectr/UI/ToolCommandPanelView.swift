@@ -18,8 +18,8 @@ struct ToolCommandPanelView: View {
     var onVariantChanged: () -> Void
 
     private let panelWidth: CGFloat = 150
-    private static let thicknessRange: ClosedRange<CGFloat> = 0.5...48
-    private static let thicknessStep: CGFloat = 0.5
+    /// Thickness step in document points so behavior matches the select/move panel.
+    private static let thicknessStepPoints: CGFloat = 0.5
 
     @State private var thicknessText = ""
     @State private var showColorPicker = false
@@ -57,7 +57,7 @@ struct ToolCommandPanelView: View {
                     .foregroundStyle(.secondary)
             }
 
-            thicknessRow
+            thicknessSection
             colorRow
 
             HStack {
@@ -72,6 +72,7 @@ struct ToolCommandPanelView: View {
         .toolPanelChrome(width: panelWidth)
         .onAppear { syncThicknessText() }
         .onChange(of: document.strokeWidth) { _, _ in syncThicknessText() }
+        .onChange(of: units) { _, _ in syncThicknessText() }
     }
 
     private var panelHeader: some View {
@@ -129,56 +130,76 @@ struct ToolCommandPanelView: View {
 
     // MARK: - Line thickness
 
-    private var thicknessRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ToolPanelSectionLabel("Thickness")
+    @ViewBuilder
+    private var thicknessSection: some View {
+        ToolPanelHeader("Thickness")
 
-            HStack(spacing: 4) {
-                ToolPanelIconButton(systemImage: "minus") {
-                    setThickness(document.strokeWidth - Self.thicknessStep)
-                }
+        HStack(spacing: 4) {
+            Text("Current:")
+            Text(currentThicknessText)
+                .fontWeight(.semibold)
+                .monospacedDigit()
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
 
-                FingerOnlyTextField(
-                    placeholder: "pt",
-                    text: $thicknessText,
-                    keyboardType: .numbersAndPunctuation,
-                    fontSize: 12,
-                    cornerRadius: 0,
-                    onSubmit: commitThicknessText
-                )
-                .frame(height: 26)
+        HStack(spacing: 4) {
+            ToolPanelIconButton(systemImage: "minus") {
+                stepThickness(by: -Self.thicknessStepPoints)
+            }
 
-                ToolPanelIconButton(systemImage: "plus") {
-                    setThickness(document.strokeWidth + Self.thicknessStep)
-                }
+            FingerOnlyTextField(
+                placeholder: units.shortLabel,
+                text: $thicknessText,
+                keyboardType: .decimalPad,
+                fontSize: 12,
+                cornerRadius: 0,
+                onSubmit: applyThickness
+            )
+            .frame(height: 28)
+
+            ToolPanelIconButton(systemImage: "plus") {
+                stepThickness(by: Self.thicknessStepPoints)
             }
         }
-    }
 
-    private func commitThicknessText() {
-        let cleaned = thicknessText
-            .replacingOccurrences(of: "pt", with: "")
-            .trimmingCharacters(in: .whitespaces)
-        guard let value = Double(cleaned) else {
-            syncThicknessText()
-            return
+        ToolPanelLabelButton(title: "Apply", fullWidth: true) {
+            applyThickness()
         }
-        setThickness(CGFloat(value))
     }
 
-    private func setThickness(_ proposed: CGFloat) {
-        let clamped = min(Self.thicknessRange.upperBound, max(Self.thicknessRange.lowerBound, proposed))
-        document.strokeWidth = clamped
-        syncThicknessText()
+    private var currentThicknessText: String {
+        "\(displayString(units.fromDocumentUnits(document.strokeWidth))) \(units.shortLabel)"
+    }
+
+    /// Formats a display-unit value with just enough precision (tiny units like inches need more).
+    private func displayString(_ value: CGFloat) -> String {
+        var text = String(format: "%.4f", value)
+        while text.contains(".") && (text.hasSuffix("0") || text.hasSuffix(".")) {
+            text.removeLast()
+        }
+        return text.isEmpty ? "0" : text
     }
 
     private func syncThicknessText() {
-        let width = document.strokeWidth
-        if width.truncatingRemainder(dividingBy: 1) == 0 {
-            thicknessText = String(format: "%.0f", width)
-        } else {
-            thicknessText = String(format: "%.1f", width)
+        thicknessText = displayString(units.fromDocumentUnits(document.strokeWidth))
+    }
+
+    private func applyThickness() {
+        let cleaned = thicknessText
+            .replacingOccurrences(of: units.shortLabel, with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let value = Double(cleaned), value > 0 else {
+            syncThicknessText()
+            return
         }
+        document.strokeWidth = max(0.1, units.toDocumentUnits(CGFloat(value)))
+        syncThicknessText()
+    }
+
+    private func stepThickness(by deltaDocPoints: CGFloat) {
+        document.strokeWidth = max(0.1, document.strokeWidth + deltaDocPoints)
+        syncThicknessText()
     }
 
     // MARK: - Line color

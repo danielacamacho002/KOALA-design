@@ -16,8 +16,10 @@ struct GridSettings: Codable, Equatable {
     /// Snap granularity as a fraction of a grid square: 1 = corners, 2 = halves,
     /// 4 = quarters, 8 = eighths, 16 = sixteenths.
     var snapSubdivisions: Int = 8
+    /// Kept for document compatibility. Live drawing only nudges a stroke onto
+    /// H/V when it is already within ~10° of that axis.
     var angleSnapEnabled: Bool = true
-    var angleSnapDegrees: [CGFloat] = [0, 45, 90, 135, 180]
+    var angleSnapDegrees: [CGFloat] = [0, 90]
 
     var minorSpacing: CGFloat {
         spacing
