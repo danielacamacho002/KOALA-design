@@ -137,7 +137,7 @@ struct CanvasOverlayView: View {
                     commandDragOriginPoints = commandSession.controlPoints
                 }
                 let docPoint = document.viewport.viewToDocument(value.location)
-                let final = snapCommandControlPoint(docPoint)
+                let final = snapCommandControlPoint(docPoint, draggingIndex: index)
                 commandSession.movePoint(at: index, to: final)
                 onChanged()
             }
@@ -150,8 +150,25 @@ struct CanvasOverlayView: View {
         document.snapEnabled && document.grid.snapEnabled
     }
 
-    private func snapCommandControlPoint(_ raw: CGPoint) -> CGPoint {
+    private func snapCommandControlPoint(_ raw: CGPoint, draggingIndex: Int) -> CGPoint {
         let scale = document.viewport.scale
+        let isStraightLine = commandSession.category == .line && commandSession.lineVariant != .arc
+        if isStraightLine {
+            let otherIndex = draggingIndex == 0 ? 1 : 0
+            let origin = commandSession.controlPoints.indices.contains(otherIndex)
+                ? commandSession.controlPoints[otherIndex]
+                : nil
+            return snapDrawingEndpoint(
+                raw,
+                origin: origin,
+                applyAngleSnap: origin != nil,
+                grid: document.grid,
+                settings: document.settings,
+                gridSnapEnabled: drawingSnapEnabled,
+                scale: scale,
+                objectSnap: { _, _, _ in nil }
+            )
+        }
         let snapped = snapDrawingPoint(
             raw,
             grid: document.grid,
