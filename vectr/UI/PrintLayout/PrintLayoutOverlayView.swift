@@ -14,6 +14,8 @@ private enum DragAxis {
 struct PrintLayoutOverlayView: View {
     @Bindable var document: VectrDocument
     var rotateModeActive: Bool = false
+    /// When true, a drag locks onto the dominant axis after a short threshold.
+    var axisLockEnabled: Bool = false
     var onChanged: () -> Void
 
     @State private var moveDragOriginTransform = PrintStrokeTransform.identity
@@ -37,7 +39,7 @@ struct PrintLayoutOverlayView: View {
         GeometryReader { geo in
             ZStack {
                 if document.printLayout.activeTool == .select {
-                    if isMoveDragging, dragAxis != .free, let bounds = selectedElementBounds() {
+                    if axisLockEnabled, isMoveDragging, dragAxis != .free, let bounds = selectedElementBounds() {
                         axisGuideline(
                             axis: dragAxis,
                             center: document.viewport.documentToView(CGPoint(x: bounds.midX, y: bounds.midY)),
@@ -143,9 +145,9 @@ struct PrintLayoutOverlayView: View {
                     document.beginInteractiveEdit()
                 }
 
-                // Lock to a single axis once the drag passes the threshold, then
-                // stay locked for the remainder of the gesture.
-                if dragAxis == .free {
+                // When axis lock is on, lock to a single axis once the drag
+                // passes the threshold, then stay locked for the gesture.
+                if axisLockEnabled, dragAxis == .free {
                     let moved = value.translation
                     if hypot(moved.width, moved.height) > axisLockThreshold {
                         dragAxis = abs(moved.width) > abs(moved.height) ? .horizontal : .vertical
@@ -159,14 +161,16 @@ struct PrintLayoutOverlayView: View {
                     y: currentDoc.y - startDoc.y
                 )
 
-                switch dragAxis {
-                case .horizontal: delta.y = 0
-                case .vertical: delta.x = 0
-                case .free: break
-                }
+                if axisLockEnabled {
+                    switch dragAxis {
+                    case .horizontal: delta.y = 0
+                    case .vertical: delta.x = 0
+                    case .free: break
+                    }
 
-                if dragAxis != .free, !dragStartBounds.isNull {
-                    delta = snappedDelta(delta, axis: dragAxis)
+                    if dragAxis != .free, !dragStartBounds.isNull {
+                        delta = snappedDelta(delta, axis: dragAxis)
+                    }
                 }
 
                 var transform = moveDragOriginTransform

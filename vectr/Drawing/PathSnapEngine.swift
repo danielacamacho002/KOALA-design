@@ -177,7 +177,10 @@ struct CenterSnapProvider: SnapCandidateProvider {
             return ShapeGeometry.ellipseFromCardinalPoints(stroke.points).map { [$0.center] } ?? []
         case .arc:
             return ShapeGeometry.arcCircle(for: stroke).map { [$0.center] } ?? []
-        case .polyline, .rectangle, .construction, .curve:
+        case .curve:
+            if let circle = ShapeGeometry.arcCircle(for: stroke) { return [circle.center] }
+            return ShapeGeometry.shapeCenter(for: stroke).map { [$0] } ?? []
+        case .polyline, .rectangle, .construction:
             return ShapeGeometry.shapeCenter(for: stroke).map { [$0] } ?? []
         }
     }
@@ -411,6 +414,9 @@ struct PathSnapEngine {
     ///   - referenceStarts: fixed anchor point(s) of the segment(s) whose free end is being
     ///     placed, enabling tangent snaps. A dragged endpoint has one; a dragged middle anchor
     ///     has two (its neighbors), so tangent can engage on either adjacent segment.
+    ///   - alignmentOrigin / alignmentThrough: when both are set, candidates off this ray
+    ///     (farther than `alignmentTolerance`) are ignored so polar tracking is not stolen
+    ///     by a nearby corner.
     func closestCandidate(
         to point: CGPoint,
         within radius: CGFloat,
@@ -418,7 +424,11 @@ struct PathSnapEngine {
         excludedStrokeID: UUID? = nil,
         excludedStrokeIDs: Set<UUID> = [],
         enabledKinds: Set<SnapKind>,
-        referenceStarts: [CGPoint] = []
+        referenceStarts: [CGPoint] = [],
+        alignmentOrigin: CGPoint? = nil,
+        alignmentThrough: CGPoint? = nil,
+        alignmentTolerance: CGFloat = 0,
+        endpointRadius: CGFloat? = nil
     ) -> SnapCandidate? {
         guard radius > 0, !enabledKinds.isEmpty else { return nil }
 
@@ -434,9 +444,20 @@ struct PathSnapEngine {
         var bestDistanceSquared = radius * radius
 
         func consider(_ candidatePoint: CGPoint, kind: SnapKind, sourceStrokeID: UUID?) {
+            if let alignmentOrigin, let alignmentThrough, alignmentTolerance > 0 {
+                let offRay = distanceFromPointToRay(
+                    candidatePoint,
+                    origin: alignmentOrigin,
+                    through: alignmentThrough
+                )
+                if offRay > alignmentTolerance { return }
+            }
             let dx = candidatePoint.x - point.x
             let dy = candidatePoint.y - point.y
             let distanceSquared = dx * dx + dy * dy
+            if kind == .endpoint, let endpointRadius, distanceSquared > endpointRadius * endpointRadius {
+                return
+            }
             // `<` keeps earlier candidates winning on ties, so endpoints (considered first)
             // take priority over midpoints and intersections at equal distance.
             if distanceSquared < bestDistanceSquared {
@@ -492,6 +513,14 @@ struct PathSnapEngine {
                 for provider in anchoredProviders where enabledKinds.contains(provider.kind) {
                     for referenceStart in referenceStarts {
                         for candidate in provider.candidates(for: stroke, referenceStart: referenceStart) {
+                            if let alignmentOrigin, let alignmentThrough, alignmentTolerance > 0 {
+                                let offRay = distanceFromPointToRay(
+                                    candidate,
+                                    origin: alignmentOrigin,
+                                    through: alignmentThrough
+                                )
+                                if offRay > alignmentTolerance { continue }
+                            }
                             let dx = candidate.x - point.x
                             let dy = candidate.y - point.y
                             let distanceSquared = dx * dx + dy * dy
@@ -555,7 +584,11 @@ final class SnapInteractionSession {
         breakawayRadius: CGFloat,
         breakawayVelocity: CGFloat,
         excludedStrokeID: UUID? = nil,
-        referenceStarts: [CGPoint] = []
+        referenceStarts: [CGPoint] = [],
+        alignmentOrigin: CGPoint? = nil,
+        alignmentThrough: CGPoint? = nil,
+        alignmentTolerance: CGFloat = 0,
+        endpointRadius: CGFloat? = nil
     ) -> Update {
         let now = CACurrentMediaTime()
         let previousPoint = lastPoint
@@ -584,10 +617,22 @@ final class SnapInteractionSession {
         // engaged while the free end hovers the boundary and releases naturally when it leaves.
         if let current = lockedCandidate, current.kind != .tangent {
             let distance = hypot(rawPoint.x - current.point.x, rawPoint.y - current.point.y)
-            if distance <= breakawayRadius {
+            let endpointHold = current.kind == .endpoint ? (endpointRadius ?? breakawayRadius) : breakawayRadius
+            let offRay: CGFloat
+            if let alignmentOrigin, let alignmentThrough, alignmentTolerance > 0 {
+                offRay = distanceFromPointToRay(
+                    current.point,
+                    origin: alignmentOrigin,
+                    through: alignmentThrough
+                )
+            } else {
+                offRay = 0
+            }
+            if offRay > alignmentTolerance || distance > endpointHold {
+                lockedCandidate = nil
+            } else {
                 return Update(candidate: current, didLock: false)
             }
-            lockedCandidate = nil
         }
 
         // 3. Acquire a new lock if a candidate is inside the (tighter) snap radius.
@@ -597,7 +642,11 @@ final class SnapInteractionSession {
             strokes: strokes,
             excludedStrokeID: excludedStrokeID,
             enabledKinds: enabledKinds,
-            referenceStarts: referenceStarts
+            referenceStarts: referenceStarts,
+            alignmentOrigin: alignmentOrigin,
+            alignmentThrough: alignmentThrough,
+            alignmentTolerance: alignmentTolerance,
+            endpointRadius: endpointRadius
         ) {
             let isNewLock = candidate != lockedCandidate
             lockedCandidate = candidate
@@ -735,6 +784,9 @@ extension VectrDocument {
 enum SnapTuning {
     /// Distance at which the cursor is pulled onto a candidate.
     static let snapRadiusPoints: CGFloat = 16
+    /// Tighter radius for endpoint snaps while drawing a new line. The regular
+    /// 16pt magnet was grabbing nearby lines and welding the new stroke onto them.
+    static let lineEndpointSnapRadiusPoints: CGFloat = 6
     /// Larger radius the cursor must be dragged past to break a lock (hysteresis).
     static let breakawayRadiusPoints: CGFloat = 32
     /// Pencil speed (points/second) above which a lock breaks instantly.
