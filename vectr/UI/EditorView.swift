@@ -543,29 +543,55 @@ struct EditorView: View {
 
     /// Object snap (endpoints/midpoints) resolved from the committed point, so tap-to-place and
     /// drag-draw commits land exactly on real geometry. Object snap takes priority over the grid.
-    private func objectSnappedPoint(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint? {
+    private func objectSnappedPoint(
+        _ point: CGPoint,
+        referenceStart: CGPoint? = nil,
+        alignmentOrigin: CGPoint? = nil,
+        alignmentThrough: CGPoint? = nil
+    ) -> CGPoint? {
         let enabledKinds = store.document.enabledSnapKinds
         guard !enabledKinds.isEmpty else { return nil }
         let scale = max(store.document.viewport.scale, 0.0001)
+        let alignmentTolerance = alignmentOrigin == nil ? 0 : 4 / scale
+        let endpointRadius = shouldAngleSnapDrawnSegment
+            ? SnapTuning.lineEndpointSnapRadiusPoints / scale
+            : nil
         return objectSnapEngine.closestCandidate(
             to: point,
             within: SnapTuning.snapRadiusPoints / scale,
             strokes: store.document.interactiveStrokes(),
             excludedStrokeID: commandSession.attachedStrokeID,
             enabledKinds: enabledKinds,
-            referenceStarts: referenceStart.map { [$0] } ?? []
+            referenceStarts: referenceStart.map { [$0] } ?? [],
+            alignmentOrigin: alignmentOrigin,
+            alignmentThrough: alignmentThrough,
+            alignmentTolerance: alignmentTolerance,
+            endpointRadius: endpointRadius
         )?.point
     }
 
     private func snapDrawingInput(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint {
-        if let snapped = objectSnappedPoint(point, referenceStart: referenceStart) { return snapped }
-        return snapDrawingPoint(
+        snapDrawingEndpoint(
             point,
+            origin: referenceStart,
+            applyAngleSnap: shouldAngleSnapDrawnSegment && referenceStart != nil,
             grid: store.document.grid,
             settings: store.document.settings,
-            enabled: drawingSnapEnabled,
-            scale: store.document.viewport.scale
+            gridSnapEnabled: drawingSnapEnabled,
+            scale: store.document.viewport.scale,
+            objectSnap: { query, alignmentOrigin, alignmentThrough in
+                objectSnappedPoint(
+                    query,
+                    referenceStart: referenceStart,
+                    alignmentOrigin: alignmentOrigin,
+                    alignmentThrough: alignmentThrough
+                )
+            }
         )
+    }
+
+    private var shouldAngleSnapDrawnSegment: Bool {
+        store.document.activeCategory == .line && store.document.lineVariant != .arc
     }
 
     private func snapDrawingControlInput(_ raw: CGPoint, projected: CGPoint) -> CGPoint {
@@ -1086,7 +1112,10 @@ struct EditorView: View {
     }
 
     private var lineConnectTolerance: CGFloat {
-        store.document.grid.visualSpacing(for: store.document.settings) * 0.5
+        // Only weld chained segments that actually share a point. Half a grid
+        // cell was treating a nearby line as the same vertex and inserting a
+        // diagonal connector.
+        store.document.viewport.viewToDocument(distance: 3)
     }
 
     private func commitLineSegment(start: CGPoint, end: CGPoint) {
@@ -1180,17 +1209,22 @@ struct EditorView: View {
                 startDrawingSessionIfNeeded()
             }
             guard commandSession.isActive else { return }
-            let snapped = snapDrawingInput(documentPoint)
-            let projected = ShapeGeometry.projectCommandPoint(
-                snapped,
-                controlPoints: commandSession.controlPoints,
-                category: category,
-                lineVariant: store.document.lineVariant,
-                circleVariant: store.document.circleVariant,
-                rectangleVariant: store.document.rectangleVariant
-            )
-            let final = snapDrawingControlInput(snapped, projected: projected)
-            commandSession.addPoint(final)
+            let angleOrigin = shouldAngleSnapDrawnSegment ? commandSession.controlPoints.first : nil
+            let snapped = snapDrawingInput(documentPoint, referenceStart: angleOrigin)
+            if shouldAngleSnapDrawnSegment {
+                commandSession.addPoint(snapped)
+            } else {
+                let projected = ShapeGeometry.projectCommandPoint(
+                    snapped,
+                    controlPoints: commandSession.controlPoints,
+                    category: category,
+                    lineVariant: store.document.lineVariant,
+                    circleVariant: store.document.circleVariant,
+                    rectangleVariant: store.document.rectangleVariant
+                )
+                let final = snapDrawingControlInput(snapped, projected: projected)
+                commandSession.addPoint(final)
+            }
             if commandSession.canFinish, shouldAutoCommitAfterPoint {
                 commitCommandShape(restart: true)
             } else {
@@ -1360,10 +1394,11 @@ struct EditorView: View {
     }
 
     private func commitDragDraw(start: CGPoint, end: CGPoint) {
-        let snappedStart = snapDrawingInput(start)
-        // Re-snap the end with the start as the tangent reference so a live tangent lock is
-        // preserved on release; without it the on-rim contact point would be grid-snapped off
-        // the circle, making the finished line jump.
+        // The start was already resolved during the gesture. Re-running object snap
+        // can pull it onto a nearby corner and turn a straight preview into a diagonal.
+        let snappedStart = start
+        // Re-snap the end with the start as the axis / tangent reference so a live lock
+        // is preserved on release; without it the free end can be grid-snapped off-axis.
         let snappedEnd = snapDrawingInput(end, referenceStart: snappedStart)
         guard hypot(snappedEnd.x - snappedStart.x, snappedEnd.y - snappedStart.y) > 0.001 else {
             startDrawingSessionIfNeeded()

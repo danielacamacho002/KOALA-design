@@ -480,20 +480,29 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func snappedDragPoint(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint {
-        // Object snapping (centers/quadrants/endpoints/midpoints/intersections/tangents) takes
-        // precedence over grid snapping so the pencil magnetically locks to real geometry when
-        // it is in range.
-        if let objectSnapped = resolveObjectSnap(rawPoint: point, referenceStart: referenceStart) {
-            return objectSnapped
-        }
-        let enabled = document.snapEnabled && document.grid.snapEnabled
-        return snapDrawingPoint(
+        snapDrawingEndpoint(
             point,
+            origin: referenceStart,
+            applyAngleSnap: shouldAngleSnapDrawnSegment,
             grid: document.grid,
             settings: document.settings,
-            enabled: enabled,
-            scale: document.viewport.scale
+            gridSnapEnabled: document.snapEnabled && document.grid.snapEnabled,
+            scale: document.viewport.scale,
+            objectSnap: { query, alignmentOrigin, alignmentThrough in
+                resolveObjectSnap(
+                    rawPoint: query,
+                    referenceStart: referenceStart,
+                    alignmentOrigin: alignmentOrigin,
+                    alignmentThrough: alignmentThrough
+                )
+            }
         )
+    }
+
+    /// Polar tracking applies to straight segments (line / construction / curve), not arcs
+    /// or 2-axis shapes whose opposite corner should stay free.
+    private var shouldAngleSnapDrawnSegment: Bool {
+        activeCategory == .line && lineVariant != .arc
     }
 
     /// Runs the snapping engine for a live pencil position, updates the visual indicator and
@@ -501,7 +510,12 @@ final class DrawingCanvasUIView: UIView {
     ///
     /// Thresholds are defined in view points and converted to document units here so the feel
     /// stays constant across zoom levels.
-    private func resolveObjectSnap(rawPoint: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint? {
+    private func resolveObjectSnap(
+        rawPoint: CGPoint,
+        referenceStart: CGPoint? = nil,
+        alignmentOrigin: CGPoint? = nil,
+        alignmentThrough: CGPoint? = nil
+    ) -> CGPoint? {
         let enabledKinds = document.enabledSnapKinds
         guard !enabledKinds.isEmpty else {
             finishSnapInteraction()
@@ -509,6 +523,10 @@ final class DrawingCanvasUIView: UIView {
         }
 
         let scale = max(document.viewport.scale, 0.0001)
+        let alignmentTolerance = alignmentOrigin == nil ? 0 : 4 / scale
+        let endpointRadius = shouldAngleSnapDrawnSegment
+            ? SnapTuning.lineEndpointSnapRadiusPoints / scale
+            : nil
         let update = snapSession.update(
             rawPoint: rawPoint,
             engine: snapEngine,
@@ -517,7 +535,11 @@ final class DrawingCanvasUIView: UIView {
             snapRadius: SnapTuning.snapRadiusPoints / scale,
             breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
             breakawayVelocity: SnapTuning.breakawayVelocityPoints / scale,
-            referenceStarts: referenceStart.map { [$0] } ?? []
+            referenceStarts: referenceStart.map { [$0] } ?? [],
+            alignmentOrigin: alignmentOrigin,
+            alignmentThrough: alignmentThrough,
+            alignmentTolerance: alignmentTolerance,
+            endpointRadius: endpointRadius
         )
 
         if let candidate = update.candidate {
