@@ -404,20 +404,13 @@ final class DrawingCanvasUIView: UIView {
             if isCommandMode {
                 onCanvasTap?(documentPoint)
             }
-        case .trim, .delete, .addAnchor, .type, .copy:
+        case .trim, .delete, .addAnchor, .type, .copy, .scale, .fillet, .pattern, .dimensions, .curve:
+            // Forward taps so empty-canvas / outside-shape hits can dismiss the tool.
+            // Scale/fillet handles still win via the overlay's high-priority gestures.
             onCanvasTap?(documentPoint)
-        case nil:
-            // Idle canvas: let the editor switch to the move tool when a shape is hit.
-            onCanvasTap?(documentPoint)
-        case .curve:
-            // Curve points come from Pencil drags; a double-tap finishes it.
+        case .move, nil:
+            // Move (the idle default) is handled by the SwiftUI overlay.
             break
-        case .move, .scale, .fillet, .pattern:
-            // Selection/manipulation for these tools is handled by the SwiftUI
-            // canvas overlay so group-aware selection is preserved.
-            break
-        default:
-            handleSelection(at: viewPoint)
         }
     }
 
@@ -1012,18 +1005,19 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
                 return activeCategory == .curve
             }
             if activeCategory == .curve {
-                // Curve points come from Pencil drags; ignore stray single taps.
-                return false
+                // Curve points come from Pencil drags; a single tap still needs to
+                // reach the editor so tapping empty canvas can dismiss the tool.
+                return true
             }
             switch activeCategory {
             case .line, .circle, .rectangle:
                 if isCommandMode {
                     return shouldAcceptDrawingTouch(touch)
                 }
-            case .trim, .delete, .addAnchor, .copy, nil:
+            case .trim, .delete, .addAnchor, .copy, .scale, .fillet, .pattern, .dimensions:
                 // These tools used to hit-test via SwiftUI overlays (finger-friendly).
-                // Always accept finger taps so trim/delete/add-anchor/copy (and idle
-                // tap-to-select) keep working when "finger drawing" is off.
+                // Always accept finger taps so they keep working when "finger drawing"
+                // is off, including tap-empty-to-dismiss.
                 return true
             default:
                 break

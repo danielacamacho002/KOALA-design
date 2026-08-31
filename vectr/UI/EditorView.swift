@@ -240,7 +240,8 @@ struct EditorView: View {
                         }
                         store.markDirty()
                     },
-                    onEditText: { beginTextEditing($0) }
+                    onEditText: { beginTextEditing($0) },
+                    onDismissTool: { dismissActiveTool() }
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(canvasOverlayAcceptsHits)
@@ -609,16 +610,15 @@ struct EditorView: View {
     private var canvasOverlayAcceptsHits: Bool {
         if commandSession.isActive { return false }
         switch store.document.activeCategory {
-        case .move, .scale, .fillet:
+        case .move, .scale, .fillet, nil:
             return true
         case .type:
             // With a text selected, the overlay handles move/scale/tap-to-edit;
             // with nothing selected, taps pass through so a new text can be placed.
             return store.document.selectedTextID != nil
-        case .delete, .addAnchor, .pattern, .trim, .dimensions, .copy, nil:
+        case .delete, .addAnchor, .pattern, .trim, .dimensions, .copy:
             // Let canvas taps pass through so delete/add-anchor/pattern/trim/dimensions/copy can
             // target the shape directly (trim has no overlay handles; dimensions shows labels only).
-            // Idle (no tool) taps also pass through so a shape hit can switch to the move tool.
             return false
         default:
             return store.document.selectedStrokeID != nil
@@ -971,7 +971,8 @@ struct EditorView: View {
     }
 
     private func handleToolSelected(_ category: ToolCategory?) {
-        showCommandPanel = category?.isDrawingTool ?? false
+        let category = category ?? .move
+        showCommandPanel = category.isDrawingTool
         if category != .copy {
             showLayersPanel = false
         }
@@ -980,13 +981,6 @@ struct EditorView: View {
         }
         if category != .pattern {
             patternPreviewStrokes = []
-        }
-        guard let category else {
-            commandSession.cancel()
-            resetArcDragState()
-            updateChromeInsets()
-            refreshCanvas()
-            return
         }
         switch category {
         case .type:
@@ -1172,6 +1166,32 @@ struct EditorView: View {
         return true
     }
 
+    /// Tap on empty grid / outside every shape. Used to leave the current tool.
+    private func isEmptyCanvasTap(at documentPoint: CGPoint, viewThreshold: CGFloat = 16) -> Bool {
+        let threshold = store.document.viewport.viewToDocument(distance: viewThreshold)
+        if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
+            return false
+        }
+        if store.document.elementHit(near: documentPoint, threshold: threshold) != .none {
+            return false
+        }
+        return store.document.group(at: documentPoint) == nil
+    }
+
+    /// Leave the current tool, hide its panel/handles, and fall back to idle Move.
+    private func dismissActiveTool() {
+        endTextEditingIfNeeded()
+        commandSession.cancel()
+        resetArcDragState()
+        patternPreviewStrokes = []
+        showCommandPanel = false
+        store.document.clearToolSelections()
+        store.document.clearElementSelection()
+        store.document.clearActiveTool()
+        updateChromeInsets()
+        refreshCanvas()
+    }
+
     private func handleCanvasTap(_ documentPoint: CGPoint) {
         showCommandPanel = false
         // Keep layers open for copy/paste so the destination layer can be chosen
@@ -1180,11 +1200,19 @@ struct EditorView: View {
             showLayersPanel = false
         }
         switch store.document.activeCategory {
-        case nil:
+        case .move, nil:
             activateMoveIfHit(at: documentPoint)
+        case .curve:
+            dismissActiveTool()
         case .type:
             endTextEditingIfNeeded()
             if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: 0) {
+                return
+            }
+            // With a text already selected, tap-away leaves Type. With nothing
+            // selected, an empty tap is how a new text is placed.
+            if store.document.selectedTextID != nil, isEmptyCanvasTap(at: documentPoint) {
+                dismissActiveTool()
                 return
             }
             if let hit = store.document.selectTextElement(at: documentPoint) {
@@ -1208,7 +1236,10 @@ struct EditorView: View {
             if commandSession.isRefiningAttachedStroke {
                 startDrawingSessionIfNeeded()
             }
-            guard commandSession.isActive else { return }
+            guard commandSession.isActive else {
+                dismissActiveTool()
+                return
+            }
             let angleOrigin = shouldAngleSnapDrawnSegment ? commandSession.controlPoints.first : nil
             let snapped = snapDrawingInput(documentPoint, referenceStart: angleOrigin)
             if shouldAngleSnapDrawnSegment {
@@ -1231,6 +1262,10 @@ struct EditorView: View {
                 refreshCanvas()
             }
         case .trim:
+            if isEmptyCanvasTap(at: documentPoint) {
+                dismissActiveTool()
+                return
+            }
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
                 return
@@ -1264,6 +1299,10 @@ struct EditorView: View {
                 refreshCanvas()
             }
         case .addAnchor:
+            if isEmptyCanvasTap(at: documentPoint, viewThreshold: 28) {
+                dismissActiveTool()
+                return
+            }
             let threshold = store.document.viewport.viewToDocument(distance: 28)
             if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
                 return
@@ -1284,6 +1323,10 @@ struct EditorView: View {
                 refreshCanvas()
             }
         case .pattern:
+            if isEmptyCanvasTap(at: documentPoint) {
+                dismissActiveTool()
+                return
+            }
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             store.document.selectElement(near: documentPoint, threshold: threshold)
             if let id = store.document.selectedStrokeID,
@@ -1295,6 +1338,10 @@ struct EditorView: View {
             updatePatternPreview()
             refreshCanvas()
         case .copy:
+            if isEmptyCanvasTap(at: documentPoint) {
+                dismissActiveTool()
+                return
+            }
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             let hit = store.document.selectElement(near: documentPoint, threshold: threshold)
             if hit != .none {
@@ -1306,6 +1353,10 @@ struct EditorView: View {
             }
             refreshCanvas()
         case .delete:
+            if isEmptyCanvasTap(at: documentPoint, viewThreshold: 24) {
+                dismissActiveTool()
+                return
+            }
             if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: store.document.viewport.viewToDocument(distance: 24)) {
                 return
             }
@@ -1363,6 +1414,10 @@ struct EditorView: View {
                 refreshCanvas()
             }
         default:
+            if isEmptyCanvasTap(at: documentPoint) {
+                dismissActiveTool()
+                return
+            }
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             store.document.selectElement(near: documentPoint, threshold: threshold)
             refreshCanvas()
@@ -1388,7 +1443,7 @@ struct EditorView: View {
             }
         }
 
-        store.document.selectTool(.move)
+        store.document.engageMoveTool()
         handleToolSelected(.move)
         refreshCanvas()
     }
