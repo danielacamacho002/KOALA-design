@@ -34,19 +34,32 @@ struct SideToolPaletteView: View {
     private func toolButton(_ category: ToolCategory) -> some View {
         StudioIconButton(
             systemImage: category.systemImage,
-            isActive: document.activeCategory == category,
+            isActive: isToolHighlighted(category),
             size: iconSize,
             inactiveColor: .white
         ) {
-            if document.activeCategory == category {
+            if category == .move {
+                document.engageMoveTool()
+                onToolSelected(.move)
+            } else if document.activeCategory == category {
                 document.clearActiveTool()
-                onToolSelected(nil)
+                onToolSelected(.move)
             } else {
                 document.selectTool(category)
                 onToolSelected(category)
             }
         }
         .accessibilityLabel(category.label)
+    }
+
+    /// Move stays visually idle as the default tool until the user taps it
+    /// (or starts using it). Other tools highlight whenever they are active.
+    private func isToolHighlighted(_ category: ToolCategory) -> Bool {
+        guard document.activeCategory == category else { return false }
+        if category == .move {
+            return document.isMoveToolHighlighted
+        }
+        return true
     }
 }
 

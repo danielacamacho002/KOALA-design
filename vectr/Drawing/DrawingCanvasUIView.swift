@@ -407,8 +407,8 @@ final class DrawingCanvasUIView: UIView {
         case .trim, .delete, .addAnchor, .type, .copy:
             onCanvasTap?(documentPoint)
         case nil:
-            // Idle canvas: let the editor switch to the move tool when a shape is hit.
-            onCanvasTap?(documentPoint)
+            // No tool selected falls back to Move; overlay handles selection.
+            break
         case .curve:
             // Curve points come from Pencil drags; a double-tap finishes it.
             break
@@ -987,10 +987,10 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
                 if isCommandMode {
                     return shouldAcceptDrawingTouch(touch)
                 }
-            case .trim, .delete, .addAnchor, .copy, nil:
+            case .trim, .delete, .addAnchor, .copy:
                 // These tools used to hit-test via SwiftUI overlays (finger-friendly).
-                // Always accept finger taps so trim/delete/add-anchor/copy (and idle
-                // tap-to-select) keep working when "finger drawing" is off.
+                // Always accept finger taps so trim/delete/add-anchor/copy keep
+                // working when "finger drawing" is off.
                 return true
             default:
                 break

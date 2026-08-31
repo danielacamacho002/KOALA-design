@@ -583,16 +583,15 @@ struct EditorView: View {
     private var canvasOverlayAcceptsHits: Bool {
         if commandSession.isActive { return false }
         switch store.document.activeCategory {
-        case .move, .scale, .fillet:
+        case .move, .scale, .fillet, nil:
             return true
         case .type:
             // With a text selected, the overlay handles move/scale/tap-to-edit;
             // with nothing selected, taps pass through so a new text can be placed.
             return store.document.selectedTextID != nil
-        case .delete, .addAnchor, .pattern, .trim, .dimensions, .copy, nil:
+        case .delete, .addAnchor, .pattern, .trim, .dimensions, .copy:
             // Let canvas taps pass through so delete/add-anchor/pattern/trim/dimensions/copy can
             // target the shape directly (trim has no overlay handles; dimensions shows labels only).
-            // Idle (no tool) taps also pass through so a shape hit can switch to the move tool.
             return false
         default:
             return store.document.selectedStrokeID != nil
@@ -945,7 +944,11 @@ struct EditorView: View {
     }
 
     private func handleToolSelected(_ category: ToolCategory?) {
-        showCommandPanel = category?.isDrawingTool ?? false
+        let category = category ?? .move
+        if store.document.activeCategory == nil {
+            store.document.selectTool(category)
+        }
+        showCommandPanel = category.isDrawingTool
         if category != .copy {
             showLayersPanel = false
         }
@@ -954,13 +957,6 @@ struct EditorView: View {
         }
         if category != .pattern {
             patternPreviewStrokes = []
-        }
-        guard let category else {
-            commandSession.cancel()
-            resetArcDragState()
-            updateChromeInsets()
-            refreshCanvas()
-            return
         }
         switch category {
         case .type:
@@ -1354,7 +1350,7 @@ struct EditorView: View {
             }
         }
 
-        store.document.selectTool(.move)
+        store.document.engageMoveTool()
         handleToolSelected(.move)
         refreshCanvas()
     }
