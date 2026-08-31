@@ -14,32 +14,59 @@ struct DimensionOverlayView: View {
     @Bindable var document: VectrDocument
     var onChanged: () -> Void = {}
 
-    @State private var editingID: String?
-    @State private var editText = ""
-    @State private var draggingID: String?
-    @State private var dragTranslation: CGSize = .zero
-    /// Measured sizes of each dimension label cluster (value + lock), used so wide
-    /// side labels clear the stroke instead of sitting on the border.
-    @State private var labelClusterSizes: [String: CGSize] = [:]
-    @FocusState private var editorFocused: Bool
-
     /// Document-space nudge used only to establish outward direction.
     private static let textLabelStandoff: CGFloat = 28
 
     var body: some View {
         ZStack {
-            if document.dimensionsVisible,
-               let strokeID = document.selectedStrokeID,
-               let stroke = document.stroke(with: strokeID) {
-                ForEach(ShapeGeometry.semanticDimensions(for: stroke)) { dimension in
-                    dimensionLabel(dimension, strokeID: strokeID)
+            if document.dimensionsVisible {
+                ForEach(visibleStrokeDimensions) { item in
+                    DraggableDimensionLabel(
+                        document: document,
+                        dimension: item.dimension,
+                        strokeID: item.strokeID,
+                        onChanged: onChanged
+                    )
                 }
-            } else if document.dimensionsVisible,
-                      let textID = document.selectedTextID,
-                      let element = document.textElement(with: textID) {
-                ForEach(textDimensions(for: element)) { dimension in
-                    textDimensionLabel(dimension)
+                ForEach(visibleTextDimensions) { item in
+                    textDimensionLabel(item.dimension)
                 }
+            }
+        }
+    }
+
+    private struct RevealedStrokeDimension: Identifiable {
+        let strokeID: UUID
+        let dimension: ShapeGeometry.SemanticDimension
+        var id: String {
+            VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
+        }
+    }
+
+    private struct RevealedTextDimension: Identifiable {
+        let textID: UUID
+        let dimension: TextDimension
+        var id: String {
+            VectrDocument.dimensionOffsetKey(strokeID: textID, dimensionID: dimension.id)
+        }
+    }
+
+    private var visibleStrokeDimensions: [RevealedStrokeDimension] {
+        document.strokes.flatMap { stroke in
+            ShapeGeometry.semanticDimensions(for: stroke).compactMap { dimension in
+                let key = VectrDocument.dimensionOffsetKey(strokeID: stroke.id, dimensionID: dimension.id)
+                guard document.isDimensionRevealed(key: key) else { return nil }
+                return RevealedStrokeDimension(strokeID: stroke.id, dimension: dimension)
+            }
+        }
+    }
+
+    private var visibleTextDimensions: [RevealedTextDimension] {
+        document.textElements.flatMap { element in
+            textDimensions(for: element).compactMap { dimension in
+                let key = VectrDocument.dimensionOffsetKey(strokeID: element.id, dimensionID: dimension.id)
+                guard document.isDimensionRevealed(key: key) else { return nil }
+                return RevealedTextDimension(textID: element.id, dimension: dimension)
             }
         }
     }
@@ -132,88 +159,107 @@ struct DimensionOverlayView: View {
     private func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
         CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
     }
+}
 
-    // MARK: - Shape dimensions (draggable, with leader lines)
+// MARK: - Per-label drag / edit
 
-    /// View-space position where the label should sit, honoring any stored drag offset.
-    private func basePosition(for dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> CGPoint {
-        let key = VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
+/// Owns its own drag state so moving one label does not rebuild every other
+/// dimension, and so the gesture is not fighting a parent-driven position.
+private struct DraggableDimensionLabel: View {
+    @Bindable var document: VectrDocument
+    let dimension: ShapeGeometry.SemanticDimension
+    let strokeID: UUID
+    var onChanged: () -> Void
+
+    @State private var isDragging = false
+    @State private var dragOrigin: CGPoint = .zero
+    @State private var dragTranslation: CGSize = .zero
+    @State private var clusterSize: CGSize?
+    @State private var isEditing = false
+    @State private var editText = ""
+    @FocusState private var editorFocused: Bool
+
+    private var key: String {
+        VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
+    }
+
+    private var halfSize: CGSize {
+        clusterSize.map {
+            CGSize(width: max($0.width / 2, 1), height: max($0.height / 2, 1))
+        } ?? DimensionLabelStyle.labeledHalfSize
+    }
+
+    private var restPosition: CGPoint {
         let anchorView = document.viewport.documentToView(dimension.anchor)
         if let offset = document.dimensionOffsets[key] {
             let docPoint = CGPoint(x: dimension.anchor.x + offset.x, y: dimension.anchor.y + offset.y)
             return document.viewport.documentToView(docPoint)
         }
-        let preferred = document.viewport.documentToView(dimension.midPoint)
-        let measured = labelClusterSizes[dimension.id]
-        let halfSize = measured.map {
-            CGSize(width: max($0.width / 2, 1), height: max($0.height / 2, 1))
-        } ?? DimensionLabelStyle.labeledHalfSize
         return DimensionLabelStyle.outsideLabelCenter(
-            preferred: preferred,
+            preferred: document.viewport.documentToView(dimension.midPoint),
             from: anchorView,
             halfSize: halfSize
         )
     }
 
-    private func livePosition(for dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> CGPoint {
-        let base = basePosition(for: dimension, strokeID: strokeID)
-        guard draggingID == dimension.id else { return base }
-        return CGPoint(x: base.x + dragTranslation.width, y: base.y + dragTranslation.height)
+    private var labelPoint: CGPoint {
+        guard isDragging else { return restPosition }
+        return CGPoint(
+            x: dragOrigin.x + dragTranslation.width,
+            y: dragOrigin.y + dragTranslation.height
+        )
     }
 
-    private func viewOutward(for dimension: ShapeGeometry.SemanticDimension) -> CGPoint {
+    private var outward: CGPoint {
         DimensionLabelStyle.outwardUnit(
             preferred: document.viewport.documentToView(dimension.midPoint),
             from: document.viewport.documentToView(dimension.anchor)
         )
     }
 
-    @ViewBuilder
-    private func dimensionLabel(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
+    var body: some View {
         let anchorPoint = document.viewport.documentToView(dimension.anchor)
-        let labelPoint = livePosition(for: dimension, strokeID: strokeID)
-        let outward = viewOutward(for: dimension)
-        let leaderLength = hypot(labelPoint.x - anchorPoint.x, labelPoint.y - anchorPoint.y)
+        let point = labelPoint
+        let leaderPoint = DimensionLabelStyle.leaderEnd(
+            from: anchorPoint,
+            to: point,
+            halfSize: halfSize
+        )
+        let leaderLength = hypot(leaderPoint.x - anchorPoint.x, leaderPoint.y - anchorPoint.y)
 
-        if leaderLength > 12 {
-            leader(from: anchorPoint, to: labelPoint)
-        }
-
-        labelCluster(dimension: dimension, strokeID: strokeID, outward: outward)
-            .fixedSize()
-            .background(
-                GeometryReader { geo in
-                    Color.clear.preference(
-                        key: DimensionLabelSizeKey.self,
-                        value: [dimension.id: geo.size]
-                    )
-                }
-            )
-            .onPreferenceChange(DimensionLabelSizeKey.self) { sizes in
-                for (id, size) in sizes where labelClusterSizes[id] != size {
-                    labelClusterSizes[id] = size
-                }
+        ZStack {
+            if leaderLength > 4 {
+                leader(from: anchorPoint, to: leaderPoint)
             }
-            .position(labelPoint)
+
+            labelCluster
+                .fixedSize()
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: DimensionClusterSizeKey.self, value: geo.size)
+                    }
+                )
+                .onPreferenceChange(DimensionClusterSizeKey.self) { size in
+                    guard !isDragging, size.width > 1, size.height > 1, clusterSize != size else { return }
+                    clusterSize = size
+                }
+                .position(point)
+        }
+        .transaction { $0.disablesAnimations = true }
     }
 
     /// Keep the lock on the outside of the shape so the value sits closer to the edge
     /// and the cluster's outward half isn't wasted on empty space.
     @ViewBuilder
-    private func labelCluster(
-        dimension: ShapeGeometry.SemanticDimension,
-        strokeID: UUID,
-        outward: CGPoint
-    ) -> some View {
+    private var labelCluster: some View {
         let value = Group {
-            if editingID == dimension.id {
-                editorField(dimension: dimension, strokeID: strokeID)
+            if isEditing {
+                editorField
             } else {
-                valueLabel(dimension: dimension, strokeID: strokeID)
+                valueLabel
             }
         }
-        let lock = lockButton(dimension: dimension, strokeID: strokeID)
-        // Left-side labels: lock then value. Everywhere else: value then lock.
+        let lock = lockButton
         if outward.x < -0.3 {
             HStack(spacing: 4) {
                 lock
@@ -227,7 +273,7 @@ struct DimensionOverlayView: View {
         }
     }
 
-    private func editorField(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
+    private var editorField: some View {
         TextField("", text: $editText)
             .font(DimensionLabelStyle.font)
             .foregroundStyle(Color.accentColor)
@@ -242,37 +288,30 @@ struct DimensionOverlayView: View {
             }
             .focused($editorFocused)
             .submitLabel(.done)
-            .onSubmit { commitEdit(dimension: dimension, strokeID: strokeID) }
+            .onSubmit { commitEdit() }
             .onChange(of: editorFocused) { _, focused in
-                // Tapping elsewhere should commit rather than strand the editor.
-                if !focused { commitEdit(dimension: dimension, strokeID: strokeID) }
+                if !focused { commitEdit() }
             }
             .onReceive(NotificationCenter.default.publisher(for: UITextField.textDidBeginEditingNotification)) { note in
                 (note.object as? UITextField)?.selectAll(nil)
             }
             .onAppear {
-                editText = editTextValue(for: dimension)
+                editText = editTextValue
                 editorFocused = true
             }
     }
 
-    private func valueLabel(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
-        let locked = isEdgePinned(dimension, strokeID: strokeID)
-        return Text(labelText(for: dimension))
+    private var valueLabel: some View {
+        let locked = isEdgePinned
+        return Text(labelText)
             .dimensionLabelAppearance(locked: locked)
             .contentShape(Rectangle())
-            .onTapGesture {
-                guard !locked else { return }
-                editingID = dimension.id
-                editText = editTextValue(for: dimension)
-            }
-            .gesture(dragGesture(dimension: dimension, strokeID: strokeID))
+            .gesture(dragOrTapGesture(locked: locked))
     }
 
-    private func lockButton(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some View {
-        let locked = isEdgePinned(dimension, strokeID: strokeID)
+    private var lockButton: some View {
+        let locked = isEdgePinned
         return Button {
-            let key = VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
             let opposite = oppositeEdgeID(for: dimension.id).map {
                 VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: $0)
             }
@@ -292,20 +331,53 @@ struct DimensionOverlayView: View {
                 )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(locked ? "Unlock" : "Lock") \(lockTargetName(for: dimension))")
+        .accessibilityLabel("\(locked ? "Unlock" : "Lock") \(lockTargetName)")
     }
 
-    /// Rectangle locks pin a named edge; everywhere else the lock simply freezes the
-    /// value against edits.
-    private func lockTargetName(for dimension: ShapeGeometry.SemanticDimension) -> String {
+    /// Global-space drag so translation is finger motion, not the moving label.
+    /// A short press with almost no travel becomes tap-to-edit.
+    private func dragOrTapGesture(locked: Bool) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .global)
+            .onChanged { value in
+                if !isDragging {
+                    isDragging = true
+                    dragOrigin = restPosition
+                }
+                dragTranslation = value.translation
+            }
+            .onEnded { value in
+                let travel = hypot(value.translation.width, value.translation.height)
+                if travel < 4 {
+                    isDragging = false
+                    dragTranslation = .zero
+                    guard !locked else { return }
+                    isEditing = true
+                    editText = editTextValue
+                    return
+                }
+                let endPoint = CGPoint(
+                    x: dragOrigin.x + value.translation.width,
+                    y: dragOrigin.y + value.translation.height
+                )
+                let docPoint = document.viewport.viewToDocument(endPoint)
+                let offset = CGPoint(
+                    x: docPoint.x - dimension.anchor.x,
+                    y: docPoint.y - dimension.anchor.y
+                )
+                document.setDimensionOffset(key: key, offset: offset)
+                isDragging = false
+                dragTranslation = .zero
+                onChanged()
+            }
+    }
+
+    private var lockTargetName: String {
         if ShapeGeometry.RectangleEdge(rawValue: dimension.id) != nil {
             return "\(edgeName(for: dimension.id)) edge"
         }
         return "dimension"
     }
 
-    /// The label on the parallel edge showing the same value. Pinning one edge releases
-    /// the other so an axis can never be pinned on both sides.
     private func oppositeEdgeID(for dimensionID: String) -> String? {
         switch dimensionID {
         case "width-top": return "width-bottom"
@@ -320,25 +392,18 @@ struct DimensionOverlayView: View {
         dimensionID.split(separator: "-").last.map(String.init) ?? "shape"
     }
 
-    /// Whether this specific edge is pinned. A pinned edge is frozen in place and its
-    /// label refuses edits; the opposite label stays editable so the two edges can hold
-    /// different values.
-    private func isEdgePinned(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
-        document.isDimensionLocked(
-            key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
-        )
+    private var isEdgePinned: Bool {
+        document.isDimensionLocked(key: key)
     }
 
-    /// Whether the parallel edge across the shape is pinned, which switches edits of
-    /// this label from whole-axis resizing to reshaping just this edge.
-    private func isOppositeEdgePinned(_ dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> Bool {
+    private var isOppositeEdgePinned: Bool {
         guard let opposite = oppositeEdgeID(for: dimension.id) else { return false }
         return document.isDimensionLocked(
             key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: opposite)
         )
     }
 
-    private func editTextValue(for dimension: ShapeGeometry.SemanticDimension) -> String {
+    private var editTextValue: String {
         let display = document.settings.units.fromDocumentUnits(dimension.value)
         return DimensionFormat.edit(Double(display))
     }
@@ -359,29 +424,9 @@ struct DimensionOverlayView: View {
         .allowsHitTesting(false)
     }
 
-    private func dragGesture(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) -> some Gesture {
-        DragGesture(minimumDistance: 4)
-            .onChanged { value in
-                draggingID = dimension.id
-                dragTranslation = value.translation
-            }
-            .onEnded { value in
-                let base = basePosition(for: dimension, strokeID: strokeID)
-                let endPoint = CGPoint(x: base.x + value.translation.width, y: base.y + value.translation.height)
-                let docPoint = document.viewport.viewToDocument(endPoint)
-                let key = VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: dimension.id)
-                let offset = CGPoint(x: docPoint.x - dimension.anchor.x, y: docPoint.y - dimension.anchor.y)
-                document.setDimensionOffset(key: key, offset: offset)
-                draggingID = nil
-                dragTranslation = .zero
-                onChanged()
-            }
-    }
-
-    private func commitEdit(dimension: ShapeGeometry.SemanticDimension, strokeID: UUID) {
-        // Submitting drops focus, so both paths land here; only the first should apply.
-        guard editingID == dimension.id else { return }
-        editingID = nil
+    private func commitEdit() {
+        guard isEditing else { return }
+        isEditing = false
         guard let value = Double(editText.trimmingCharacters(in: .whitespaces)),
               value.isFinite,
               value > 0,
@@ -389,18 +434,14 @@ struct DimensionOverlayView: View {
         let docValue = document.settings.units.toDocumentUnits(CGFloat(value))
         let updated: VectorStroke?
         if let edge = ShapeGeometry.RectangleEdge(rawValue: dimension.id) {
-            if isOppositeEdgePinned(dimension, strokeID: strokeID) {
-                // The parallel edge is pinned, so reshape just this edge; opposite
-                // edges may then differ and the shape becomes a free quad.
+            if isOppositeEdgePinned {
                 updated = ShapeGeometry.applyEdgeLength(edge, newValue: docValue, to: stroke)
             } else {
-                // Paired edit: adjacent sides stay rigid and slide apart, so the
-                // unlocked partner edge resizes along with this one.
                 updated = ShapeGeometry.applyQuadEdge(
                     edge,
                     newValue: docValue,
                     to: stroke,
-                    anchor: anchor(for: dimension, strokeID: strokeID)
+                    anchor: resizeAnchor
                 )
             }
         } else {
@@ -411,13 +452,7 @@ struct DimensionOverlayView: View {
         onChanged()
     }
 
-    /// A pinned edge stays put when the perpendicular axis is edited; with nothing
-    /// pinned the shape resizes about its center. Near/far follow the local frame:
-    /// the near width edge is the left one, the near height edge is the top one.
-    private func anchor(
-        for dimension: ShapeGeometry.SemanticDimension,
-        strokeID: UUID
-    ) -> ShapeGeometry.DimensionAnchor {
+    private var resizeAnchor: ShapeGeometry.DimensionAnchor {
         let nearEdgeID: String
         let farEdgeID: String
         switch dimension.kind {
@@ -430,16 +465,20 @@ struct DimensionOverlayView: View {
         default:
             return .center
         }
-        if document.isDimensionLocked(key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: nearEdgeID)) {
+        if document.isDimensionLocked(
+            key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: nearEdgeID)
+        ) {
             return .nearEdge
         }
-        if document.isDimensionLocked(key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: farEdgeID)) {
+        if document.isDimensionLocked(
+            key: VectrDocument.dimensionOffsetKey(strokeID: strokeID, dimensionID: farEdgeID)
+        ) {
             return .farEdge
         }
         return .center
     }
 
-    private func labelText(for dimension: ShapeGeometry.SemanticDimension) -> String {
+    private var labelText: String {
         let pointsPerUnit = UnitConversion.pointsPerUnit(for: document.settings.units)
         let realWorldValue = dimension.value / max(pointsPerUnit, 0.0001)
         let formattedValue = DimensionFormat.display(Double(realWorldValue))
@@ -458,10 +497,10 @@ struct DimensionOverlayView: View {
     }
 }
 
-private struct DimensionLabelSizeKey: PreferenceKey {
-    static var defaultValue: [String: CGSize] = [:]
+private struct DimensionClusterSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
 
-    static func reduce(value: inout [String: CGSize], nextValue: () -> [String: CGSize]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
     }
 }
