@@ -240,7 +240,8 @@ struct EditorView: View {
                         }
                         store.markDirty()
                     },
-                    onEditText: { beginTextEditing($0) }
+                    onEditText: { beginTextEditing($0) },
+                    onDismissTool: { dismissActiveTool() }
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(canvasOverlayAcceptsHits)
@@ -543,29 +544,55 @@ struct EditorView: View {
 
     /// Object snap (endpoints/midpoints) resolved from the committed point, so tap-to-place and
     /// drag-draw commits land exactly on real geometry. Object snap takes priority over the grid.
-    private func objectSnappedPoint(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint? {
+    private func objectSnappedPoint(
+        _ point: CGPoint,
+        referenceStart: CGPoint? = nil,
+        alignmentOrigin: CGPoint? = nil,
+        alignmentThrough: CGPoint? = nil
+    ) -> CGPoint? {
         let enabledKinds = store.document.enabledSnapKinds
         guard !enabledKinds.isEmpty else { return nil }
         let scale = max(store.document.viewport.scale, 0.0001)
+        let alignmentTolerance = alignmentOrigin == nil ? 0 : 4 / scale
+        let endpointRadius = shouldAngleSnapDrawnSegment
+            ? SnapTuning.lineEndpointSnapRadiusPoints / scale
+            : nil
         return objectSnapEngine.closestCandidate(
             to: point,
             within: SnapTuning.snapRadiusPoints / scale,
             strokes: store.document.interactiveStrokes(),
             excludedStrokeID: commandSession.attachedStrokeID,
             enabledKinds: enabledKinds,
-            referenceStarts: referenceStart.map { [$0] } ?? []
+            referenceStarts: referenceStart.map { [$0] } ?? [],
+            alignmentOrigin: alignmentOrigin,
+            alignmentThrough: alignmentThrough,
+            alignmentTolerance: alignmentTolerance,
+            endpointRadius: endpointRadius
         )?.point
     }
 
     private func snapDrawingInput(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint {
-        if let snapped = objectSnappedPoint(point, referenceStart: referenceStart) { return snapped }
-        return snapDrawingPoint(
+        snapDrawingEndpoint(
             point,
+            origin: referenceStart,
+            applyAngleSnap: shouldAngleSnapDrawnSegment && referenceStart != nil,
             grid: store.document.grid,
             settings: store.document.settings,
-            enabled: drawingSnapEnabled,
-            scale: store.document.viewport.scale
+            gridSnapEnabled: drawingSnapEnabled,
+            scale: store.document.viewport.scale,
+            objectSnap: { query, alignmentOrigin, alignmentThrough in
+                objectSnappedPoint(
+                    query,
+                    referenceStart: referenceStart,
+                    alignmentOrigin: alignmentOrigin,
+                    alignmentThrough: alignmentThrough
+                )
+            }
         )
+    }
+
+    private var shouldAngleSnapDrawnSegment: Bool {
+        store.document.activeCategory == .line && store.document.lineVariant != .arc
     }
 
     private func snapDrawingControlInput(_ raw: CGPoint, projected: CGPoint) -> CGPoint {
@@ -583,16 +610,15 @@ struct EditorView: View {
     private var canvasOverlayAcceptsHits: Bool {
         if commandSession.isActive { return false }
         switch store.document.activeCategory {
-        case .move, .scale, .fillet:
+        case .move, .scale, .fillet, nil:
             return true
         case .type:
             // With a text selected, the overlay handles move/scale/tap-to-edit;
             // with nothing selected, taps pass through so a new text can be placed.
             return store.document.selectedTextID != nil
-        case .delete, .addAnchor, .pattern, .trim, .dimensions, .copy, nil:
+        case .delete, .addAnchor, .pattern, .trim, .dimensions, .copy:
             // Let canvas taps pass through so delete/add-anchor/pattern/trim/dimensions/copy can
             // target the shape directly (trim has no overlay handles; dimensions shows labels only).
-            // Idle (no tool) taps also pass through so a shape hit can switch to the move tool.
             return false
         default:
             return store.document.selectedStrokeID != nil
@@ -945,7 +971,8 @@ struct EditorView: View {
     }
 
     private func handleToolSelected(_ category: ToolCategory?) {
-        showCommandPanel = category?.isDrawingTool ?? false
+        let category = category ?? .move
+        showCommandPanel = category.isDrawingTool
         if category != .copy {
             showLayersPanel = false
         }
@@ -954,13 +981,6 @@ struct EditorView: View {
         }
         if category != .pattern {
             patternPreviewStrokes = []
-        }
-        guard let category else {
-            commandSession.cancel()
-            resetArcDragState()
-            updateChromeInsets()
-            refreshCanvas()
-            return
         }
         switch category {
         case .type:
@@ -1097,7 +1117,10 @@ struct EditorView: View {
     }
 
     private var lineConnectTolerance: CGFloat {
-        store.document.grid.visualSpacing(for: store.document.settings) * 0.5
+        // Only weld chained segments that actually share a point. Half a grid
+        // cell was treating a nearby line as the same vertex and inserting a
+        // diagonal connector.
+        store.document.viewport.viewToDocument(distance: 3)
     }
 
     private func commitLineSegment(start: CGPoint, end: CGPoint) {
@@ -1154,6 +1177,32 @@ struct EditorView: View {
         return true
     }
 
+    /// Tap on empty grid / outside every shape. Used to leave the current tool.
+    private func isEmptyCanvasTap(at documentPoint: CGPoint, viewThreshold: CGFloat = 16) -> Bool {
+        let threshold = store.document.viewport.viewToDocument(distance: viewThreshold)
+        if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
+            return false
+        }
+        if store.document.elementHit(near: documentPoint, threshold: threshold) != .none {
+            return false
+        }
+        return store.document.group(at: documentPoint) == nil
+    }
+
+    /// Leave the current tool, hide its panel/handles, and fall back to idle Move.
+    private func dismissActiveTool() {
+        endTextEditingIfNeeded()
+        commandSession.cancel()
+        resetArcDragState()
+        patternPreviewStrokes = []
+        showCommandPanel = false
+        store.document.clearToolSelections()
+        store.document.clearElementSelection()
+        store.document.clearActiveTool()
+        updateChromeInsets()
+        refreshCanvas()
+    }
+
     private func handleCanvasTap(_ documentPoint: CGPoint) {
         showCommandPanel = false
         // Keep layers open for copy/paste so the destination layer can be chosen
@@ -1162,11 +1211,19 @@ struct EditorView: View {
             showLayersPanel = false
         }
         switch store.document.activeCategory {
-        case nil:
+        case .move, nil:
             activateMoveIfHit(at: documentPoint)
+        case .curve:
+            dismissActiveTool()
         case .type:
             endTextEditingIfNeeded()
             if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: 0) {
+                return
+            }
+            // With a text already selected, tap-away leaves Type. With nothing
+            // selected, an empty tap is how a new text is placed.
+            if store.document.selectedTextID != nil, isEmptyCanvasTap(at: documentPoint) {
+                dismissActiveTool()
                 return
             }
             if let hit = store.document.selectTextElement(at: documentPoint) {
@@ -1190,24 +1247,36 @@ struct EditorView: View {
             if commandSession.isRefiningAttachedStroke {
                 startDrawingSessionIfNeeded()
             }
-            guard commandSession.isActive else { return }
-            let snapped = snapDrawingInput(documentPoint)
-            let projected = ShapeGeometry.projectCommandPoint(
-                snapped,
-                controlPoints: commandSession.controlPoints,
-                category: category,
-                lineVariant: store.document.lineVariant,
-                circleVariant: store.document.circleVariant,
-                rectangleVariant: store.document.rectangleVariant
-            )
-            let final = snapDrawingControlInput(snapped, projected: projected)
-            commandSession.addPoint(final)
+            guard commandSession.isActive else {
+                dismissActiveTool()
+                return
+            }
+            let angleOrigin = shouldAngleSnapDrawnSegment ? commandSession.controlPoints.first : nil
+            let snapped = snapDrawingInput(documentPoint, referenceStart: angleOrigin)
+            if shouldAngleSnapDrawnSegment {
+                commandSession.addPoint(snapped)
+            } else {
+                let projected = ShapeGeometry.projectCommandPoint(
+                    snapped,
+                    controlPoints: commandSession.controlPoints,
+                    category: category,
+                    lineVariant: store.document.lineVariant,
+                    circleVariant: store.document.circleVariant,
+                    rectangleVariant: store.document.rectangleVariant
+                )
+                let final = snapDrawingControlInput(snapped, projected: projected)
+                commandSession.addPoint(final)
+            }
             if commandSession.canFinish, shouldAutoCommitAfterPoint {
                 commitCommandShape(restart: true)
             } else {
                 refreshCanvas()
             }
         case .trim:
+            if isEmptyCanvasTap(at: documentPoint) {
+                dismissActiveTool()
+                return
+            }
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
                 return
@@ -1241,6 +1310,10 @@ struct EditorView: View {
                 refreshCanvas()
             }
         case .addAnchor:
+            if isEmptyCanvasTap(at: documentPoint, viewThreshold: 28) {
+                dismissActiveTool()
+                return
+            }
             let threshold = store.document.viewport.viewToDocument(distance: 28)
             if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
                 return
@@ -1261,6 +1334,10 @@ struct EditorView: View {
                 refreshCanvas()
             }
         case .pattern:
+            if isEmptyCanvasTap(at: documentPoint) {
+                dismissActiveTool()
+                return
+            }
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             store.document.selectElement(near: documentPoint, threshold: threshold)
             if let id = store.document.selectedStrokeID,
@@ -1281,6 +1358,10 @@ struct EditorView: View {
             }
             refreshCanvas()
         case .copy:
+            if isEmptyCanvasTap(at: documentPoint) {
+                dismissActiveTool()
+                return
+            }
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             let hit = store.document.selectElement(near: documentPoint, threshold: threshold)
             if hit != .none {
@@ -1292,6 +1373,10 @@ struct EditorView: View {
             }
             refreshCanvas()
         case .delete:
+            if isEmptyCanvasTap(at: documentPoint, viewThreshold: 24) {
+                dismissActiveTool()
+                return
+            }
             if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: store.document.viewport.viewToDocument(distance: 24)) {
                 return
             }
@@ -1349,6 +1434,10 @@ struct EditorView: View {
                 refreshCanvas()
             }
         default:
+            if isEmptyCanvasTap(at: documentPoint) {
+                dismissActiveTool()
+                return
+            }
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             store.document.selectElement(near: documentPoint, threshold: threshold)
             refreshCanvas()
@@ -1374,16 +1463,17 @@ struct EditorView: View {
             }
         }
 
-        store.document.selectTool(.move)
+        store.document.engageMoveTool()
         handleToolSelected(.move)
         refreshCanvas()
     }
 
     private func commitDragDraw(start: CGPoint, end: CGPoint) {
-        let snappedStart = snapDrawingInput(start)
-        // Re-snap the end with the start as the tangent reference so a live tangent lock is
-        // preserved on release; without it the on-rim contact point would be grid-snapped off
-        // the circle, making the finished line jump.
+        // The start was already resolved during the gesture. Re-running object snap
+        // can pull it onto a nearby corner and turn a straight preview into a diagonal.
+        let snappedStart = start
+        // Re-snap the end with the start as the axis / tangent reference so a live lock
+        // is preserved on release; without it the free end can be grid-snapped off-axis.
         let snappedEnd = snapDrawingInput(end, referenceStart: snappedStart)
         guard hypot(snappedEnd.x - snappedStart.x, snappedEnd.y - snappedStart.y) > 0.001 else {
             startDrawingSessionIfNeeded()

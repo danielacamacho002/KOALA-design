@@ -82,9 +82,12 @@ final class VectrDocument {
     /// Session clipboard for copying items from one layer and pasting onto another.
     /// Not persisted; switching layers clears selection, so copies live here until paste.
     var clipboard: ElementClipboard = ElementClipboard()
-    /// Currently selected drawing or edit tool. `nil` means no tool is active;
-    /// tapping a shape or line in that state selects it and switches to Move.
-    var activeCategory: ToolCategory?
+    /// Currently selected drawing or edit tool. Defaults to Move (select/edit).
+    /// Clearing a tool always falls back here so the canvas is never tool-less.
+    var activeCategory: ToolCategory? = .move
+    /// Move is the idle default, so its toolbar icon stays off until the user
+    /// taps it or starts using it. Launch and "exit tool → Move" leave this false.
+    var isMoveToolHighlighted = false
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
@@ -864,6 +867,25 @@ final class VectrDocument {
 
     func beginInteractiveEdit() {
         pushUndo()
+        compactCircularAnchors(for: selectedStrokeIDs)
+    }
+
+    /// Rewrites tessellated circular runs back to the default 4 / 2–4 anchors so
+    /// move and node-edit operate on the same compact set the overlay shows.
+    func compactCircularAnchors(for ids: Set<UUID>) {
+        var changed = false
+        for id in ids {
+            guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
+            let stroke = strokes[index]
+            let compacted = ShapeGeometry.withCompactedCircularAnchors(stroke)
+            if compacted != stroke {
+                strokes[index] = compacted
+                changed = true
+            }
+        }
+        if changed {
+            geometryRevision += 1
+        }
     }
 
     static func dimensionOffsetKey(strokeID: UUID, dimensionID: String) -> String {
@@ -1135,8 +1157,9 @@ final class VectrDocument {
     }
 
     func deleteStrokePoint(at pointIndex: Int) {
-        guard let id = selectedStrokeID,
-              let stroke = stroke(with: id),
+        guard let id = selectedStrokeID else { return }
+        compactCircularAnchors(for: [id])
+        guard let stroke = stroke(with: id),
               let updated = StrokeEditor.deletePoint(stroke, at: pointIndex) else { return }
         pushUndo()
         updateStroke(updated, recordUndo: false)
@@ -1144,8 +1167,9 @@ final class VectrDocument {
     }
 
     func deleteStrokeEdge(at edgeIndex: Int) {
-        guard let id = selectedStrokeID,
-              let stroke = stroke(with: id),
+        guard let id = selectedStrokeID else { return }
+        compactCircularAnchors(for: [id])
+        guard let stroke = stroke(with: id),
               let updated = StrokeEditor.deleteEdge(stroke, edgeIndex: edgeIndex) else { return }
         pushUndo()
         updateStroke(updated, recordUndo: false)
@@ -1157,7 +1181,9 @@ final class VectrDocument {
     /// changing the shape. Returns `true` when the tap was on a vertex and handled.
     @discardableResult
     func deleteStrokeAnchor(near documentPoint: CGPoint, threshold: CGFloat) -> Bool {
-        guard let id = selectedStrokeID, let stroke = stroke(with: id) else { return false }
+        guard let id = selectedStrokeID else { return false }
+        compactCircularAnchors(for: [id])
+        guard let stroke = stroke(with: id) else { return false }
         // Circles / ellipses / arcs are trimmed parametrically, not by anchor deletion.
         guard stroke.shapeType != .circle,
               stroke.shapeType != .ellipse,
@@ -1220,11 +1246,11 @@ final class VectrDocument {
 
         pushUndo()
         if let index = strokes.firstIndex(where: { $0.id == result.strokeID }) {
-            strokes[index] = result.stroke
+            strokes[index] = ShapeGeometry.withCompactedCircularAnchors(result.stroke)
         }
         var affected: Set<UUID> = [result.stroke.id]
         if let additional = result.additionalStroke {
-            strokes.append(additional)
+            strokes.append(ShapeGeometry.withCompactedCircularAnchors(additional))
             affected.insert(additional.id)
         }
         selectedStrokeID = result.stroke.id
@@ -1241,8 +1267,9 @@ final class VectrDocument {
 
     @discardableResult
     func insertAnchor(at documentPoint: CGPoint, threshold: CGFloat) -> Bool {
-        guard let id = selectedStrokeID,
-              let stroke = stroke(with: id),
+        guard let id = selectedStrokeID else { return false }
+        compactCircularAnchors(for: [id])
+        guard let stroke = stroke(with: id),
               AnchorPointEngine.canEditAnchors(on: stroke),
               let updated = AnchorPointEngine.insertAtTap(
                   stroke: stroke,
@@ -1407,6 +1434,7 @@ final class VectrDocument {
         }
         isSyncingSelection = false
         clearAnchorSelection()
+        compactCircularAnchors(for: strokeIDs)
     }
 
     func toggleStrokeSelection(_ id: UUID) {
@@ -2392,6 +2420,9 @@ final class VectrDocument {
         rectangleVariant: RectangleVariant? = nil
     ) {
         activeCategory = category
+        if category != .move {
+            isMoveToolHighlighted = false
+        }
         if let lineVariant { self.lineVariant = lineVariant }
         if let circleVariant { self.circleVariant = circleVariant }
         if let rectangleVariant { self.rectangleVariant = rectangleVariant }
@@ -2405,9 +2436,13 @@ final class VectrDocument {
     }
 
     func clearActiveTool() {
-        activeCategory = nil
-        dimensionsVisible = false
-        clearRevealedDimensions()
+        isMoveToolHighlighted = false
+        selectTool(.move)
+    }
+
+    func engageMoveTool() {
+        selectTool(.move)
+        isMoveToolHighlighted = true
     }
 
     var isDrawingToolActive: Bool {
@@ -2645,7 +2680,7 @@ final class VectrDocument {
             copy.shapeType = .polyline
             copy.curveHandles = nil
         }
-        return copy
+        return ShapeGeometry.withCompactedCircularAnchors(copy)
     }
 
     /// Builds per-anchor Bézier handles that reproduce the curved cutter edge as a true

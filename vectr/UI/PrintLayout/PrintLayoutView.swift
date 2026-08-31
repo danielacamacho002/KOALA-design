@@ -23,6 +23,7 @@ struct PrintLayoutView: View {
     @State private var showPaperPanel = false
     @State private var showMarginPanel = false
     @State private var printRotateMode = false
+    @State private var printAxisLockEnabled = false
 
     private var hasPrintSelection: Bool {
         document.printSelectedStrokeID != nil || document.printSelectedTextID != nil
@@ -45,6 +46,7 @@ struct PrintLayoutView: View {
                 PrintLayoutOverlayView(
                     document: document,
                     rotateModeActive: printRotateMode,
+                    axisLockEnabled: printAxisLockEnabled,
                     onChanged: onChanged
                 )
                 .ignoresSafeArea()
@@ -71,6 +73,7 @@ struct PrintLayoutView: View {
                     PrintMoveRotatePanelView(
                         document: document,
                         rotateModeActive: $printRotateMode,
+                        axisLockEnabled: $printAxisLockEnabled,
                         onChanged: onChanged,
                         onClose: {
                             printRotateMode = false

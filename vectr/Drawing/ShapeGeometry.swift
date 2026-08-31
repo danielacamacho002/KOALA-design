@@ -217,16 +217,16 @@ enum ShapeGeometry {
                     shapeType: .construction
                 )
             case .arc:
-                guard controlPoints.count >= 3,
-                      let anchors = arcAnchorPoints(points) else { return nil }
-                return VectorStroke(
+                guard controlPoints.count >= 3 else { return nil }
+                let draft = VectorStroke(
                     layerID: layerID,
-                    points: anchors,
+                    points: points,
                     strokeWidth: strokeWidth,
                     strokeColor: strokeColor,
                     isClosed: false,
                     shapeType: .arc
                 )
+                return withCompactedCircularAnchors(draft)
             }
         case .circle:
             switch circleVariant {
@@ -277,7 +277,10 @@ enum ShapeGeometry {
                     rotation: stroke.resolvedShapeRotation
                 )
             }
-            return stroke.points.count == 4 ? stroke.points : handlePointsForLegacyCircle(stroke.points)
+            if stroke.points.count >= 8 {
+                return handlePointsForLegacyCircle(stroke.points)
+            }
+            return stroke.points
         case .ellipse:
             if stroke.points.count == 4, let ellipse = ellipseFromCardinalPoints(stroke.points) {
                 return orientedCardinalPoints(
@@ -289,12 +292,57 @@ enum ShapeGeometry {
             }
             return stroke.points
         case .arc:
-            return arcAnchorPoints(stroke.points) ?? stroke.points
-        case .rectangle:
+            if stroke.points.count >= 8 {
+                return arcAnchorPoints(stroke.points) ?? stroke.points
+            }
             return stroke.points
         default:
-            return stroke.points
+            let compacted = withCompactedCircularAnchors(stroke)
+            if compacted.shapeType == .circle
+                || compacted.shapeType == .ellipse
+                || compacted.shapeType == .arc {
+                return handlePoints(for: compacted)
+            }
+            return compacted.points
         }
+    }
+
+    /// Moves one stored anchor. Circles and ellipses stay parametric (radius /
+    /// axis resize). Adjacent Bézier handles are cleared on leftover curves so
+    /// joined circular segments do not implode from stale tangent offsets.
+    static func applyingMovedAnchor(
+        _ stroke: VectorStroke,
+        at index: Int,
+        to point: CGPoint
+    ) -> VectorStroke {
+        guard stroke.points.indices.contains(index) else { return stroke }
+        switch stroke.shapeType {
+        case .circle:
+            var updated = stroke
+            updated.points = updateCircleHandle(at: index, to: point, stroke: stroke)
+            return updated
+        case .ellipse:
+            var updated = stroke
+            updated.points = updateEllipseHandle(at: index, to: point, stroke: stroke)
+            return updated
+        default:
+            break
+        }
+        var updated = stroke
+        updated.points[index] = point
+        guard var handles = updated.curveHandles, handles.count == updated.points.count else {
+            return updated
+        }
+        let count = updated.points.count
+        handles[index] = CurveHandle()
+        if updated.isClosed || index > 0 {
+            handles[(index - 1 + count) % count].outOffset = .zero
+        }
+        if updated.isClosed || index < count - 1 {
+            handles[(index + 1) % count].inOffset = .zero
+        }
+        updated.curveHandles = handles
+        return updated
     }
 
     static func filletCornerIndices(for stroke: VectorStroke) -> [Int] {
@@ -500,12 +548,23 @@ enum ShapeGeometry {
             }
             return stroke.points
         case .arc:
-            if let anchors = arcAnchorPoints(stroke.points) {
-                return arcPointsThrough(
-                    start: anchors[0],
-                    end: anchors[2],
-                    through: anchors[1],
-                    segments: 64
+            if let first = stroke.points.first,
+               let last = stroke.points.last,
+               let circle = arcCircle(for: stroke)
+                ?? (stroke.points.count >= 3
+                    ? arcCenter(start: first, end: last, through: stroke.points[1])
+                    : nil),
+               let sweep = signedCircularSweep(
+                    of: stroke.points,
+                    around: circle.center,
+                    closed: stroke.isClosed
+               ),
+               abs(sweep) > 0.0001 {
+                return arcPoints(
+                    center: circle.center,
+                    start: first,
+                    end: last,
+                    sweep: sweep
                 )
             }
             return stroke.points
@@ -587,6 +646,17 @@ enum ShapeGeometry {
                 .reduce(0, +) / CGFloat(stroke.points.count)
             guard radius > 0.001 else { return nil }
             return (center, radius)
+        case .curve:
+            guard stroke.points.count <= 4,
+                  let handles = stroke.curveHandles,
+                  handles.count == stroke.points.count else { return nil }
+            let samples = renderPoints(for: stroke)
+            guard samples.count >= 8, let circle = fitCircle(from: samples) else { return nil }
+            let tolerance = max(0.75, circle.radius * 0.025)
+            guard samples.allSatisfy({
+                abs(hypot($0.x - circle.center.x, $0.y - circle.center.y) - circle.radius) <= tolerance
+            }) else { return nil }
+            return circle
         default:
             return nil
         }
@@ -630,7 +700,7 @@ enum ShapeGeometry {
         return circleCardinalPoints(center: circle.center, radius: circle.radius)
     }
 
-    private static func fitCircle(from points: [CGPoint]) -> (center: CGPoint, radius: CGFloat)? {
+    static func fitCircle(from points: [CGPoint]) -> (center: CGPoint, radius: CGFloat)? {
         guard points.count >= 8 else { return nil }
         let center = CGPoint(
             x: points.map(\.x).reduce(0, +) / CGFloat(points.count),
@@ -931,7 +1001,7 @@ enum ShapeGeometry {
         return 1 - deflection / .pi
     }
 
-    private static func cubicBezierPoint(
+    static func cubicBezierPoint(
         _ p0: CGPoint,
         _ p1: CGPoint,
         _ p2: CGPoint,
@@ -1457,13 +1527,65 @@ enum ShapeGeometry {
         CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
     }
 
-    /// The three defining anchors of an arc stroke: start, mid-curve, and end.
-    /// Arcs are stored as exactly these three points. This also normalizes any
-    /// legacy arc that was persisted as a dense tessellation by collapsing it back
-    /// to its start / angular-midpoint / end samples.
+    /// Default editable anchors of an arc: start, end, and any cardinals the sweep
+    /// crosses — 2, 3, or 4 points depending on length. Dense tessellations collapse
+    /// back to that set. Very short arcs that cannot recover a circle keep start/end.
     static func arcAnchorPoints(_ points: [CGPoint]) -> [CGPoint]? {
+        guard let first = points.first, let last = points.last else { return nil }
+        if points.count < 8 { return points }
         guard points.count >= 3 else { return nil }
-        return [points.first!, points[points.count / 2], points.last!]
+        let through = points[1]
+        guard let circle = arcCenter(start: first, end: last, through: through) else {
+            return [first, points[points.count / 2], last]
+        }
+        let tolerance = max(0.75, circle.radius * 0.025)
+        let allOnCircle = points.allSatisfy {
+            abs(hypot($0.x - circle.center.x, $0.y - circle.center.y) - circle.radius) <= tolerance
+        }
+        guard allOnCircle else { return [first, points[points.count / 2], last] }
+        guard let sweep = signedCircularSweep(of: points, around: circle.center, closed: false) else {
+            return [first, through, last]
+        }
+        return defaultCircularAnchors(
+            center: circle.center,
+            radius: circle.radius,
+            start: first,
+            end: last,
+            sweep: sweep,
+            closed: false
+        )
+    }
+
+    /// Signed sweep along `points` about `center`, walking every consecutive pair so a
+    /// 270° leftover after a quadrant trim is not collapsed to the 90° short arc
+    /// that shares the same endpoints.
+    static func signedCircularSweep(
+        of points: [CGPoint],
+        around center: CGPoint,
+        closed: Bool = false
+    ) -> CGFloat? {
+        guard let first = points.first else { return nil }
+        var total: CGFloat = 0
+        var previous = atan2(first.y - center.y, first.x - center.x)
+        let chain: [CGPoint]
+        if closed {
+            chain = Array(points.dropFirst()) + [first]
+        } else {
+            chain = Array(points.dropFirst())
+        }
+        guard !chain.isEmpty else { return nil }
+        for point in chain {
+            let angle = atan2(point.y - center.y, point.x - center.x)
+            var step = angle - previous
+            if step > .pi { step -= 2 * .pi }
+            if step < -.pi { step += 2 * .pi }
+            total += step
+            previous = angle
+        }
+        if closed, abs(total) < 0.05 {
+            return copysign(2 * .pi, total == 0 ? 1 : total)
+        }
+        return total
     }
 
     /// Cubic Bezier handles that approximate the circular arc through `start`, `mid`,
@@ -1498,7 +1620,7 @@ enum ShapeGeometry {
     }
 
     /// Standard cubic approximation of a circular arc: κ = 4/3 · tan(θ/4).
-    private static func circularArcHandleOffsets(
+    static func circularArcHandleOffsets(
         from start: CGPoint,
         to end: CGPoint,
         center: CGPoint,
