@@ -13,45 +13,49 @@ enum SVGExporter {
         let height = max(bounds.height, 1)
         var svg = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="\(bounds.minX) \(bounds.minY) \(width) \(height)" width="\(width)" height="\(height)">
+        <svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" viewBox="\(bounds.minX) \(bounds.minY) \(width) \(height)" width="\(width)" height="\(height)">
 
         """
-        for stroke in document.visibleStrokes() {
-            let points = ShapeGeometry.renderPoints(for: stroke)
-            guard points.count >= 2 else { continue }
-            let color = stroke.strokeColor
-            let strokeHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
-            let isFilled = stroke.isClosed && !stroke.isConstruction
-            let cutEdges = Set(stroke.openEdgeStarts ?? [])
 
-            if isFilled, !cutEdges.isEmpty {
-                // Fill the full contour, then stroke only the retained (non-cut) edges so
-                // the carved notch has no outline.
-                let fillData = pathData(from: points, closed: true)
-                svg += "  <path d=\"\(fillData)\" fill=\"#CCCCCC\" fill-opacity=\"\(stroke.resolvedFillOpacity)\" stroke=\"none\"/>\n"
-                let strokeData = strokePathData(from: points, cutEdges: cutEdges)
-                if !strokeData.isEmpty {
-                    svg += "  <path d=\"\(strokeData)\" fill=\"none\" stroke=\"\(strokeHex)\" stroke-width=\"\(stroke.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
-                }
-            } else {
-                let pathData = pathData(from: points, closed: stroke.isClosed)
-                let fill = isFilled ? " fill=\"#CCCCCC\" fill-opacity=\"\(stroke.resolvedFillOpacity)\"" : " fill=\"none\""
-                svg += "  <path d=\"\(pathData)\" stroke=\"\(strokeHex)\" stroke-width=\"\(stroke.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"\(fill)/>\n"
-            }
+        let strokesByLayer = Dictionary(grouping: document.visibleStrokes(), by: \.layerID)
+        let textByLayer = Dictionary(grouping: document.visibleTextElements(), by: \.layerID)
+
+        func hasContent(_ layerID: UUID) -> Bool {
+            !(strokesByLayer[layerID] ?? []).isEmpty || !(textByLayer[layerID] ?? []).isEmpty
         }
 
-        for element in document.visibleTextElements() {
-            let outline = TextOutline.path(for: element)
-            let data = pathData(from: outline)
-            guard !data.isEmpty else { continue }
-            if element.isOutline {
-                let color = element.strokeColor
-                let strokeHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
-                svg += "  <path d=\"\(data)\" fill=\"none\" stroke=\"\(strokeHex)\" stroke-opacity=\"\(color.alpha)\" stroke-width=\"\(element.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
+        var index = 0
+        let layers = document.layers
+        while index < layers.count {
+            let layer = layers[index]
+            if let groupID = layer.groupID, let folder = document.layerGroup(with: groupID) {
+                var members: [Layer] = []
+                while index < layers.count, layers[index].groupID == groupID {
+                    members.append(layers[index])
+                    index += 1
+                }
+                let visibleMembers = members.filter { $0.isVisible && hasContent($0.id) }
+                guard !visibleMembers.isEmpty else { continue }
+                svg += groupOpen(id: folder.id, prefix: "folder", name: folder.name, indent: 1)
+                for member in visibleMembers {
+                    svg += layerMarkup(
+                        member,
+                        strokes: strokesByLayer[member.id] ?? [],
+                        text: textByLayer[member.id] ?? [],
+                        indent: 2
+                    )
+                }
+                svg += groupClose(indent: 1)
             } else {
-                let color = element.color
-                let fillHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
-                svg += "  <path d=\"\(data)\" fill=\"\(fillHex)\" fill-opacity=\"\(color.alpha)\" fill-rule=\"nonzero\"/>\n"
+                if layer.isVisible, hasContent(layer.id) {
+                    svg += layerMarkup(
+                        layer,
+                        strokes: strokesByLayer[layer.id] ?? [],
+                        text: textByLayer[layer.id] ?? [],
+                        indent: 1
+                    )
+                }
+                index += 1
             }
         }
 
@@ -86,6 +90,93 @@ enum SVGExporter {
     static func write(document: VectrDocument, to url: URL) throws {
         let svg = export(document: document)
         try svg.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    // MARK: - Layer groups
+
+    private static func layerMarkup(
+        _ layer: Layer,
+        strokes: [VectorStroke],
+        text: [TextElement],
+        indent: Int
+    ) -> String {
+        var markup = groupOpen(id: layer.id, prefix: "layer", name: layer.name, indent: indent)
+        let pathIndent = indent + 1
+        for stroke in strokes {
+            markup += strokeMarkup(stroke, indent: pathIndent)
+        }
+        for element in text {
+            markup += textMarkup(element, indent: pathIndent)
+        }
+        markup += groupClose(indent: indent)
+        return markup
+    }
+
+    private static func groupOpen(id: UUID, prefix: String, name: String, indent: Int) -> String {
+        let escaped = escapeXML(name)
+        return "\(pad(indent))<g id=\"\(prefix)-\(id.uuidString)\" data-name=\"\(escaped)\" inkscape:groupmode=\"layer\" inkscape:label=\"\(escaped)\">\n"
+    }
+
+    private static func groupClose(indent: Int) -> String {
+        "\(pad(indent))</g>\n"
+    }
+
+    private static func pad(_ indent: Int) -> String {
+        String(repeating: "  ", count: indent)
+    }
+
+    private static func escapeXML(_ string: String) -> String {
+        string
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+    }
+
+    // MARK: - Geometry
+
+    private static func strokeMarkup(_ stroke: VectorStroke, indent: Int) -> String {
+        let color = stroke.strokeColor
+        let strokeHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
+        let isFilled = stroke.isClosed && !stroke.isConstruction
+        let cutEdges = Set(stroke.openEdgeStarts ?? [])
+        let prefix = pad(indent)
+
+        // Same path the canvas uses, so live fillets (`cornerRadius` /
+        // `cornerRadiiByIndex`) and baked smooth corners export as real curves.
+        let displayData = pathData(from: stroke.displayPath())
+        guard !displayData.isEmpty else { return "" }
+
+        if isFilled, !cutEdges.isEmpty {
+            // Fill the filleted contour, then stroke only the retained (non-cut)
+            // edges so the carved notch has no outline.
+            var markup = "\(prefix)<path d=\"\(displayData)\" fill=\"#CCCCCC\" fill-opacity=\"\(stroke.resolvedFillOpacity)\" stroke=\"none\"/>\n"
+            let points = ShapeGeometry.renderPoints(for: stroke)
+            let strokeData = strokePathData(from: points, cutEdges: cutEdges)
+            if !strokeData.isEmpty {
+                markup += "\(prefix)<path d=\"\(strokeData)\" fill=\"none\" stroke=\"\(strokeHex)\" stroke-width=\"\(stroke.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
+            }
+            return markup
+        }
+
+        let fill = isFilled ? " fill=\"#CCCCCC\" fill-opacity=\"\(stroke.resolvedFillOpacity)\"" : " fill=\"none\""
+        return "\(prefix)<path d=\"\(displayData)\" stroke=\"\(strokeHex)\" stroke-width=\"\(stroke.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"\(fill)/>\n"
+    }
+
+    private static func textMarkup(_ element: TextElement, indent: Int) -> String {
+        let outline = TextOutline.path(for: element)
+        let data = pathData(from: outline)
+        guard !data.isEmpty else { return "" }
+        let prefix = pad(indent)
+        if element.isOutline {
+            let color = element.strokeColor
+            let strokeHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
+            return "\(prefix)<path d=\"\(data)\" fill=\"none\" stroke=\"\(strokeHex)\" stroke-opacity=\"\(color.alpha)\" stroke-width=\"\(element.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
+        }
+        let color = element.color
+        let fillHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
+        return "\(prefix)<path d=\"\(data)\" fill=\"\(fillHex)\" fill-opacity=\"\(color.alpha)\" fill-rule=\"nonzero\"/>\n"
     }
 
     private static func pathData(from points: [CGPoint], closed: Bool) -> String {
