@@ -38,9 +38,10 @@ struct SideToolPaletteView: View {
             size: iconSize,
             inactiveColor: .white
         ) {
-            if document.activeCategory == category {
-                // Move is the default tool — tapping it again stays on Move.
-                guard category != .move else { return }
+            if category == .move {
+                document.engageMoveTool()
+                onToolSelected(.move)
+            } else if document.activeCategory == category {
                 document.clearActiveTool()
                 onToolSelected(.move)
             } else {
@@ -51,12 +52,12 @@ struct SideToolPaletteView: View {
         .accessibilityLabel(category.label)
     }
 
-    /// Move is the idle default, so keep its icon quiet until there is a
-    /// selection (or other tools, which highlight whenever they are active).
+    /// Move stays visually idle as the default tool until the user taps it
+    /// (or starts using it). Other tools highlight whenever they are active.
     private func isToolHighlighted(_ category: ToolCategory) -> Bool {
         guard document.activeCategory == category else { return false }
         if category == .move {
-            return !document.selectionIsEmpty
+            return document.isMoveToolHighlighted
         }
         return true
     }

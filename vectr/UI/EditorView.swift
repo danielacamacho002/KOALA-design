@@ -1350,7 +1350,7 @@ struct EditorView: View {
             }
         }
 
-        store.document.selectTool(.move)
+        store.document.engageMoveTool()
         handleToolSelected(.move)
         refreshCanvas()
     }

@@ -83,6 +83,9 @@ final class VectrDocument {
     /// Currently selected drawing or edit tool. Defaults to Move (select/edit).
     /// Clearing a tool always falls back here so the canvas is never tool-less.
     var activeCategory: ToolCategory? = .move
+    /// Move is the idle default, so its toolbar icon stays off until the user
+    /// taps it or starts using it. Launch and "exit tool → Move" leave this false.
+    var isMoveToolHighlighted = false
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
@@ -2255,6 +2258,9 @@ final class VectrDocument {
         rectangleVariant: RectangleVariant? = nil
     ) {
         activeCategory = category
+        if category != .move {
+            isMoveToolHighlighted = false
+        }
         if let lineVariant { self.lineVariant = lineVariant }
         if let circleVariant { self.circleVariant = circleVariant }
         if let rectangleVariant { self.rectangleVariant = rectangleVariant }
@@ -2264,7 +2270,13 @@ final class VectrDocument {
     }
 
     func clearActiveTool() {
+        isMoveToolHighlighted = false
         selectTool(.move)
+    }
+
+    func engageMoveTool() {
+        selectTool(.move)
+        isMoveToolHighlighted = true
     }
 
     var isDrawingToolActive: Bool {

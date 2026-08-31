@@ -665,6 +665,9 @@ struct CanvasOverlayView: View {
                 if dragIsMarquee {
                     if let rect = marqueeDocRect(start: value.startLocation, current: value.location) {
                         document.selectElements(in: rect)
+                        if !document.selectionIsEmpty {
+                            document.isMoveToolHighlighted = true
+                        }
                     }
                     marqueeStart = nil
                     marqueeCurrent = nil
@@ -711,6 +714,9 @@ struct CanvasOverlayView: View {
             } else {
                 document.clearElementSelection()
             }
+        }
+        if !document.selectionIsEmpty {
+            document.isMoveToolHighlighted = true
         }
         onChanged()
     }
