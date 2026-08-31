@@ -339,18 +339,18 @@ final class DrawingCanvasUIView: UIView {
         twoFingerPan.delegate = self
         addGestureRecognizer(twoFingerPan)
 
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        let tap = PreciseTapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.delegate = self
         tap.require(toFail: twoFingerPan)
         addGestureRecognizer(tap)
 
-        let dragDraw = UIPanGestureRecognizer(target: self, action: #selector(handleDragDraw(_:)))
+        let dragDraw = PrecisePanGestureRecognizer(target: self, action: #selector(handleDragDraw(_:)))
         dragDraw.maximumNumberOfTouches = 1
         dragDraw.delegate = self
         addGestureRecognizer(dragDraw)
         tap.require(toFail: dragDraw)
 
-        let curveFinish = UITapGestureRecognizer(target: self, action: #selector(handleCurveFinish(_:)))
+        let curveFinish = PreciseTapGestureRecognizer(target: self, action: #selector(handleCurveFinish(_:)))
         curveFinish.numberOfTapsRequired = 2
         curveFinish.delegate = self
         addGestureRecognizer(curveFinish)
@@ -396,7 +396,7 @@ final class DrawingCanvasUIView: UIView {
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        let viewPoint = gesture.location(in: self)
+        let viewPoint = drawingViewPoint(from: gesture)
         let documentPoint = document.viewport.viewToDocument(viewPoint)
 
         switch activeCategory {
@@ -427,7 +427,7 @@ final class DrawingCanvasUIView: UIView {
             break
         }
 
-        let viewPoint = gesture.location(in: self)
+        let viewPoint = drawingViewPoint(from: gesture)
         let rawPoint = document.viewport.viewToDocument(viewPoint)
         // Tangent snapping needs the anchored end of the in-progress line, which is
         // `dragDrawStart` once the drag is underway (nil during `.began`).
@@ -473,20 +473,29 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func snappedDragPoint(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint {
-        // Object snapping (centers/quadrants/endpoints/midpoints/intersections/tangents) takes
-        // precedence over grid snapping so the pencil magnetically locks to real geometry when
-        // it is in range.
-        if let objectSnapped = resolveObjectSnap(rawPoint: point, referenceStart: referenceStart) {
-            return objectSnapped
-        }
-        let enabled = document.snapEnabled && document.grid.snapEnabled
-        return snapDrawingPoint(
+        snapDrawingEndpoint(
             point,
+            origin: referenceStart,
+            applyAngleSnap: shouldAngleSnapDrawnSegment,
             grid: document.grid,
             settings: document.settings,
-            enabled: enabled,
-            scale: document.viewport.scale
+            gridSnapEnabled: document.snapEnabled && document.grid.snapEnabled,
+            scale: document.viewport.scale,
+            objectSnap: { query, alignmentOrigin, alignmentThrough in
+                resolveObjectSnap(
+                    rawPoint: query,
+                    referenceStart: referenceStart,
+                    alignmentOrigin: alignmentOrigin,
+                    alignmentThrough: alignmentThrough
+                )
+            }
         )
+    }
+
+    /// Polar tracking applies to straight segments (line / construction / curve), not arcs
+    /// or 2-axis shapes whose opposite corner should stay free.
+    private var shouldAngleSnapDrawnSegment: Bool {
+        activeCategory == .line && lineVariant != .arc
     }
 
     /// Runs the snapping engine for a live pencil position, updates the visual indicator and
@@ -494,7 +503,12 @@ final class DrawingCanvasUIView: UIView {
     ///
     /// Thresholds are defined in view points and converted to document units here so the feel
     /// stays constant across zoom levels.
-    private func resolveObjectSnap(rawPoint: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint? {
+    private func resolveObjectSnap(
+        rawPoint: CGPoint,
+        referenceStart: CGPoint? = nil,
+        alignmentOrigin: CGPoint? = nil,
+        alignmentThrough: CGPoint? = nil
+    ) -> CGPoint? {
         let enabledKinds = document.enabledSnapKinds
         guard !enabledKinds.isEmpty else {
             finishSnapInteraction()
@@ -502,6 +516,10 @@ final class DrawingCanvasUIView: UIView {
         }
 
         let scale = max(document.viewport.scale, 0.0001)
+        let alignmentTolerance = alignmentOrigin == nil ? 0 : 4 / scale
+        let endpointRadius = shouldAngleSnapDrawnSegment
+            ? SnapTuning.lineEndpointSnapRadiusPoints / scale
+            : nil
         let update = snapSession.update(
             rawPoint: rawPoint,
             engine: snapEngine,
@@ -510,7 +528,11 @@ final class DrawingCanvasUIView: UIView {
             snapRadius: SnapTuning.snapRadiusPoints / scale,
             breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
             breakawayVelocity: SnapTuning.breakawayVelocityPoints / scale,
-            referenceStarts: referenceStart.map { [$0] } ?? []
+            referenceStarts: referenceStart.map { [$0] } ?? [],
+            alignmentOrigin: alignmentOrigin,
+            alignmentThrough: alignmentThrough,
+            alignmentTolerance: alignmentTolerance,
+            endpointRadius: endpointRadius
         )
 
         if let candidate = update.candidate {
@@ -567,7 +589,7 @@ final class DrawingCanvasUIView: UIView {
             break
         }
 
-        let rawPoint = document.viewport.viewToDocument(gesture.location(in: self))
+        let rawPoint = document.viewport.viewToDocument(drawingViewPoint(from: gesture))
         let documentPoint = snappedDragPoint(rawPoint, referenceStart: curveDragStart)
 
         switch gesture.state {
@@ -941,6 +963,17 @@ final class DrawingCanvasUIView: UIView {
         if touch.type == .pencil || touch.type == .stylus { return true }
         guard !document.settings.allowsFingerDrawing else { return true }
         return false
+    }
+
+    /// Pencil tip in this view. Falls back to the recognizer centroid for finger input.
+    private func drawingViewPoint(from gesture: UIGestureRecognizer) -> CGPoint {
+        if let pan = gesture as? PrecisePanGestureRecognizer {
+            return pan.drawingViewPoint(fallbackIn: self)
+        }
+        if let tap = gesture as? PreciseTapGestureRecognizer {
+            return tap.drawingViewPoint(fallbackIn: self)
+        }
+        return gesture.location(in: self)
     }
 }
 

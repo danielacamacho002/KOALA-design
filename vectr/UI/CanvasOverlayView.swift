@@ -17,6 +17,7 @@ struct CanvasOverlayView: View {
     @State private var nodeDragOriginPoints: [CGPoint] = []
     @State private var curveHandleDragActive = false
     @State private var moveDragOriginPoints: [CGPoint] = []
+    @State private var moveDragOriginStroke: VectorStroke?
     @State private var commandDragOriginPoints: [CGPoint] = []
     @State private var scaleDragOriginPoints: [CGPoint] = []
     @State private var scaleDragOriginHandles: [CurveHandle]? = nil
@@ -139,7 +140,7 @@ struct CanvasOverlayView: View {
                     commandDragOriginPoints = commandSession.controlPoints
                 }
                 let docPoint = document.viewport.viewToDocument(value.location)
-                let final = snapCommandControlPoint(docPoint)
+                let final = snapCommandControlPoint(docPoint, draggingIndex: index)
                 commandSession.movePoint(at: index, to: final)
                 onChanged()
             }
@@ -152,8 +153,25 @@ struct CanvasOverlayView: View {
         document.snapEnabled && document.grid.snapEnabled
     }
 
-    private func snapCommandControlPoint(_ raw: CGPoint) -> CGPoint {
+    private func snapCommandControlPoint(_ raw: CGPoint, draggingIndex: Int) -> CGPoint {
         let scale = document.viewport.scale
+        let isStraightLine = commandSession.category == .line && commandSession.lineVariant != .arc
+        if isStraightLine {
+            let otherIndex = draggingIndex == 0 ? 1 : 0
+            let origin = commandSession.controlPoints.indices.contains(otherIndex)
+                ? commandSession.controlPoints[otherIndex]
+                : nil
+            return snapDrawingEndpoint(
+                raw,
+                origin: origin,
+                applyAngleSnap: origin != nil,
+                grid: document.grid,
+                settings: document.settings,
+                gridSnapEnabled: drawingSnapEnabled,
+                scale: scale,
+                objectSnap: { _, _, _ in nil }
+            )
+        }
         let snapped = snapDrawingPoint(
             raw,
             grid: document.grid,
@@ -304,20 +322,25 @@ struct CanvasOverlayView: View {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
             .onChanged { value in
                 if nodeDragOriginPoints.isEmpty {
-                    nodeDragOriginPoints = document.stroke(with: strokeID)?.points ?? []
                     document.beginInteractiveEdit()
+                    nodeDragOriginPoints = document.stroke(with: strokeID).map {
+                        ShapeGeometry.handlePoints(for: $0)
+                    } ?? []
                 }
-                guard var stroke = document.stroke(with: strokeID) else { return }
+                guard let stroke = document.stroke(with: strokeID),
+                      stroke.points.indices.contains(index) else { return }
                 let rawPoint = document.viewport.viewToDocument(value.location)
-                if stroke.shapeType == .circle {
-                    // Radius handles move radially; absolute object snapping doesn't apply.
-                    stroke.points = ShapeGeometry.updateCircleHandle(at: index, to: rawPoint, stroke: stroke)
-                } else if stroke.shapeType == .ellipse {
-                    stroke.points = ShapeGeometry.updateEllipseHandle(at: index, to: rawPoint, stroke: stroke)
-                } else {
-                    stroke.points[index] = resolveNodeSnap(rawPoint: rawPoint, stroke: stroke, index: index, strokeID: strokeID)
-                }
-                document.updateStroke(stroke, recordUndo: false)
+                let moved = ShapeGeometry.applyingMovedAnchor(
+                    stroke,
+                    at: index,
+                    to: resolveNodeSnap(
+                        rawPoint: rawPoint,
+                        stroke: stroke,
+                        index: index,
+                        strokeID: strokeID
+                    )
+                )
+                document.updateStroke(moved, recordUndo: false)
                 onChanged()
             }
             .onEnded { _ in
@@ -483,6 +506,7 @@ struct CanvasOverlayView: View {
         // Guarantee every group member is included before capturing origins so
         // a partial selection never translates one child independently.
         document.expandSelectionToGroupsIfNeeded()
+        document.beginInteractiveEdit()
         groupMoveStrokeOrigins = [:]
         groupMoveSnapOrigins = []
         groupMoveSnapCenters = []
@@ -503,7 +527,6 @@ struct CanvasOverlayView: View {
             }
         }
         snapHaptics.prepare()
-        document.beginInteractiveEdit()
     }
 
     private func applyGroupMove(delta rawDelta: CGPoint) {
@@ -517,22 +540,7 @@ struct CanvasOverlayView: View {
         // Translate each child independently from its captured origin. Overlapping
         // anchors may coincide visually but are never welded or merged.
         for (_, origin) in groupMoveStrokeOrigins {
-            var updated = origin
-            updated.points = origin.points.map {
-                CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
-            }
-            updated.cutoutPoints = origin.cutoutPoints.map { contour in
-                contour.map { CGPoint(x: $0.x + delta.x, y: $0.y + delta.y) }
-            }
-            if let base = origin.rotationBasePoints {
-                updated.rotationBasePoints = base.map {
-                    CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
-                }
-            }
-            if let center = origin.rotationBaseCenter {
-                updated.rotationBaseCenter = CGPoint(x: center.x + delta.x, y: center.y + delta.y)
-            }
-            document.updateStroke(updated, recordUndo: false)
+            document.updateStroke(origin.offsettingGeometry(by: delta), recordUndo: false)
         }
         for (id, origin) in groupMoveTextOrigins {
             document.setTextPosition(
@@ -952,24 +960,20 @@ struct CanvasOverlayView: View {
         let indices = document.selectedAnchorIndices
 
         if indices.isEmpty {
-            let moved = moveDragOriginPoints.map {
-                CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
-            }
-            document.setStrokePoints(id: strokeID, points: moved, recordUndo: false)
+            let origin = moveDragOriginStroke ?? stroke
+            document.updateStroke(origin.offsettingGeometry(by: delta), recordUndo: false)
             return
         }
 
-        var updated = stroke
+        var updated = document.stroke(with: strokeID) ?? moveDragOriginStroke ?? stroke
         for index in indices.sorted() where moveDragOriginPoints.indices.contains(index) {
             let origin = moveDragOriginPoints[index]
-            let moved = CGPoint(x: origin.x + delta.x, y: origin.y + delta.y)
-            if updated.shapeType == .circle {
-                updated.points = ShapeGeometry.updateCircleHandle(at: index, to: moved, stroke: updated)
-            } else if updated.shapeType == .ellipse {
-                updated.points = ShapeGeometry.updateEllipseHandle(at: index, to: moved, stroke: updated)
-            } else {
-                updated.points[index] = moved
-            }
+            guard updated.points.indices.contains(index) else { continue }
+            updated = ShapeGeometry.applyingMovedAnchor(
+                updated,
+                at: index,
+                to: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y)
+            )
         }
         document.updateStroke(updated, recordUndo: false)
     }
@@ -996,12 +1000,14 @@ struct CanvasOverlayView: View {
         anchorIndex: Int?
     ) {
         if moveDragOriginPoints.isEmpty {
-            moveDragOriginPoints = ShapeGeometry.handlePoints(for: stroke)
+            document.beginInteractiveEdit()
+            let current = document.stroke(with: strokeID) ?? stroke
+            moveDragOriginStroke = current
+            moveDragOriginPoints = ShapeGeometry.handlePoints(for: current)
             if let anchorIndex, document.selectedAnchorIndices.isEmpty {
                 document.selectedAnchorIndices = [anchorIndex]
             }
             snapHaptics.prepare()
-            document.beginInteractiveEdit()
         }
         let rawDelta = documentDelta(from: value.translation)
         let delta = snapAdjustedDelta(
@@ -1018,6 +1024,7 @@ struct CanvasOverlayView: View {
     private func finishMoveDrag(strokeID: UUID) {
         let didEdit = !moveDragOriginPoints.isEmpty
         moveDragOriginPoints = []
+        moveDragOriginStroke = nil
         clearMoveSnap()
         guard didEdit else { return }
         document.reconcileIntersectionAnchors(around: [strokeID])
@@ -1387,6 +1394,7 @@ struct CanvasOverlayView: View {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
             .onChanged { value in
                 if scaleDragOriginPoints.isEmpty {
+                    document.beginInteractiveEdit()
                     scaleDragOriginPoints = document.stroke(with: strokeID)?.points ?? []
                     scaleDragOriginHandles = document.stroke(with: strokeID)?.curveHandles
                     scaleDragOriginCenter = CGPoint(x: bbox.midX, y: bbox.midY)
@@ -1402,7 +1410,6 @@ struct CanvasOverlayView: View {
                         hypot(corner.x - scaleDragOriginCenter.x, corner.y - scaleDragOriginCenter.y),
                         0.001
                     )
-                    document.beginInteractiveEdit()
                 }
                 guard !scaleDragOriginPoints.isEmpty else { return }
                 let center = scaleDragOriginCenter

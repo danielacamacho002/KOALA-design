@@ -167,8 +167,8 @@ enum IntersectionAnchorEngine {
     /// Open lines/polylines are never subdivided — repositioning a line should never carve
     /// extra anchors into it. Parametric shapes (circles, ellipses, arcs) are also left
     /// untouched: a circle/ellipse must always keep exactly its 4 cardinal quadrant anchors and
-    /// an arc must always keep exactly its 3 (start / mid / end) anchors. The only way to add
-    /// anchors to any of these is through the Add Anchor tool.
+    /// an arc must always keep its default 2 / 3 / 4 anchors (start, end, and any cardinals
+    /// the sweep crosses). The only way to add anchors to any of these is through the Add Anchor tool.
     ///
     /// Closed polygons/rectangles still gain anchors where another *same-layer* closed
     /// shape crosses them. Layers are independent: dragging a shape over geometry on
