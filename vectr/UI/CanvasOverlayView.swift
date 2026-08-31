@@ -12,6 +12,7 @@ struct CanvasOverlayView: View {
     var patternPreviewStrokes: [VectorStroke] = []
     var onChanged: () -> Void
     var onEditText: (UUID) -> Void = { _ in }
+    var onDismissTool: () -> Void = {}
 
     @State private var nodeDragOriginPoints: [CGPoint] = []
     @State private var curveHandleDragActive = false
@@ -86,9 +87,10 @@ struct CanvasOverlayView: View {
             ZStack {
                 if commandSession.isActive {
                     commandPreviewHandles
-                } else if document.activeCategory == .move {
+                } else if document.activeCategory == .move || document.activeCategory == nil {
                     moveToolOverlay
                 } else if document.activeCategory == .scale {
+                    emptyToolDismissOverlay
                     if document.selectedTextID != nil {
                         textScaleOverlay
                     } else {
@@ -97,6 +99,7 @@ struct CanvasOverlayView: View {
                 } else if document.activeCategory == .type {
                     textTypeOverlay
                 } else if document.activeCategory == .fillet {
+                    emptyToolDismissOverlay
                     filletOverlay
                 } else if document.activeCategory == .addAnchor {
                     addAnchorOverlay
@@ -356,6 +359,33 @@ struct CanvasOverlayView: View {
                 marqueeBox(rect)
             }
         }
+    }
+
+    /// Full-canvas catcher for tools whose handles live on this overlay. A tap
+    /// on empty grid leaves the tool; a tap on another shape retargets it.
+    @ViewBuilder
+    private var emptyToolDismissOverlay: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .simultaneousGesture(
+                SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
+                    .onEnded { value in handleToolDismissTap(at: value.location) }
+            )
+    }
+
+    private func handleToolDismissTap(at viewPoint: CGPoint) {
+        let documentPoint = document.viewport.viewToDocument(viewPoint)
+        let threshold = document.viewport.viewToDocument(distance: 16)
+        if document.isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
+            return
+        }
+        if document.elementHit(near: documentPoint, threshold: threshold) == .none,
+           document.group(at: documentPoint) == nil {
+            onDismissTool()
+            return
+        }
+        document.selectElement(near: documentPoint, threshold: threshold)
+        onChanged()
     }
 
     /// Background layer shown when nothing is selected: a drag draws a marquee and
@@ -665,6 +695,9 @@ struct CanvasOverlayView: View {
                 if dragIsMarquee {
                     if let rect = marqueeDocRect(start: value.startLocation, current: value.location) {
                         document.selectElements(in: rect)
+                        if !document.selectionIsEmpty {
+                            document.isMoveToolHighlighted = true
+                        }
                     }
                     marqueeStart = nil
                     marqueeCurrent = nil
@@ -712,6 +745,7 @@ struct CanvasOverlayView: View {
                 document.clearElementSelection()
             }
         }
+        document.isMoveToolHighlighted = !document.selectionIsEmpty
         onChanged()
     }
 
