@@ -1109,6 +1109,44 @@ enum ShapeGeometry {
         case right = "height-right"
     }
 
+    /// Circles, ellipses, rectangles, and 4-point quads show every dimension on select.
+    /// Multi-segment polylines and arcs reveal one edge at a time.
+    static func showsDimensionsAutomatically(_ stroke: VectorStroke) -> Bool {
+        switch stroke.shapeType {
+        case .circle, .ellipse, .rectangle:
+            return true
+        default:
+            return isEditableQuad(stroke)
+        }
+    }
+
+    /// Nearest per-segment dimension on a complex stroke, using the same edges
+    /// `semanticDimensions` emits so tap targets match visible labels.
+    static func nearestSegmentDimension(
+        on stroke: VectorStroke,
+        to point: CGPoint,
+        threshold: CGFloat
+    ) -> (dimension: SemanticDimension, distance: CGFloat)? {
+        let dims = semanticDimensions(for: stroke)
+        var best: (SemanticDimension, CGFloat)?
+        for dim in dims {
+            guard case .segmentLength(let index) = dim.kind else { continue }
+            let points = stroke.points
+            guard points.indices.contains(index) else { continue }
+            let start = points[index]
+            let end = points[(index + 1) % points.count]
+            let distance = StrokeEditor.projectPointOnSegment(
+                point: point,
+                start: start,
+                end: end
+            ).distance
+            if distance < threshold, best == nil || distance < best!.1 {
+                best = (dim, distance)
+            }
+        }
+        return best.map { (dimension: $0.0, distance: $0.1) }
+    }
+
     /// Whether the stroke gets the paired quad dimension treatment: a true rectangle,
     /// or a closed four-corner polyline such as a trapezoid made by edge edits.
     static func isEditableQuad(_ stroke: VectorStroke) -> Bool {

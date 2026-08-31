@@ -1053,7 +1053,18 @@ struct EditorView: View {
             commandSession.cancel()
             store.document.selectedStrokeID = nil
             statusMessage = "Draw lines with Apple Pencil; double-tap to finish the curve"
-        case .move, .scale, .dimensions:
+        case .dimensions:
+            commandSession.cancel()
+            store.document.revealDimensionsForCurrentSelection()
+            if let strokeID = store.document.selectedStrokeID,
+               let stroke = store.document.stroke(with: strokeID),
+               !ShapeGeometry.showsDimensionsAutomatically(stroke),
+               !store.document.hasRevealedDimensions(for: strokeID) {
+                statusMessage = "Tap an edge to show its dimension"
+            } else if store.document.selectedStrokeID == nil, store.document.selectedTextID == nil {
+                statusMessage = "Tap a shape or edge to show dimensions"
+            }
+        case .move, .scale:
             commandSession.cancel()
             if category == .move {
                 store.document.clearToolSelections()
@@ -1336,6 +1347,15 @@ struct EditorView: View {
                 patternPreviewStrokes = []
             }
             updatePatternPreview()
+            refreshCanvas()
+        case .dimensions:
+            let threshold = store.document.viewport.viewToDocument(distance: 16)
+            switch store.document.handleDimensionTap(at: documentPoint, threshold: threshold) {
+            case .selectedComplex:
+                statusMessage = "Tap an edge to show its dimension"
+            case .revealedEdge, .hiddenEdge, .autoRevealed, .dismissed, .ignored:
+                break
+            }
             refreshCanvas()
         case .copy:
             if isEmptyCanvasTap(at: documentPoint) {
