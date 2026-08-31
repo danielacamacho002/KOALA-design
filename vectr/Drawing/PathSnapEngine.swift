@@ -177,7 +177,10 @@ struct CenterSnapProvider: SnapCandidateProvider {
             return ShapeGeometry.ellipseFromCardinalPoints(stroke.points).map { [$0.center] } ?? []
         case .arc:
             return ShapeGeometry.arcCircle(for: stroke).map { [$0.center] } ?? []
-        case .polyline, .rectangle, .construction, .curve:
+        case .curve:
+            if let circle = ShapeGeometry.arcCircle(for: stroke) { return [circle.center] }
+            return ShapeGeometry.shapeCenter(for: stroke).map { [$0] } ?? []
+        case .polyline, .rectangle, .construction:
             return ShapeGeometry.shapeCenter(for: stroke).map { [$0] } ?? []
         }
     }
