@@ -787,6 +787,9 @@ enum SnapTuning {
     /// Tighter radius for endpoint snaps while drawing a new line. The regular
     /// 16pt magnet was grabbing nearby lines and welding the new stroke onto them.
     static let lineEndpointSnapRadiusPoints: CGFloat = 6
+    /// How close two anchors must be (view points) to count as the same vertex.
+    /// Half a grid cell was welding nearby verticals into diagonal shapes.
+    static let coincidentAnchorPoints: CGFloat = 3
     /// Larger radius the cursor must be dragged past to break a lock (hysteresis).
     static let breakawayRadiusPoints: CGFloat = 32
     /// Pencil speed (points/second) above which a lock breaks instantly.

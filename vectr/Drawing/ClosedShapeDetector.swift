@@ -10,7 +10,10 @@ import Foundation
 /// loops (e.g. a trimmed circle arc attached to a polyline) into one closed shape.
 enum ClosedShapeDetector {
     static func reconcile(document: VectrDocument) {
-        let tolerance = document.grid.spacing * 0.5
+        // Same budget as line chaining: only fuse anchors that actually share a
+        // point. Half a grid cell was welding nearby verticals into a closed
+        // quad the moment any nearby stroke (even a short horizontal) landed.
+        let tolerance = coincidentAnchorTolerance(viewport: document.viewport, grid: document.grid)
 
         closeSingleStrokeLoops(in: document, tolerance: tolerance)
         mergeMultiStrokeLoops(in: document, tolerance: tolerance)

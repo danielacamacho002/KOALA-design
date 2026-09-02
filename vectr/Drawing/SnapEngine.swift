@@ -9,6 +9,15 @@
 import CoreGraphics
 import Foundation
 
+/// Document-space budget for “these two anchors are the same point”.
+/// Screen-constant so zoom-in stays tight; capped so zoom-out cannot weld
+/// nearby verticals that merely share a grid cell.
+func coincidentAnchorTolerance(viewport: ViewportTransform, grid: GridSettings) -> CGFloat {
+    let screen = viewport.viewToDocument(distance: SnapTuning.coincidentAnchorPoints)
+    let documentCap = max(1.5, grid.spacing * 0.1)
+    return min(screen, documentCap)
+}
+
 func snapPointToGrid(_ point: CGPoint, gridSpacing: CGFloat) -> CGPoint {
     guard gridSpacing > 0 else { return point }
     return CGPoint(
@@ -56,6 +65,10 @@ struct AngleSnapResult {
 
 /// Light assist only: if the stroke is already almost horizontal or vertical,
 /// pin it to that axis. Anything else — including diagonals — stays free.
+///
+/// Short ticks use an on-screen deadzone as well as the 10° cone. A 10pt
+/// horizontal with a couple points of wobble is ~15° — enough to miss the
+/// cone and then jump onto a nearby vertical endpoint.
 func snapDrawingAngle(
     _ point: CGPoint,
     origin: CGPoint,
@@ -63,7 +76,6 @@ func snapDrawingAngle(
     scale: CGFloat?
 ) -> AngleSnapResult {
     _ = grid
-    _ = scale
     let dx = point.x - origin.x
     let dy = point.y - origin.y
     let length = hypot(dx, dy)
@@ -73,20 +85,28 @@ func snapDrawingAngle(
 
     // ~10° from the axis. Wider than this and intentional diagonals get stolen.
     let maxAxisError = 10 * CGFloat.pi / 180
+    let maxOffAxis = 8 / max(scale ?? 1, 0.0001)
     let verticalError = abs(atan2(dx, dy))
     let horizontalError = abs(atan2(dy, dx))
 
-    if verticalError <= maxAxisError {
+    let lockVertical = abs(dy) > abs(dx)
+        && (verticalError <= maxAxisError || abs(dx) <= maxOffAxis)
+    let lockHorizontal = abs(dx) > abs(dy)
+        && (horizontalError <= maxAxisError || abs(dy) <= maxOffAxis)
+
+    if lockVertical {
         return AngleSnapResult(point: CGPoint(x: origin.x, y: point.y), isLocked: true)
     }
-    if horizontalError <= maxAxisError {
+    if lockHorizontal {
         return AngleSnapResult(point: CGPoint(x: point.x, y: origin.y), isLocked: true)
     }
     return AngleSnapResult(point: point, isLocked: false)
 }
 
-/// Object snap first (so a real corner/end can be hit on a diagonal), then a
-/// light H/V assist, then grid snap. Axis assist never overrides an object snap.
+/// When the stroke is already almost H/V, keep object snap on that axis so a
+/// short horizontal cannot jump onto a nearby vertical's endpoint. Free
+/// (off-axis) strokes still snap to any nearby corner so intentional
+/// diagonals work.
 func snapDrawingEndpoint(
     _ point: CGPoint,
     origin: CGPoint?,
@@ -97,15 +117,20 @@ func snapDrawingEndpoint(
     scale: CGFloat,
     objectSnap: (_ query: CGPoint, _ alignmentOrigin: CGPoint?, _ alignmentThrough: CGPoint?) -> CGPoint?
 ) -> CGPoint {
-    if let snapped = objectSnap(point, nil, nil) {
-        return snapped
-    }
-
     let angle: AngleSnapResult
     if applyAngleSnap, let origin {
         angle = snapDrawingAngle(point, origin: origin, grid: grid, scale: scale)
     } else {
         angle = AngleSnapResult(point: point, isLocked: false)
+    }
+
+    if angle.isLocked, let origin {
+        if let snapped = objectSnap(point, origin, angle.point),
+           snapDrawingAngle(snapped, origin: origin, grid: grid, scale: scale).isLocked {
+            return snapped
+        }
+    } else if let snapped = objectSnap(point, nil, nil) {
+        return snapped
     }
 
     let gridSnapped = snapDrawingPoint(
