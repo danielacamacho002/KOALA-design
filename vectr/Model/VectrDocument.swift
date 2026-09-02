@@ -58,14 +58,14 @@ final class VectrDocument {
     /// wherever the document is in scope.
     var isSnappingEnabled: Bool = true
     /// Per-type toggles for the object snapping engine, driven by the canvas snap bar.
-    var endpointSnapEnabled: Bool = true
-    var midpointSnapEnabled: Bool = true
-    var intersectionSnapEnabled: Bool = true
+    var endpointSnapEnabled: Bool = false
+    var midpointSnapEnabled: Bool = false
+    var intersectionSnapEnabled: Bool = false
     /// Curved-geometry snap toggles: circle/ellipse/arc center, quadrant apexes, and
     /// tangent contact for an in-progress line.
-    var centerSnapEnabled: Bool = true
-    var quadrantSnapEnabled: Bool = true
-    var tangentSnapEnabled: Bool = true
+    var centerSnapEnabled: Bool = false
+    var quadrantSnapEnabled: Bool = false
+    var tangentSnapEnabled: Bool = false
     var dimensionsVisible: Bool = false
     // Document-space offsets of dragged dimension labels, keyed by "<strokeID>:<dimensionID>".
     var dimensionOffsets: [String: CGPoint] = [:]
