@@ -1117,7 +1117,7 @@ struct EditorView: View {
         // Only weld chained segments that actually share a point. Half a grid
         // cell was treating a nearby line as the same vertex and inserting a
         // diagonal connector.
-        store.document.viewport.viewToDocument(distance: 3)
+        coincidentAnchorTolerance(viewport: store.document.viewport, grid: store.document.grid)
     }
 
     private func commitLineSegment(start: CGPoint, end: CGPoint) {
