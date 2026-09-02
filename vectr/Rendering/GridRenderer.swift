@@ -44,34 +44,14 @@ enum GridRenderer {
         let major = grid.visualSpacing(for: documentSettings)
         guard major > 0 else { return }
 
-        let snapDiv = max(1, grid.snapSubdivisions)
-
         // Largest power-of-2 subdivision that keeps minor lines from getting denser
         // than the on-screen pixel floor. This reveals finer lines as you zoom in,
         // and is the same value snapping uses so snap targets always match the grid.
         let subdiv = grid.visibleSubdivisions(for: documentSettings, scale: viewport.scale)
         let minor = major / CGFloat(subdiv)
 
-        // Fade major-line emphasis as sub-grid detail appears.
-        // detail = 0 when only inch lines show, rising as halves/quarters/eighths appear.
-        let detail = log2(CGFloat(max(1, subdiv)))
-        let fadeSpan = log2(CGFloat(max(2, grid.snapSubdivisions)))
-        let emphasis = max(0, 1 - detail / fadeSpan)
-
-        let blendedMajorAlpha: CGFloat = 0.32
-        let emphasizedMajorAlpha: CGFloat = 0.6
-        let majorAlpha = blendedMajorAlpha + (emphasizedMajorAlpha - blendedMajorAlpha) * emphasis
-
-        let majorColor = UIColor.label.withAlphaComponent(majorAlpha)
-        let snapColor = UIColor.separator.withAlphaComponent(0.5)
-        let fineColor = UIColor.separator.withAlphaComponent(0.22)
-
-        // A line is a snap-increment line when the current subdivision has reached
-        // the snap granularity, so the user can see exactly where points will land.
         func strokeColor(forStepIndex step: Int) -> UIColor {
-            if step % subdiv == 0 { return majorColor }
-            if subdiv >= snapDiv, snapDiv > 1, (step * snapDiv) % subdiv == 0 { return snapColor }
-            return fineColor
+            lineColor(rank: lineRank(step: step, subdiv: subdiv))
         }
 
         let topLeft = viewport.viewToDocument(bounds.origin)
@@ -106,6 +86,33 @@ enum GridRenderer {
         }
 
         context.restoreGState()
+    }
+
+    /// 0 = major square, 1 = half, 2 = quarter, and so on. Coarser ranks stay
+    /// stronger at every zoom so the big squares never flatten into a uniform field.
+    private static func lineRank(step: Int, subdiv: Int) -> Int {
+        var rank = 0
+        var stride = max(1, subdiv)
+        while stride > 1 && step % stride != 0 {
+            stride /= 2
+            rank += 1
+        }
+        return rank
+    }
+
+    private static func lineColor(rank: Int) -> UIColor {
+        switch rank {
+        case 0:
+            return UIColor.label.withAlphaComponent(0.58)
+        case 1:
+            return UIColor.label.withAlphaComponent(0.38)
+        case 2:
+            return UIColor.separator.withAlphaComponent(0.32)
+        case 3:
+            return UIColor.separator.withAlphaComponent(0.22)
+        default:
+            return UIColor.separator.withAlphaComponent(0.16)
+        }
     }
 
     /// Canvas rectangle (document space centered on origin) mapped into view space.

@@ -11,7 +11,7 @@ struct ViewportTransform: Codable, Equatable {
     var translation: CGPoint = .zero
 
     static let minScale: CGFloat = 0.02
-    static let maxScale: CGFloat = 8
+    static let maxScale: CGFloat = 24
 
     mutating func clampScale() {
         scale = min(Self.maxScale, max(Self.minScale, scale))
