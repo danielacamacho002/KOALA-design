@@ -11,6 +11,7 @@ final class PrintLayoutCanvasUIView: UIView {
     }
 
     var onCanvasTap: ((CGPoint) -> Void)?
+    var onTwoFingerTap: (() -> Void)?
 
     private let sheetsLayer = CALayer()
     private let artworkLayer = CALayer()
@@ -286,6 +287,17 @@ final class PrintLayoutCanvasUIView: UIView {
         twoFingerPan.minimumNumberOfTouches = 2
         twoFingerPan.maximumNumberOfTouches = 2
         addGestureRecognizer(twoFingerPan)
+
+        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
+        twoFingerTap.numberOfTouchesRequired = 2
+        twoFingerTap.require(toFail: pinch)
+        twoFingerTap.require(toFail: twoFingerPan)
+        addGestureRecognizer(twoFingerTap)
+    }
+
+    @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended else { return }
+        onTwoFingerTap?()
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {

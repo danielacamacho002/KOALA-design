@@ -39,7 +39,8 @@ struct PrintLayoutView: View {
                     document: document,
                     printLayoutRevision: document.printLayoutRevision,
                     geometryRevision: document.geometryRevision,
-                    onCanvasTap: handleCanvasTap
+                    onCanvasTap: handleCanvasTap,
+                    onTwoFingerTap: onUndo
                 )
                 .ignoresSafeArea()
 

@@ -64,11 +64,7 @@ struct EditorView: View {
                     canUndo: store.document.canUndo,
                     canRedo: store.document.canRedo,
                     onBack: handleBack,
-                    onUndo: {
-                        store.document.undo()
-                        store.markDirty()
-                        refreshCanvas()
-                    },
+                    onUndo: performUndo,
                     onRedo: {
                         store.document.redo()
                         store.markDirty()
@@ -175,6 +171,7 @@ struct EditorView: View {
                     rectangleVariant: store.document.rectangleVariant,
                     canvasBackgroundColor: Color(hex: canvasColorHex),
                     onCanvasTap: handleCanvasTap,
+                    onTwoFingerTap: performUndo,
                     onStrokeSelected: { stroke in
                         if let stroke {
                             store.document.selectStrokeConsideringGroups(stroke.id)
@@ -414,11 +411,7 @@ struct EditorView: View {
                 canUndo: store.document.canUndo,
                 canRedo: store.document.canRedo,
                 onBack: handleBack,
-                onUndo: {
-                    store.document.undo()
-                    store.markDirty()
-                    refreshCanvas()
-                },
+                onUndo: performUndo,
                 onRedo: {
                     store.document.redo()
                     store.markDirty()
@@ -1682,6 +1675,12 @@ struct EditorView: View {
             return
         }
         patternPreviewStrokes = PatternEngine.generatedCopies(from: stroke, settings: patternSettings)
+    }
+
+    private func performUndo() {
+        store.document.undo()
+        store.markDirty()
+        refreshCanvas()
     }
 
     private func refreshCanvas() {
