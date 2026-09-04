@@ -20,12 +20,12 @@ enum SVGImporter {
         var strokes: [VectorStroke] = []
         for element in extractElements(named: "path", from: xml) {
             guard let pathData = stringAttribute("d", in: element) else { continue }
-            let strokeWidth = strokeWidth(from: element, scale: scale)
+            let paint = paintAttributes(from: element, scale: scale)
             strokes.append(contentsOf: pathStrokes(
                 from: pathData,
                 layerID: layerID,
                 scale: scale,
-                strokeWidth: strokeWidth
+                paint: paint
             ))
         }
         strokes.append(contentsOf: strokesFromBasicShapes(in: xml, layerID: layerID, scale: scale))
@@ -36,7 +36,7 @@ enum SVGImporter {
         from pathData: String,
         layerID: UUID,
         scale: CGFloat,
-        strokeWidth: CGFloat
+        paint: PaintAttributes
     ) -> [VectorStroke] {
         var strokes: [VectorStroke] = []
         let subpaths = SVGPathParser.parse(pathData)
@@ -51,10 +51,12 @@ enum SVGImporter {
             strokes.append(VectorStroke(
                 layerID: layerID,
                 points: points,
-                strokeWidth: strokeWidth,
+                strokeWidth: paint.strokeWidth,
+                strokeColor: paint.strokeColor,
                 isClosed: subpath.isClosed,
                 shapeType: subpath.hasCurves ? .curve : .polyline,
-                curveHandles: subpath.hasCurves ? handles : nil
+                curveHandles: subpath.hasCurves ? handles : nil,
+                fillOpacity: subpath.isClosed ? paint.fillOpacity : nil
             ))
         }
         return strokes
@@ -63,7 +65,7 @@ enum SVGImporter {
     private static func strokesFromBasicShapes(in xml: String, layerID: UUID, scale: CGFloat) -> [VectorStroke] {
         var strokes: [VectorStroke] = []
         for element in extractElements(named: "rect", from: xml) {
-            let strokeWidth = strokeWidth(from: element, scale: scale)
+            let paint = paintAttributes(from: element, scale: scale)
             guard let x = attribute("x", in: element, defaultValue: 0),
                   let y = attribute("y", in: element, defaultValue: 0),
                   let width = attribute("width", in: element),
@@ -75,11 +77,19 @@ enum SVGImporter {
                 CGPoint(x: (x + width) * scale, y: (y + height) * scale),
                 CGPoint(x: x * scale, y: (y + height) * scale)
             ]
-            strokes.append(VectorStroke(layerID: layerID, points: points, strokeWidth: strokeWidth, isClosed: true, shapeType: .rectangle))
+            strokes.append(VectorStroke(
+                layerID: layerID,
+                points: points,
+                strokeWidth: paint.strokeWidth,
+                strokeColor: paint.strokeColor,
+                isClosed: true,
+                shapeType: .rectangle,
+                fillOpacity: paint.fillOpacity
+            ))
         }
 
         for element in extractElements(named: "line", from: xml) {
-            let strokeWidth = strokeWidth(from: element, scale: scale)
+            let paint = paintAttributes(from: element, scale: scale)
             guard let x1 = attribute("x1", in: element),
                   let y1 = attribute("y1", in: element),
                   let x2 = attribute("x2", in: element),
@@ -90,43 +100,47 @@ enum SVGImporter {
                     CGPoint(x: x1 * scale, y: y1 * scale),
                     CGPoint(x: x2 * scale, y: y2 * scale)
                 ],
-                strokeWidth: strokeWidth,
+                strokeWidth: paint.strokeWidth,
+                strokeColor: paint.strokeColor,
                 shapeType: .polyline
             ))
         }
 
         for tag in ["polyline", "polygon"] {
             for element in extractElements(named: tag, from: xml) {
-                let strokeWidth = strokeWidth(from: element, scale: scale)
+                let paint = paintAttributes(from: element, scale: scale)
+                let isClosed = tag == "polygon"
                 guard let rawPoints = stringAttribute("points", in: element) else { continue }
                 let points = parsePointPairs(rawPoints).map { CGPoint(x: $0.x * scale, y: $0.y * scale) }
                 guard points.count >= 2 else { continue }
                 strokes.append(VectorStroke(
                     layerID: layerID,
                     points: points,
-                    strokeWidth: strokeWidth,
-                    isClosed: tag == "polygon",
-                    shapeType: .polyline
+                    strokeWidth: paint.strokeWidth,
+                    strokeColor: paint.strokeColor,
+                    isClosed: isClosed,
+                    shapeType: .polyline,
+                    fillOpacity: isClosed ? paint.fillOpacity : nil
                 ))
             }
         }
 
         for element in extractElements(named: "circle", from: xml) {
-            let strokeWidth = strokeWidth(from: element, scale: scale)
+            let paint = paintAttributes(from: element, scale: scale)
             guard let cx = attribute("cx", in: element),
                   let cy = attribute("cy", in: element),
                   let radius = attribute("r", in: element), radius > 0 else { continue }
-            strokes.append(circleStroke(layerID: layerID, cx: cx * scale, cy: cy * scale, rx: radius * scale, ry: radius * scale, strokeWidth: strokeWidth))
+            strokes.append(circleStroke(layerID: layerID, cx: cx * scale, cy: cy * scale, rx: radius * scale, ry: radius * scale, paint: paint))
         }
 
         for element in extractElements(named: "ellipse", from: xml) {
-            let strokeWidth = strokeWidth(from: element, scale: scale)
+            let paint = paintAttributes(from: element, scale: scale)
             guard let cx = attribute("cx", in: element),
                   let cy = attribute("cy", in: element),
                   let rx = attribute("rx", in: element),
                   let ry = attribute("ry", in: element),
                   rx > 0, ry > 0 else { continue }
-            strokes.append(circleStroke(layerID: layerID, cx: cx * scale, cy: cy * scale, rx: rx * scale, ry: ry * scale, strokeWidth: strokeWidth))
+            strokes.append(circleStroke(layerID: layerID, cx: cx * scale, cy: cy * scale, rx: rx * scale, ry: ry * scale, paint: paint))
         }
 
         return strokes
@@ -138,7 +152,7 @@ enum SVGImporter {
         cy: CGFloat,
         rx: CGFloat,
         ry: CGFloat,
-        strokeWidth: CGFloat
+        paint: PaintAttributes
     ) -> VectorStroke {
         VectorStroke(
             layerID: layerID,
@@ -148,14 +162,109 @@ enum SVGImporter {
                 CGPoint(x: cx, y: cy + ry),
                 CGPoint(x: cx - rx, y: cy)
             ],
-            strokeWidth: strokeWidth,
+            strokeWidth: paint.strokeWidth,
+            strokeColor: paint.strokeColor,
             isClosed: true,
-            shapeType: rx == ry ? .circle : .ellipse
+            shapeType: rx == ry ? .circle : .ellipse,
+            fillOpacity: paint.fillOpacity
         )
     }
 
+    private struct PaintAttributes {
+        var strokeWidth: CGFloat
+        var strokeColor: CodableColor
+        var fillOpacity: CGFloat?
+    }
+
+    private static func paintAttributes(from element: String, scale: CGFloat) -> PaintAttributes {
+        var color = colorAttribute("stroke", in: element)
+            ?? colorAttribute("fill", in: element)
+            ?? CodableColor(red: 0, green: 0, blue: 0)
+        if let strokeOpacity = paintNumber("stroke-opacity", in: element) {
+            color.alpha = min(1, max(0, strokeOpacity))
+        }
+        return PaintAttributes(
+            strokeWidth: strokeWidth(from: element, scale: scale),
+            strokeColor: color,
+            fillOpacity: paintNumber("fill-opacity", in: element).map { min(1, max(0, $0)) }
+        )
+    }
+
+    private static func colorAttribute(_ name: String, in element: String) -> CodableColor? {
+        guard let raw = paintAttribute(named: name, in: element) else { return nil }
+        return parseColor(raw)
+    }
+
+    private static func paintNumber(_ name: String, in element: String) -> CGFloat? {
+        guard let raw = paintAttribute(named: name, in: element) else { return nil }
+        return parseNumber(raw)
+    }
+
+    private static func parseColor(_ raw: String) -> CodableColor? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let lowered = trimmed.lowercased()
+        if lowered == "none" || lowered == "transparent" { return nil }
+        if lowered.hasPrefix("#") {
+            return parseHexColor(String(trimmed.dropFirst()))
+        }
+        if lowered.hasPrefix("rgb") {
+            return parseRGBColor(trimmed)
+        }
+        return parseHexColor(trimmed)
+    }
+
+    private static func parseHexColor(_ hex: String) -> CodableColor? {
+        let sanitized = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var value: UInt64 = 0
+        guard Scanner(string: sanitized).scanHexInt64(&value) else { return nil }
+        switch sanitized.count {
+        case 3:
+            let r = CGFloat((value >> 8) & 0xF) / 15
+            let g = CGFloat((value >> 4) & 0xF) / 15
+            let b = CGFloat(value & 0xF) / 15
+            return CodableColor(red: r, green: g, blue: b)
+        case 6:
+            let r = CGFloat((value >> 16) & 0xFF) / 255
+            let g = CGFloat((value >> 8) & 0xFF) / 255
+            let b = CGFloat(value & 0xFF) / 255
+            return CodableColor(red: r, green: g, blue: b)
+        case 8:
+            let r = CGFloat((value >> 24) & 0xFF) / 255
+            let g = CGFloat((value >> 16) & 0xFF) / 255
+            let b = CGFloat((value >> 8) & 0xFF) / 255
+            let a = CGFloat(value & 0xFF) / 255
+            return CodableColor(red: r, green: g, blue: b, alpha: a)
+        default:
+            return nil
+        }
+    }
+
+    private static func parseRGBColor(_ raw: String) -> CodableColor? {
+        let inner = raw
+            .replacingOccurrences(of: "rgba(", with: "", options: .caseInsensitive)
+            .replacingOccurrences(of: "rgb(", with: "", options: .caseInsensitive)
+            .replacingOccurrences(of: ")", with: "")
+        let parts = inner.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init)
+        guard parts.count >= 3,
+              let r = parseColorChannel(parts[0]),
+              let g = parseColorChannel(parts[1]),
+              let b = parseColorChannel(parts[2]) else { return nil }
+        let alpha = parts.count > 3 ? parseNumber(parts[3]) : 1
+        return CodableColor(red: r, green: g, blue: b, alpha: alpha ?? 1)
+    }
+
+    private static func parseColorChannel(_ raw: String) -> CGFloat? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasSuffix("%"), let value = Double(trimmed.dropLast()) {
+            return min(1, max(0, CGFloat(value) / 100))
+        }
+        guard let value = Double(trimmed) else { return nil }
+        return min(1, max(0, CGFloat(value) / 255))
+    }
+
     private static func strokeWidth(from element: String, scale: CGFloat) -> CGFloat {
-        guard let raw = firstAttribute(named: "stroke-width", in: element),
+        guard let raw = paintAttribute(named: "stroke-width", in: element),
               let value = parseNumber(raw) else {
             return max(1.5 * scale, 1)
         }
@@ -259,12 +368,39 @@ enum SVGImporter {
     }
 
     private static func firstAttribute(named name: String, in xml: String) -> String? {
+        presentationAttribute(named: name, in: xml)
+    }
+
+    /// Paint properties prefer `style="..."` on this element so a child `style`
+    /// cannot leak into root `width` / `viewBox` lookups.
+    private static func paintAttribute(named name: String, in element: String) -> String? {
+        if let value = styleProperty(named: name, in: element) {
+            return value
+        }
+        return presentationAttribute(named: name, in: element)
+    }
+
+    private static func presentationAttribute(named name: String, in xml: String) -> String? {
         let pattern = #"\#(name)\s*=\s*(['"])(.*?)\1"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
               let match = regex.firstMatch(in: xml, range: NSRange(xml.startIndex..., in: xml)),
               match.numberOfRanges > 2,
               let valueRange = Range(match.range(at: 2), in: xml) else { return nil }
         return String(xml[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func styleProperty(named name: String, in element: String) -> String? {
+        guard name.lowercased() != "style",
+              let style = presentationAttribute(named: "style", in: element) else { return nil }
+        for declaration in style.split(separator: ";") {
+            let parts = declaration.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            if key.caseInsensitiveCompare(name) == .orderedSame {
+                return parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return nil
     }
 
     private static func parseLengthInDocumentPoints(_ raw: String) -> CGFloat? {

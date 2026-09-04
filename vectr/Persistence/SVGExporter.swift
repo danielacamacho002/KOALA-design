@@ -138,30 +138,40 @@ enum SVGExporter {
 
     private static func strokeMarkup(_ stroke: VectorStroke, indent: Int) -> String {
         let color = stroke.strokeColor
-        let strokeHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
+        let paintHex = hexRGB(from: color)
+        let strokeOpacity = formatSVG(clampedUnit(color.alpha))
+        let lineWidth = formatSVG(max(0, stroke.strokeWidth))
         let isFilled = stroke.isClosed && !stroke.isConstruction
         let cutEdges = Set(stroke.openEdgeStarts ?? [])
         let prefix = pad(indent)
+        let fillRule = stroke.cutoutPoints.isEmpty ? "" : " fill-rule=\"evenodd\""
+        let dash = stroke.isConstruction ? " stroke-dasharray=\"10 6\"" : ""
+        let strokePaint = "stroke=\"\(paintHex)\" stroke-opacity=\"\(strokeOpacity)\" stroke-width=\"\(lineWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"\(dash)"
 
         // Same path the canvas uses, so live fillets (`cornerRadius` /
         // `cornerRadiiByIndex`) and baked smooth corners export as real curves.
-        let displayData = pathData(from: stroke.displayPath())
+        // Cutouts stay in the fill path so holes survive export.
+        let displayData = pathData(from: fillPath(for: stroke))
         guard !displayData.isEmpty else { return "" }
 
         if isFilled, !cutEdges.isEmpty {
             // Fill the filleted contour, then stroke only the retained (non-cut)
             // edges so the carved notch has no outline.
-            var markup = "\(prefix)<path d=\"\(displayData)\" fill=\"#CCCCCC\" fill-opacity=\"\(stroke.resolvedFillOpacity)\" stroke=\"none\"/>\n"
+            let fillOpacity = formatSVG(stroke.resolvedFillOpacity)
+            var markup = "\(prefix)<path d=\"\(displayData)\" fill=\"\(Self.planeFillHex)\" fill-opacity=\"\(fillOpacity)\" stroke=\"none\"\(fillRule)/>\n"
             let points = ShapeGeometry.renderPoints(for: stroke)
             let strokeData = strokePathData(from: points, cutEdges: cutEdges)
             if !strokeData.isEmpty {
-                markup += "\(prefix)<path d=\"\(strokeData)\" fill=\"none\" stroke=\"\(strokeHex)\" stroke-width=\"\(stroke.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
+                markup += "\(prefix)<path d=\"\(strokeData)\" fill=\"none\" \(strokePaint)/>\n"
             }
             return markup
         }
 
-        let fill = isFilled ? " fill=\"#CCCCCC\" fill-opacity=\"\(stroke.resolvedFillOpacity)\"" : " fill=\"none\""
-        return "\(prefix)<path d=\"\(displayData)\" stroke=\"\(strokeHex)\" stroke-width=\"\(stroke.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"\(fill)/>\n"
+        if isFilled {
+            let fillOpacity = formatSVG(stroke.resolvedFillOpacity)
+            return "\(prefix)<path d=\"\(displayData)\" \(strokePaint) fill=\"\(Self.planeFillHex)\" fill-opacity=\"\(fillOpacity)\"\(fillRule)/>\n"
+        }
+        return "\(prefix)<path d=\"\(displayData)\" \(strokePaint) fill=\"none\"/>\n"
     }
 
     private static func textMarkup(_ element: TextElement, indent: Int) -> String {
@@ -171,12 +181,53 @@ enum SVGExporter {
         let prefix = pad(indent)
         if element.isOutline {
             let color = element.strokeColor
-            let strokeHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
-            return "\(prefix)<path d=\"\(data)\" fill=\"none\" stroke=\"\(strokeHex)\" stroke-opacity=\"\(color.alpha)\" stroke-width=\"\(element.strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
+            return "\(prefix)<path d=\"\(data)\" fill=\"none\" stroke=\"\(hexRGB(from: color))\" stroke-opacity=\"\(formatSVG(clampedUnit(color.alpha)))\" stroke-width=\"\(formatSVG(max(0, element.strokeWidth)))\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
         }
         let color = element.color
-        let fillHex = String(format: "#%02X%02X%02X", Int(color.red * 255), Int(color.green * 255), Int(color.blue * 255))
-        return "\(prefix)<path d=\"\(data)\" fill=\"\(fillHex)\" fill-opacity=\"\(color.alpha)\" fill-rule=\"nonzero\"/>\n"
+        return "\(prefix)<path d=\"\(data)\" fill=\"\(hexRGB(from: color))\" fill-opacity=\"\(formatSVG(clampedUnit(color.alpha)))\" fill-rule=\"nonzero\"/>\n"
+    }
+
+    /// Outer contour plus subtracted holes, matching on-canvas even-odd fills.
+    private static func fillPath(for stroke: VectorStroke) -> CGPath {
+        let path = CGMutablePath()
+        path.addPath(stroke.displayPath())
+        for cutout in stroke.cutoutPoints {
+            let hole = VectorStroke(
+                layerID: stroke.layerID,
+                points: cutout,
+                strokeWidth: stroke.strokeWidth,
+                isClosed: true,
+                shapeType: .circle
+            )
+            path.addPath(hole.displayPath())
+        }
+        return path
+    }
+
+    /// Closed-plane fill, matching the gray used on canvas / PDF / JPEG.
+    private static let planeFillHex = "#CCCCCC"
+
+    /// sRGB hex. Components are clamped so Display P3 values cannot emit
+    /// invalid `#` paints that viewers drop (taking stroke width with them).
+    private static func hexRGB(from color: CodableColor) -> String {
+        let r = Int((clampedUnit(color.red) * 255).rounded())
+        let g = Int((clampedUnit(color.green) * 255).rounded())
+        let b = Int((clampedUnit(color.blue) * 255).rounded())
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
+
+    private static func clampedUnit(_ value: CGFloat) -> CGFloat {
+        min(1, max(0, value.isFinite ? value : 0))
+    }
+
+    /// Locale-invariant decimal so `stroke-width` / opacity stay valid SVG.
+    private static func formatSVG(_ value: CGFloat) -> String {
+        let number = value.isFinite ? Double(value) : 0
+        var text = String(format: "%.4f", locale: Locale(identifier: "en_US_POSIX"), number)
+        while text.contains(".") && (text.hasSuffix("0") || text.hasSuffix(".")) {
+            text.removeLast()
+        }
+        return text.isEmpty ? "0" : text
     }
 
     private static func pathData(from points: [CGPoint], closed: Bool) -> String {

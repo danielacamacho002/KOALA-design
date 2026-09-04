@@ -126,7 +126,10 @@ enum DocumentRenderer {
         }
         var rect = CGRect.null
         for point in points { rect = rect.union(CGRect(origin: point, size: .zero)) }
-        return rect.insetBy(dx: -20, dy: -20)
+        // Include half the thickest stroke so wide outlines are not clipped.
+        let strokePad = document.visibleStrokes().map(\.strokeWidth).max() ?? 0
+        let textPad = document.visibleTextElements().map { $0.isOutline ? $0.strokeWidth : 0 }.max() ?? 0
+        return rect.insetBy(dx: -(20 + max(strokePad, textPad) / 2), dy: -(20 + max(strokePad, textPad) / 2))
     }
 
     private static func allPoints(in document: VectrDocument) -> [CGPoint] {
