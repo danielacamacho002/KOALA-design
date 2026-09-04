@@ -212,7 +212,12 @@ final class DrawingCanvasUIView: UIView {
 
         for stroke in visible {
             if let existing = strokeLayers[stroke.id] {
-                StrokeRenderer.updateShapeLayer(existing, stroke: stroke, viewport: document.viewport)
+                StrokeRenderer.updateShapeLayer(
+                    existing,
+                    stroke: stroke,
+                    viewport: document.viewport,
+                    opacity: document.opacity(forLayerID: stroke.layerID)
+                )
             } else {
                 addStrokeLayer(stroke)
             }
@@ -234,10 +239,11 @@ final class DrawingCanvasUIView: UIView {
         }
 
         for element in visible {
+            let opacity = document.opacity(forLayerID: element.layerID)
             if let existing = textLayers[element.id] {
-                TextRenderer.update(existing, for: element, viewport: document.viewport)
+                TextRenderer.update(existing, for: element, viewport: document.viewport, opacity: opacity)
             } else {
-                let created = TextRenderer.makeLayer(for: element, viewport: document.viewport)
+                let created = TextRenderer.makeLayer(for: element, viewport: document.viewport, opacity: opacity)
                 layer.addSublayer(created)
                 textLayers[element.id] = created
             }
@@ -293,14 +299,20 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func addStrokeLayer(_ stroke: VectorStroke) {
-        let shapeLayer = StrokeRenderer.makeShapeLayer(for: stroke, viewport: document.viewport)
+        let shapeLayer = StrokeRenderer.makeShapeLayer(
+            for: stroke,
+            viewport: document.viewport,
+            opacity: document.opacity(forLayerID: stroke.layerID)
+        )
         layer.addSublayer(shapeLayer)
         strokeLayers[stroke.id] = shapeLayer
     }
 
     private func reloadStrokesHighlight() {
         for (id, layer) in strokeLayers {
-            layer.opacity = id == document.selectedStrokeID ? 1 : 0.85
+            guard let stroke = document.stroke(with: id) else { continue }
+            let base = document.opacity(forLayerID: stroke.layerID)
+            layer.opacity = Float(base * (id == document.selectedStrokeID ? 1 : 0.85))
         }
     }
 
@@ -311,12 +323,23 @@ final class DrawingCanvasUIView: UIView {
     func refreshViewport() {
         for (id, layer) in strokeLayers {
             if let stroke = document.stroke(with: id) {
-                StrokeRenderer.updateShapeLayer(layer, stroke: stroke, viewport: document.viewport)
+                StrokeRenderer.updateShapeLayer(
+                    layer,
+                    stroke: stroke,
+                    viewport: document.viewport,
+                    opacity: document.opacity(forLayerID: stroke.layerID)
+                )
             }
         }
+        reloadStrokesHighlight()
         for (id, layer) in textLayers {
             if let element = document.textElement(with: id) {
-                TextRenderer.update(layer, for: element, viewport: document.viewport)
+                TextRenderer.update(
+                    layer,
+                    for: element,
+                    viewport: document.viewport,
+                    opacity: document.opacity(forLayerID: element.layerID)
+                )
             }
         }
         reloadReferenceImage()
@@ -729,6 +752,7 @@ final class DrawingCanvasUIView: UIView {
         ).cgPath
         pathLayer.strokeColor = document.strokeColor.platformCGColor
         pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
+        pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
     }
 
     // MARK: - Command preview
@@ -820,6 +844,7 @@ final class DrawingCanvasUIView: UIView {
             : UIColor.clear.cgColor
         pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
         pathLayer.lineDashPattern = isConstructionPreview ? [10, 6] : nil
+        pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
     }
 
     private func updateDragPreviewLayer() {
@@ -868,6 +893,7 @@ final class DrawingCanvasUIView: UIView {
             : UIColor.clear.cgColor
         pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
         pathLayer.lineDashPattern = isConstruction ? [10, 6] : nil
+        pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
     }
 
     private func dragPreviewPoints(start: CGPoint, end: CGPoint) -> [CGPoint] {

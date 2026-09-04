@@ -100,7 +100,13 @@ enum SVGExporter {
         text: [TextElement],
         indent: Int
     ) -> String {
-        var markup = groupOpen(id: layer.id, prefix: "layer", name: layer.name, indent: indent)
+        var markup = groupOpen(
+            id: layer.id,
+            prefix: "layer",
+            name: layer.name,
+            indent: indent,
+            opacity: layer.resolvedOpacity
+        )
         let pathIndent = indent + 1
         for stroke in strokes {
             markup += strokeMarkup(stroke, indent: pathIndent)
@@ -112,9 +118,16 @@ enum SVGExporter {
         return markup
     }
 
-    private static func groupOpen(id: UUID, prefix: String, name: String, indent: Int) -> String {
+    private static func groupOpen(
+        id: UUID,
+        prefix: String,
+        name: String,
+        indent: Int,
+        opacity: CGFloat = 1
+    ) -> String {
         let escaped = escapeXML(name)
-        return "\(pad(indent))<g id=\"\(prefix)-\(id.uuidString)\" data-name=\"\(escaped)\" inkscape:groupmode=\"layer\" inkscape:label=\"\(escaped)\">\n"
+        let opacityAttr = opacity < 0.999 ? " opacity=\"\(opacity)\"" : ""
+        return "\(pad(indent))<g id=\"\(prefix)-\(id.uuidString)\" data-name=\"\(escaped)\" inkscape:groupmode=\"layer\" inkscape:label=\"\(escaped)\"\(opacityAttr)>\n"
     }
 
     private static func groupClose(indent: Int) -> String {

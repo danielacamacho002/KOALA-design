@@ -333,6 +333,26 @@ final class VectrDocument {
         geometryRevision += 1
     }
 
+    /// Resolved 0...1 opacity for a layer; missing layers are treated as fully opaque.
+    func opacity(forLayerID id: UUID) -> CGFloat {
+        layers.first { $0.id == id }?.resolvedOpacity ?? 1
+    }
+
+    func setLayerOpacity(id: UUID, opacity: CGFloat, recordUndo: Bool = true) {
+        setLayersOpacity(ids: [id], opacity: opacity, recordUndo: recordUndo)
+    }
+
+    func setLayersOpacity(ids: Set<UUID>, opacity: CGFloat, recordUndo: Bool = true) {
+        let clamped = min(1, max(0, opacity))
+        let targets = layers.indices.filter { ids.contains(layers[$0].id) && layers[$0].opacity != clamped }
+        guard !targets.isEmpty else { return }
+        if recordUndo { pushUndo() }
+        for i in targets {
+            layers[i].opacity = clamped
+        }
+        geometryRevision += 1
+    }
+
     func setActiveLayer(id: UUID) {
         guard activeLayerID != id, layers.contains(where: { $0.id == id }) else { return }
         activeLayerID = id
@@ -484,10 +504,15 @@ final class VectrDocument {
         geometryRevision += 1
     }
 
+    /// Cascades an opacity change to every layer in the folder.
+    func setLayerGroupOpacity(id: UUID, opacity: CGFloat, recordUndo: Bool = true) {
+        setLayersOpacity(ids: Set(layers(inGroup: id).map(\.id)), opacity: opacity, recordUndo: recordUndo)
+    }
+
     /// Merges the given layers into a single layer, preserving the visual
     /// front/back stacking of their contents. The front-most selected layer is
-    /// kept as the destination (its name, visibility, lock, and folder stay);
-    /// the others are removed. Returns the surviving layer's id.
+    /// kept as the destination (its name, visibility, lock, opacity, and folder
+    /// stay); the others are removed. Returns the surviving layer's id.
     @discardableResult
     func mergeLayers(ids: Set<UUID>) -> UUID? {
         let indexed = layers.enumerated().filter { ids.contains($0.element.id) }
