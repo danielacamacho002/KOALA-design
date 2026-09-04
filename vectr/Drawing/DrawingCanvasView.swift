@@ -30,6 +30,7 @@ struct DrawingCanvasView: UIViewRepresentable {
     var onDragDrawBegan: ((CGPoint) -> Void)?
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
+    var curveDraft: CurveDraftSession?
     var onCurveCommitted: (([CGPoint]) -> Void)?
     var onLayoutMetrics: ((CGSize, UIEdgeInsets) -> Void)?
 
@@ -148,6 +149,9 @@ struct DrawingCanvasView: UIViewRepresentable {
         uiView.onDragDrawBegan = onDragDrawBegan
         uiView.onDragDrawChanged = onDragDrawChanged
         uiView.onDragDrawEnded = onDragDrawEnded
+        if uiView.curveDraft !== curveDraft {
+            uiView.curveDraft = curveDraft
+        }
         uiView.onCurveCommitted = onCurveCommitted
         uiView.onLayoutMetrics = onLayoutMetrics
     }

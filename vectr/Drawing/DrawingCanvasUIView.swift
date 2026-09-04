@@ -25,7 +25,7 @@ final class DrawingCanvasUIView: UIView {
                 // Don't discard an in-progress curve when leaving the tool: commit it
                 // so the drawn strokes persist. Deferred to avoid mutating document
                 // state during a SwiftUI view update.
-                let anchors = curveAnchors
+                let anchors = curveDraft?.anchors ?? []
                 resetCurve()
                 if anchors.count >= 2 {
                     DispatchQueue.main.async { [weak self] in
@@ -54,6 +54,16 @@ final class DrawingCanvasUIView: UIView {
     var onDragDrawBegan: ((CGPoint) -> Void)?
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
+    /// In-progress curve anchors and per-segment undo, owned by the editor.
+    var curveDraft: CurveDraftSession? {
+        didSet {
+            if oldValue !== curveDraft {
+                oldValue?.detachCanvas(self)
+                curveDraft?.attachCanvas(self)
+            }
+            updateCurvePreview()
+        }
+    }
     /// Emitted when a curve is finished (double-tap) with its drawn anchor points.
     var onCurveCommitted: (([CGPoint]) -> Void)?
     /// Bounds size and safe-area insets in this view's own coordinate space.
@@ -70,7 +80,6 @@ final class DrawingCanvasUIView: UIView {
     private var pinchAnchor: CGPoint = .zero
     private var dragDrawStart: CGPoint?
     private var dragDrawCurrent: CGPoint?
-    private var curveAnchors: [CGPoint] = []
     private var curveDragStart: CGPoint?
     private var curveDragCurrent: CGPoint?
     private var curvePreviewLayer: CAShapeLayer?
@@ -597,6 +606,7 @@ final class DrawingCanvasUIView: UIView {
             snapHaptics.prepare()
             curveDragStart = documentPoint
             curveDragCurrent = documentPoint
+            curveDraft?.beginDrag()
             updateCurvePreview()
         case .changed:
             curveDragCurrent = documentPoint
@@ -605,14 +615,11 @@ final class DrawingCanvasUIView: UIView {
             if let start = curveDragStart {
                 appendCurveLine(start: start, end: documentPoint)
             }
-            curveDragStart = nil
-            curveDragCurrent = nil
-            finishSnapInteraction()
+            clearInProgressCurveDrag()
             updateCurvePreview()
         case .cancelled, .failed:
-            curveDragStart = nil
-            curveDragCurrent = nil
-            finishSnapInteraction()
+            curveDraft?.endDrag()
+            clearInProgressCurveDrag()
             updateCurvePreview()
         default:
             break
@@ -620,19 +627,28 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func appendCurveLine(start: CGPoint, end: CGPoint) {
-        let tolerance = curveConnectTolerance
-        if curveAnchors.isEmpty {
-            curveAnchors.append(start)
-        } else if let last = curveAnchors.last,
-                  hypot(start.x - last.x, start.y - last.y) > tolerance {
-            // New line started away from the last point: bridge with a jump anchor.
-            curveAnchors.append(start)
+        curveDraft?.appendSegment(start: start, end: end, connectTolerance: curveConnectTolerance)
+    }
+
+    @discardableResult
+    func undoLastCurveSegment() -> Bool {
+        if curveDragStart != nil {
+            curveDraft?.endDrag()
+            clearInProgressCurveDrag()
+            updateCurvePreview()
+            return true
         }
-        if let last = curveAnchors.last,
-           hypot(end.x - last.x, end.y - last.y) <= 0.0001 {
-            return
-        }
-        curveAnchors.append(end)
+        guard curveDraft?.undoCommittedSegment() == true else { return false }
+        updateCurvePreview()
+        return true
+    }
+
+    @discardableResult
+    func redoLastCurveSegment() -> Bool {
+        guard curveDragStart == nil else { return false }
+        guard curveDraft?.redoCommittedSegment() == true else { return false }
+        updateCurvePreview()
+        return true
     }
 
     @objc private func handleCurveFinish(_ gesture: UITapGestureRecognizer) {
@@ -641,17 +657,26 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func commitCurve() {
-        let anchors = curveAnchors
+        let anchors = curveDraft?.anchors ?? []
         resetCurve()
         guard anchors.count >= 2 else { return }
         onCurveCommitted?(anchors)
     }
 
     private func resetCurve() {
-        curveAnchors.removeAll()
+        curveDraft?.reset()
+        clearInProgressCurveDrag()
+        updateCurvePreview()
+    }
+
+    private func clearInProgressCurveDrag() {
         curveDragStart = nil
         curveDragCurrent = nil
-        updateCurvePreview()
+        finishSnapInteraction()
+    }
+
+    private var curveAnchors: [CGPoint] {
+        curveDraft?.anchors ?? []
     }
 
     private var curveConnectTolerance: CGFloat {
