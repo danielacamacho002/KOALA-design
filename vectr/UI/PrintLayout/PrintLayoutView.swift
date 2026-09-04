@@ -42,6 +42,7 @@ struct PrintLayoutView: View {
                     onCanvasTap: handleCanvasTap
                 )
                 .ignoresSafeArea()
+                .transaction { $0.animation = nil }
 
                 PrintLayoutOverlayView(
                     document: document,
@@ -51,6 +52,7 @@ struct PrintLayoutView: View {
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(document.printLayout.activeTool == .select)
+                .transaction { $0.animation = nil }
             }
             .overlay(alignment: .topLeading) {
                 if showPaperPanel {

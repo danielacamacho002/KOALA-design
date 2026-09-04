@@ -26,6 +26,7 @@ final class PrintLayoutCanvasUIView: UIView {
 
     private var pinchStartScale: CGFloat = 1
     private var pinchAnchor: CGPoint = .zero
+    private var lastLaidOutSize: CGSize = .zero
 
     init(document: VectrDocument) {
         self.document = document
@@ -50,13 +51,45 @@ final class PrintLayoutCanvasUIView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        sheetsLayer.frame = bounds
-        artworkLayer.frame = bounds
-        overlayLayer.frame = bounds
-        reloadAll()
+        let newSize = bounds.size
+        let sizeChanged = lastLaidOutSize.width == 0
+            || abs(newSize.width - lastLaidOutSize.width) > 0.5
+            || abs(newSize.height - lastLaidOutSize.height) > 0.5
+
+        performWithoutLayerAnimation {
+            if sizeChanged, lastLaidOutSize.width > 0, lastLaidOutSize.height > 0 {
+                var viewport = document.viewport
+                viewport.preserveCenter(from: lastLaidOutSize, to: newSize)
+                if viewport != document.viewport {
+                    document.viewport = viewport
+                }
+            }
+            sheetsLayer.frame = bounds
+            artworkLayer.frame = bounds
+            overlayLayer.frame = bounds
+            if sizeChanged {
+                reloadAllContents()
+            }
+        }
+
+        if sizeChanged {
+            lastLaidOutSize = newSize
+        }
     }
 
     func reloadAll() {
+        performWithoutLayerAnimation {
+            reloadAllContents()
+        }
+    }
+
+    func refreshViewport() {
+        performWithoutLayerAnimation {
+            reloadAllContents()
+        }
+    }
+
+    private func reloadAllContents() {
         reloadSheets()
         reloadStrokes()
         reloadTextElements()
@@ -65,53 +98,80 @@ final class PrintLayoutCanvasUIView: UIView {
         reloadBorders()
     }
 
-    func refreshViewport() {
-        reloadSheets()
-        reloadStrokes()
-        reloadTextElements()
-        reloadDimOverlay()
-        reloadMarginGuide()
-        reloadBorders()
+    private func performWithoutLayerAnimation(_ updates: () -> Void) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        updates()
+        CATransaction.commit()
     }
 
     // MARK: - Rendering
 
     private func reloadSheets() {
-        sheetLayers.forEach { $0.removeFromSuperlayer() }
-        sheetLayers.removeAll()
+        let sheets = PrintPageGridEngine.sheets(for: document.printLayout)
+        let needed = sheets.count * 2
+        while sheetLayers.count > needed {
+            sheetLayers.removeLast().removeFromSuperlayer()
+        }
 
-        for sheet in PrintPageGridEngine.sheets(for: document.printLayout) {
+        for (index, sheet) in sheets.enumerated() {
             let viewOrigin = document.viewport.documentToView(sheet.frame.origin)
             let viewSize = CGSize(
                 width: document.viewport.documentToView(distance: sheet.frame.width),
                 height: document.viewport.documentToView(distance: sheet.frame.height)
             )
             let sheetViewFrame = CGRect(origin: viewOrigin, size: viewSize)
+            let paperIndex = index * 2
+            let labelIndex = paperIndex + 1
 
-            let layer = CALayer()
-            layer.backgroundColor = UIColor.white.cgColor
-            layer.frame = sheetViewFrame
-            layer.shadowColor = UIColor.black.cgColor
-            layer.shadowOpacity = 0.12
-            layer.shadowRadius = 4
-            layer.shadowOffset = CGSize(width: 0, height: 2)
-            // Distinct border so each page reads as an individual sheet of paper.
-            layer.borderColor = UIColor.systemGray2.cgColor
-            layer.borderWidth = 1
-            sheetsLayer.addSublayer(layer)
-            sheetLayers.append(layer)
+            let paper: CALayer
+            if paperIndex < sheetLayers.count {
+                paper = sheetLayers[paperIndex]
+            } else {
+                paper = makePaperLayer()
+                sheetsLayer.addSublayer(paper)
+                sheetLayers.append(paper)
+            }
+            paper.frame = sheetViewFrame
 
-            // Page number in the bottom-right corner of each sheet.
-            let label = makePageNumberLayer(number: sheet.id + 1, sheetViewFrame: sheetViewFrame)
-            sheetsLayer.addSublayer(label)
-            sheetLayers.append(label)
+            let label: CATextLayer
+            if labelIndex < sheetLayers.count, let existing = sheetLayers[labelIndex] as? CATextLayer {
+                label = existing
+            } else {
+                label = makePageNumberLayer(number: sheet.id + 1, sheetViewFrame: sheetViewFrame)
+                sheetsLayer.addSublayer(label)
+                sheetLayers.append(label)
+            }
+            label.string = "\(sheet.id + 1)"
+            label.frame = pageNumberFrame(in: sheetViewFrame)
         }
     }
 
-    private func makePageNumberLayer(number: Int, sheetViewFrame: CGRect) -> CATextLayer {
+    private func makePaperLayer() -> CALayer {
+        let layer = CALayer()
+        layer.backgroundColor = UIColor.white.cgColor
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.12
+        layer.shadowRadius = 4
+        layer.shadowOffset = CGSize(width: 0, height: 2)
+        layer.borderColor = UIColor.systemGray2.cgColor
+        layer.borderWidth = 1
+        return layer
+    }
+
+    private func pageNumberFrame(in sheetViewFrame: CGRect) -> CGRect {
         let width: CGFloat = 44
         let height: CGFloat = 16
         let inset: CGFloat = 8
+        return CGRect(
+            x: sheetViewFrame.maxX - width - inset,
+            y: sheetViewFrame.maxY - height - inset,
+            width: width,
+            height: height
+        )
+    }
+
+    private func makePageNumberLayer(number: Int, sheetViewFrame: CGRect) -> CATextLayer {
         let label = CATextLayer()
         label.string = "\(number)"
         label.fontSize = 12
@@ -119,12 +179,7 @@ final class PrintLayoutCanvasUIView: UIView {
         label.alignmentMode = .right
         label.truncationMode = .none
         label.contentsScale = UIScreen.main.scale
-        label.frame = CGRect(
-            x: sheetViewFrame.maxX - width - inset,
-            y: sheetViewFrame.maxY - height - inset,
-            width: width,
-            height: height
-        )
+        label.frame = pageNumberFrame(in: sheetViewFrame)
         return label
     }
 
