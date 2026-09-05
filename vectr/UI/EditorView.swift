@@ -1327,11 +1327,11 @@ struct EditorView: View {
                         } else {
                             statusMessage = "Tap the line segment to trim away"
                         }
+                    } else {
+                        _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
+                        refreshCanvas()
                     }
                 }
-            } else {
-                _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
-                refreshCanvas()
             }
         case .addAnchor:
             if isEmptyCanvasTap(at: documentPoint, viewThreshold: 28) {
