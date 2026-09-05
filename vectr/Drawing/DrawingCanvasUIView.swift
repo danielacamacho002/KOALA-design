@@ -57,6 +57,8 @@ final class DrawingCanvasUIView: UIView {
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
     var onCanvasTap: ((CGPoint) -> Void)?
+    /// Two-finger tap — same as the toolbar undo button (Procreate-style).
+    var onTwoFingerTap: (() -> Void)?
     var onDragDrawBegan: ((CGPoint) -> Void)?
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
@@ -449,6 +451,13 @@ final class DrawingCanvasUIView: UIView {
         twoFingerPan.delegate = self
         addGestureRecognizer(twoFingerPan)
 
+        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
+        twoFingerTap.numberOfTouchesRequired = 2
+        twoFingerTap.delegate = self
+        twoFingerTap.require(toFail: pinch)
+        twoFingerTap.require(toFail: twoFingerPan)
+        addGestureRecognizer(twoFingerTap)
+
         let tap = PreciseTapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.delegate = self
         tap.require(toFail: twoFingerPan)
@@ -503,6 +512,11 @@ final class DrawingCanvasUIView: UIView {
         default:
             break
         }
+    }
+
+    @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended else { return }
+        onTwoFingerTap?()
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -1113,6 +1127,10 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
         }
 
         if let tap = gestureRecognizer as? UITapGestureRecognizer {
+            if tap.numberOfTouchesRequired == 2 {
+                // Finger undo stays available even when finger drawing is off.
+                return true
+            }
             if tap.numberOfTapsRequired == 2 {
                 // Double-tap recognizer only finishes curves; inert elsewhere.
                 // Accept a finger double-tap too so the curve can always be finished,

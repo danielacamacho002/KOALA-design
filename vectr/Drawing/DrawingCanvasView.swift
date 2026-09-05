@@ -26,6 +26,7 @@ struct DrawingCanvasView: UIViewRepresentable {
     var rectangleVariant: RectangleVariant = .center
     var canvasBackgroundColor: Color = Color(hex: AppearanceSettings.defaultCanvasHex)
     var onCanvasTap: ((CGPoint) -> Void)?
+    var onTwoFingerTap: (() -> Void)?
     var onStrokeSelected: ((VectorStroke?) -> Void)?
     var onDragDrawBegan: ((CGPoint) -> Void)?
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
@@ -150,6 +151,7 @@ struct DrawingCanvasView: UIViewRepresentable {
             uiView.rectangleVariant = rectangleVariant
         }
         uiView.onCanvasTap = onCanvasTap
+        uiView.onTwoFingerTap = onTwoFingerTap
         uiView.onDragDrawBegan = onDragDrawBegan
         uiView.onDragDrawChanged = onDragDrawChanged
         uiView.onDragDrawEnded = onDragDrawEnded

@@ -10,6 +10,7 @@ struct PrintLayoutCanvasView: UIViewRepresentable {
     var printLayoutRevision: Int
     var geometryRevision: Int
     var onCanvasTap: (CGPoint) -> Void
+    var onTwoFingerTap: (() -> Void)?
 
     func makeUIView(context: Context) -> PrintLayoutCanvasUIView {
         let view = PrintLayoutCanvasUIView(document: document)
@@ -18,6 +19,7 @@ struct PrintLayoutCanvasView: UIViewRepresentable {
             let docPoint = document.viewport.viewToDocument(viewPoint)
             onCanvasTap(docPoint)
         }
+        view.onTwoFingerTap = onTwoFingerTap
         return view
     }
 
@@ -34,6 +36,7 @@ struct PrintLayoutCanvasView: UIViewRepresentable {
             let docPoint = document.viewport.viewToDocument(viewPoint)
             onCanvasTap(docPoint)
         }
+        uiView.onTwoFingerTap = onTwoFingerTap
         if !didSwapDocument {
             uiView.reloadAll()
         }
