@@ -15,6 +15,7 @@ struct EditorView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var store = DocumentStore()
     @State private var commandSession = ShapeCommandSession()
+    @State private var curveDraft = CurveDraftSession()
     private let objectSnapEngine = PathSnapEngine.makeDefault()
     @State private var showExportSheet = false
     @State private var pendingShareAfterDismiss = false
@@ -171,7 +172,7 @@ struct EditorView: View {
                     rectangleVariant: store.document.rectangleVariant,
                     canvasBackgroundColor: Color(hex: canvasColorHex),
                     onCanvasTap: handleCanvasTap,
-                    onTwoFingerTap: performUndo,
+                    onTwoFingerTap: handleDesignUndo,
                     onStrokeSelected: { stroke in
                         if let stroke {
                             store.document.selectStrokeConsideringGroups(stroke.id)
@@ -208,6 +209,7 @@ struct EditorView: View {
                         dragDrawStart = nil
                         dragDrawEnd = nil
                     },
+                    curveDraft: curveDraft,
                     onCurveCommitted: commitCurve,
                     onLayoutMetrics: updateCanvasLayoutMetrics
                 )
@@ -412,15 +414,11 @@ struct EditorView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             EditorToolbarView(
                 document: store.document,
-                canUndo: store.document.canUndo,
-                canRedo: store.document.canRedo,
+                canUndo: store.document.canUndo || curveDraft.canUndo,
+                canRedo: curveDraft.canRedo || store.document.canRedo,
                 onBack: handleBack,
-                onUndo: performUndo,
-                onRedo: {
-                    store.document.redo()
-                    store.markDirty()
-                    refreshCanvas()
-                },
+                onUndo: handleDesignUndo,
+                onRedo: handleDesignRedo,
                 onSettings: { showSettings = true },
                 onShare: { showExportSheet = true },
                 onSave: { saveDocumentNow() },
@@ -1187,6 +1185,27 @@ struct EditorView: View {
     }
 
     /// Leave the current tool, hide its panel/handles, and fall back to idle Move.
+    private func handleDesignUndo() {
+        if curveDraft.canUndo {
+            curveDraft.performUndo()
+            return
+        }
+        curveDraft.discardRedo()
+        store.document.undo()
+        store.markDirty()
+        refreshCanvas()
+    }
+
+    private func handleDesignRedo() {
+        if curveDraft.canRedo {
+            curveDraft.performRedo()
+            return
+        }
+        store.document.redo()
+        store.markDirty()
+        refreshCanvas()
+    }
+
     private func dismissActiveTool() {
         endTextEditingIfNeeded()
         commandSession.cancel()
