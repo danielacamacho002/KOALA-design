@@ -315,25 +315,41 @@ struct EditorView: View {
                 }
             }
             .overlay(alignment: .topLeading) {
-                if commandSession.isActive && showCommandPanel {
-                    ToolCommandPanelView(
-                        session: commandSession,
-                        document: store.document,
-                        units: store.document.settings.units,
-                        grid: store.document.grid,
-                        documentSettings: store.document.settings,
-                        snapEnabled: drawingSnapEnabled,
-                        onSubmitPoint: handleCommandPointSubmitted,
-                        onDone: { commitCommandShape(restart: true) },
-                        onCancel: {
-                            updateChromeInsets()
-                            refreshCanvas()
-                        },
-                        onVariantChanged: { startDrawingSessionIfNeeded() },
-                        isTourHighlighted: designOnboarding.currentTarget == .commandPanel
-                    )
-                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                HStack(alignment: .top, spacing: 12) {
+                    if commandSession.isActive && showCommandPanel {
+                        ToolCommandPanelView(
+                            session: commandSession,
+                            document: store.document,
+                            units: store.document.settings.units,
+                            grid: store.document.grid,
+                            documentSettings: store.document.settings,
+                            snapEnabled: drawingSnapEnabled,
+                            onSubmitPoint: handleCommandPointSubmitted,
+                            onDone: { commitCommandShape(restart: true) },
+                            onCancel: {
+                                updateChromeInsets()
+                                refreshCanvas()
+                            },
+                            onVariantChanged: { startDrawingSessionIfNeeded() },
+                            isTourHighlighted: designOnboarding.currentTarget == .commandPanel
+                        )
+                        .transition(.opacity.combined(with: .move(edge: .leading)))
+                    }
+
+                    if designOnboarding.currentStep?.target.boxPlacement == .besideCommandPanel,
+                       let step = designOnboarding.currentStep {
+                        OnboardingHoverBoxView(
+                            step: step,
+                            stepNumber: designOnboarding.stepNumber,
+                            stepCount: designOnboarding.stepCount,
+                            onNext: { designOnboarding.advance() },
+                            onSkipAll: { designOnboarding.skipAll() }
+                        )
+                        .transition(.identity)
+                        .transaction { $0.animation = nil }
+                    }
                 }
+                .padding(.leading, commandSession.isActive && showCommandPanel ? 0 : 162)
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .type && editingTextID == nil {

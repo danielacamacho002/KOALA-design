@@ -54,7 +54,8 @@ struct OnboardingTourOverlay: View {
     var body: some View {
         if controller.isActive,
            let step = controller.currentStep,
-           step.target.boxPlacement != .aboveSnaps {
+           step.target.boxPlacement != .aboveSnaps,
+           step.target.boxPlacement != .besideCommandPanel {
             let origin = followOrigin(for: step)
             OnboardingHoverBoxView(
                 step: step,
@@ -92,6 +93,17 @@ struct OnboardingTourOverlay: View {
         case .trailingPark:
             return EdgeInsets(top: 56, leading: 12, bottom: 0, trailing: 16)
 
+        case .besideCommandPanel:
+            if let panel = anchors[OnboardingTarget.commandPanel.anchorID], overlayFrame.width > 0 {
+                return EdgeInsets(
+                    top: max(8, panel.minY - overlayFrame.minY),
+                    leading: panel.maxX - overlayFrame.minX + margin,
+                    bottom: 0,
+                    trailing: margin
+                )
+            }
+            return EdgeInsets(top: 8, leading: 150 + margin, bottom: 0, trailing: margin)
+
         case .followTarget:
             return followOrigin == nil ? step.padding : EdgeInsets()
         }
@@ -106,18 +118,7 @@ struct OnboardingTourOverlay: View {
         else { return nil }
 
         switch step.target {
-        case .commandPanel:
-            let x = target.maxX - overlayFrame.minX + margin
-            let y = max(8, target.minY - overlayFrame.minY)
-            if x + panelWidth > overlayFrame.width - margin {
-                return CGPoint(
-                    x: margin,
-                    y: max(8, target.maxY - overlayFrame.minY + 8)
-                )
-            }
-            return CGPoint(x: x, y: y)
-
-        case .tool, .modes, .paperGrid, .margins, .printTool, .export, .designChip:
+        case .modes, .paperGrid, .margins, .printTool, .export, .designChip:
             let x = clampedLeading(centeringOn: target)
             let y = max(8, target.maxY - overlayFrame.minY + 8)
             return CGPoint(x: x, y: y)
@@ -168,6 +169,7 @@ extension View {
             switch step.target.boxPlacement {
             case .aboveSnaps: return .bottomLeading
             case .trailingPark: return .topTrailing
+            case .besideCommandPanel: return .topLeading
             case .followTarget:
                 let hasAnchor = anchors[step.target.anchorID] != nil && overlayFrame.width > 0
                 return step.target == .none || !hasAnchor ? step.alignment : .topLeading

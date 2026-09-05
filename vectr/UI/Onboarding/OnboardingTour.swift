@@ -50,6 +50,7 @@ enum OnboardingTarget: Equatable {
         switch self {
         case .snaps: return .aboveSnaps
         case .layers, .share, .save, .printLayout: return .trailingPark
+        case .tool, .commandPanel: return .besideCommandPanel
         default: return .followTarget
         }
     }
@@ -59,6 +60,7 @@ enum OnboardingBoxPlacement: Equatable {
     case followTarget
     case aboveSnaps
     case trailingPark
+    case besideCommandPanel
 }
 
 /// A single instructional hover-box step.
