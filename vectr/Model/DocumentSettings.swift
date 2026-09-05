@@ -7,15 +7,25 @@ import CoreGraphics
 import Foundation
 
 struct DocumentSettings: Codable, Equatable {
+    /// Default canvas dimensions applied to brand-new projects (24" × 18").
+    static let defaultCanvasWidth: CGFloat = UnitConversion.documentPoints(from: 24, unit: .inches)
+    static let defaultCanvasHeight: CGFloat = UnitConversion.documentPoints(from: 18, unit: .inches)
+
     var units: MeasurementUnit = .inches
     /// Default corner fillet for new rectangles and fillet tool.
     var defaultCornerRadius: CGFloat = 0
-    /// Absolute background canvas extent in document points.
-    /// This is fixed by active unit (not user-adjustable from Settings UI).
-    var canvasExtent: CGFloat = UnitConversion.documentPoints(from: 1_000, unit: .inches)
+    /// Absolute canvas width in document points (the hard drawable boundary).
+    var canvasWidth: CGFloat = defaultCanvasWidth
+    /// Absolute canvas height in document points (the hard drawable boundary).
+    var canvasHeight: CGFloat = defaultCanvasHeight
     var defaultGridSpacing: CGFloat = 72
     /// When false, finger taps/drags won't create drawing input; Apple Pencil still works.
     var allowsFingerDrawing: Bool = false
+
+    /// Canvas dimensions as a size in document points.
+    var canvasSize: CGSize {
+        CGSize(width: canvasWidth, height: canvasHeight)
+    }
 
     var defaultGridSpacingInUnits: CGFloat {
         get { units.fromDocumentUnits(defaultGridSpacing) }
@@ -25,6 +35,8 @@ struct DocumentSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case units
         case defaultCornerRadius
+        case canvasWidth
+        case canvasHeight
         case canvasExtent
         case defaultGridSpacing
         case allowsFingerDrawing
@@ -36,18 +48,25 @@ struct DocumentSettings: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         units = try container.decodeIfPresent(MeasurementUnit.self, forKey: .units) ?? .inches
         defaultCornerRadius = try container.decodeIfPresent(CGFloat.self, forKey: .defaultCornerRadius) ?? 0
-        canvasExtent = try container.decodeIfPresent(CGFloat.self, forKey: .canvasExtent)
-            ?? Self.maximumCanvasExtent(for: units)
+        if let width = try container.decodeIfPresent(CGFloat.self, forKey: .canvasWidth),
+           let height = try container.decodeIfPresent(CGFloat.self, forKey: .canvasHeight) {
+            canvasWidth = width
+            canvasHeight = height
+        } else if let legacyExtent = try container.decodeIfPresent(CGFloat.self, forKey: .canvasExtent) {
+            // Older projects stored a single square extent.
+            canvasWidth = legacyExtent
+            canvasHeight = legacyExtent
+        }
         defaultGridSpacing = try container.decodeIfPresent(CGFloat.self, forKey: .defaultGridSpacing) ?? 72
         allowsFingerDrawing = try container.decodeIfPresent(Bool.self, forKey: .allowsFingerDrawing) ?? false
-        syncCanvasExtentToMaximum()
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(units, forKey: .units)
         try container.encode(defaultCornerRadius, forKey: .defaultCornerRadius)
-        try container.encode(canvasExtent, forKey: .canvasExtent)
+        try container.encode(canvasWidth, forKey: .canvasWidth)
+        try container.encode(canvasHeight, forKey: .canvasHeight)
         try container.encode(defaultGridSpacing, forKey: .defaultGridSpacing)
         try container.encode(allowsFingerDrawing, forKey: .allowsFingerDrawing)
     }
@@ -70,9 +89,5 @@ struct DocumentSettings: Codable, Equatable {
             from: maximumCanvasExtentInSelectedUnits(for: unit),
             unit: unit
         )
-    }
-
-    mutating func syncCanvasExtentToMaximum() {
-        canvasExtent = Self.maximumCanvasExtent(for: units)
     }
 }

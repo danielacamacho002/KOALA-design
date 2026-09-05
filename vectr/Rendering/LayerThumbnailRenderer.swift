@@ -14,8 +14,8 @@ enum LayerThumbnailRenderer {
         layerID: UUID,
         size: CGSize
     ) -> UIImage? {
-        let strokes = document.strokes(for: layerID)
-        let texts = document.textElements.filter { $0.layerID == layerID }
+        let strokes = document.strokes(for: layerID).filter { !$0.isHiddenFromCanvas }
+        let texts = document.textElements.filter { $0.layerID == layerID && !$0.isHidden }
 
         var points = strokes.flatMap { ShapeGeometry.renderPoints(for: $0) }
         for element in texts {
@@ -43,8 +43,12 @@ enum LayerThumbnailRenderer {
             let context = ctx.cgContext
 
             for stroke in strokes {
-                let path = StrokeRenderer.path(for: stroke, viewport: viewport).cgPath
-                context.addPath(path)
+                if stroke.isClosed, !stroke.isConstruction {
+                    context.addPath(StrokeRenderer.path(for: stroke, viewport: viewport).cgPath)
+                    context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
+                    context.fillPath(using: stroke.cutoutPoints.isEmpty ? .winding : .evenOdd)
+                }
+                context.addPath(StrokeRenderer.outlinePath(for: stroke, viewport: viewport).cgPath)
                 context.setStrokeColor(thumbnailStrokeColor(for: stroke))
                 // Clamp so hairlines stay visible at thumbnail scale.
                 context.setLineWidth(max(0.75, viewport.documentToView(distance: stroke.strokeWidth)))
@@ -53,13 +57,7 @@ enum LayerThumbnailRenderer {
                 if stroke.isConstruction {
                     context.setLineDash(phase: 0, lengths: [3, 2])
                 }
-                if stroke.isClosed, !stroke.isConstruction {
-                    context.setFillColor(UIColor.systemGray.withAlphaComponent(0.25).cgColor)
-                    let fillMode: CGPathDrawingMode = stroke.cutoutPoints.isEmpty ? .fillStroke : .eoFillStroke
-                    context.drawPath(using: fillMode)
-                } else {
-                    context.strokePath()
-                }
+                context.strokePath()
                 context.setLineDash(phase: 0, lengths: [])
             }
 
@@ -71,8 +69,16 @@ enum LayerThumbnailRenderer {
                 var transform = documentToView
                 guard let viewPath = TextOutline.path(for: element).copy(using: &transform) else { continue }
                 context.addPath(viewPath)
-                context.setFillColor(element.cgColor)
-                context.fillPath()
+                if element.isOutline {
+                    context.setStrokeColor(element.strokeCGColor)
+                    context.setLineWidth(max(0.5, viewport.documentToView(distance: element.strokeWidth)))
+                    context.setLineCap(.round)
+                    context.setLineJoin(.round)
+                    context.strokePath()
+                } else {
+                    context.setFillColor(element.cgColor)
+                    context.fillPath()
+                }
             }
         }
     }

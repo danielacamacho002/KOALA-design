@@ -36,6 +36,9 @@ enum FontRef: Codable, Equatable {
 /// size, color, rotation) and is converted to vector glyph outlines only at
 /// export time.
 struct TextElement: Identifiable, Codable, Equatable {
+    /// Default stroke weight (document units) for a text element's outline.
+    static let defaultStrokeWidth: CGFloat = 1.5
+
     var id: UUID = UUID()
     var layerID: UUID
     var text: String
@@ -44,9 +47,18 @@ struct TextElement: Identifiable, Codable, Equatable {
     var fontRef: FontRef
     /// Font size in document units.
     var fontSize: CGFloat
+    /// Fill color for the glyphs (used when `isOutline` is `false`).
     var color: CodableColor
+    /// Stroke color for the glyph outlines (used when `isOutline` is `true`).
+    var strokeColor: CodableColor = CodableColor(.primary)
+    /// Stroke weight in document units, applied when rendering as an outline.
+    var strokeWidth: CGFloat = TextElement.defaultStrokeWidth
+    /// When `true`, glyphs render hollow (stroke only, no fill).
+    var isOutline: Bool = false
     /// CCW rotation in radians around the block center.
     var rotation: CGFloat = 0
+    /// When `true`, omitted from canvas, hit-testing, and export.
+    var isHidden: Bool = false
 
     init(
         id: UUID = UUID(),
@@ -56,7 +68,11 @@ struct TextElement: Identifiable, Codable, Equatable {
         fontRef: FontRef = .default,
         fontSize: CGFloat = 24,
         color: CodableColor = CodableColor(.primary),
-        rotation: CGFloat = 0
+        strokeColor: CodableColor = CodableColor(.primary),
+        strokeWidth: CGFloat = TextElement.defaultStrokeWidth,
+        isOutline: Bool = false,
+        rotation: CGFloat = 0,
+        isHidden: Bool = false
     ) {
         self.id = id
         self.layerID = layerID
@@ -65,11 +81,44 @@ struct TextElement: Identifiable, Codable, Equatable {
         self.fontRef = fontRef
         self.fontSize = fontSize
         self.color = color
+        self.strokeColor = strokeColor
+        self.strokeWidth = strokeWidth
+        self.isOutline = isOutline
         self.rotation = rotation
+        self.isHidden = isHidden
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case id, layerID, text, position, fontRef, fontSize, color
+        case strokeColor, strokeWidth, isOutline, rotation, isHidden
+    }
+
+    // Custom decoding so documents saved before stroke/outline support (which
+    // lack these keys) still load, falling back to sensible defaults.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        layerID = try container.decode(UUID.self, forKey: .layerID)
+        text = try container.decode(String.self, forKey: .text)
+        position = try container.decode(CGPoint.self, forKey: .position)
+        fontRef = try container.decode(FontRef.self, forKey: .fontRef)
+        fontSize = try container.decode(CGFloat.self, forKey: .fontSize)
+        color = try container.decode(CodableColor.self, forKey: .color)
+        strokeColor = try container.decodeIfPresent(CodableColor.self, forKey: .strokeColor) ?? CodableColor(.primary)
+        strokeWidth = try container.decodeIfPresent(CGFloat.self, forKey: .strokeWidth) ?? TextElement.defaultStrokeWidth
+        isOutline = try container.decodeIfPresent(Bool.self, forKey: .isOutline) ?? false
+        rotation = try container.decodeIfPresent(CGFloat.self, forKey: .rotation) ?? 0
+        isHidden = try container.decodeIfPresent(Bool.self, forKey: .isHidden) ?? false
+    }
+
+    /// Fill color as a `CGColor` (used when `isOutline` is `false`).
     var cgColor: CGColor {
         color.platformCGColor
+    }
+
+    /// Stroke color as a `CGColor` (used when `isOutline` is `true`).
+    var strokeCGColor: CGColor {
+        strokeColor.platformCGColor
     }
 }
 
@@ -167,7 +216,10 @@ extension VectrDocument {
     /// Selects the top-most selectable (visible, unlocked layer) text element hit by `documentPoint`.
     @discardableResult
     func selectTextElement(at documentPoint: CGPoint) -> TextElement? {
-        let hit = selectableTextElements().reversed().first { $0.contains(documentPoint) }
+        if isHitOnInactiveLayer(near: documentPoint, threshold: 0) {
+            return nil
+        }
+        let hit = textElement(at: documentPoint)
         if let hit {
             selectTextConsideringGroups(hit.id)
         } else {
@@ -177,16 +229,24 @@ extension VectrDocument {
     }
 
     /// The top-most selectable text element hit by `documentPoint`, without changing selection.
+    /// Returns nil when another layer's text is in front, so tools cannot punch through.
     func textElement(at documentPoint: CGPoint) -> TextElement? {
-        selectableTextElements().reversed().first { $0.contains(documentPoint) }
+        guard let hit = occupyingTextElements().reversed().first(where: { $0.contains(documentPoint) }) else {
+            return nil
+        }
+        return isSelectableText(hit) ? hit : nil
     }
 
     /// Unified selection: prefers a hit text element, otherwise falls back to
     /// stroke hit testing. Text and strokes share a single active selection so
     /// the standard manipulation tools (move/scale/delete) treat text like a shape.
     /// Selecting any member of a group expands to the whole group.
+    /// A tap on another layer's item is ignored (does not select or clear).
     @discardableResult
     func selectElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
+        if isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
+            return .none
+        }
         if let text = textElement(at: documentPoint) {
             selectTextConsideringGroups(text.id)
             return .text(text.id)

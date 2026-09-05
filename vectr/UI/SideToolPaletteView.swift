@@ -7,7 +7,7 @@ import SwiftUI
 
 struct SideToolPaletteView: View {
     @Bindable var document: VectrDocument
-    var onToolSelected: (ToolCategory) -> Void
+    var onToolSelected: (ToolCategory?) -> Void
     var highlightedTarget: OnboardingTarget? = nil
 
     private let iconSize: CGFloat = 34
@@ -36,16 +36,34 @@ struct SideToolPaletteView: View {
         let isHighlighted = highlightedTarget == .tool(category)
         return StudioIconButton(
             systemImage: category.systemImage,
-            isActive: document.activeCategory == category,
+            isActive: isToolHighlighted(category),
             size: iconSize,
             inactiveColor: .white
         ) {
-            document.selectTool(category)
-            onToolSelected(category)
+            if category == .move {
+                document.engageMoveTool()
+                onToolSelected(.move)
+            } else if document.activeCategory == category {
+                document.clearActiveTool()
+                onToolSelected(.move)
+            } else {
+                document.selectTool(category)
+                onToolSelected(category)
+            }
         }
         .accessibilityLabel(category.label)
         .onboardingAnchor(.tool(category))
         .onboardingHighlight(isHighlighted)
+    }
+
+    /// Move stays visually idle as the default tool until the user taps it
+    /// (or starts using it). Other tools highlight whenever they are active.
+    private func isToolHighlighted(_ category: ToolCategory) -> Bool {
+        guard document.activeCategory == category else { return false }
+        if category == .move {
+            return document.isMoveToolHighlighted
+        }
+        return true
     }
 }
 

@@ -15,11 +15,13 @@ struct EditorToolbarView: View {
     var onSettings: () -> Void
     var onShare: () -> Void
     var onSave: () -> Void
-    var onToolSelected: (ToolCategory) -> Void
+    var onToolSelected: (ToolCategory?) -> Void
     var onSwitchToPrintLayout: (() -> Void)?
     var highlightedTarget: OnboardingTarget? = nil
+    var onVisibilityToggled: () -> Void
 
-    private let toolbarHeight: CGFloat = 48
+    static let height: CGFloat = 48
+    private var toolbarHeight: CGFloat { Self.height }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -45,6 +47,15 @@ struct EditorToolbarView: View {
             HStack(spacing: 4) {
                 toolbarIconButton("arrow.uturn.backward", disabled: !canUndo, action: onUndo)
                 toolbarIconButton("arrow.uturn.forward", disabled: !canRedo, action: onRedo)
+                toolbarIconButton(
+                    document.visibilityToolbarImage,
+                    disabled: !document.canToggleElementVisibility,
+                    action: {
+                        document.toggleSelectedElementsHidden()
+                        onVisibilityToggled()
+                    },
+                    accessibilityLabel: document.visibilityToolbarAccessibilityLabel
+                )
             }
 
             ToolPaletteSeparator()

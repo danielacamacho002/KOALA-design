@@ -55,12 +55,14 @@ enum TiledPDFExporter {
     ) {
         for stroke in document.printLayoutStrokes() {
             let transform = document.effectivePrintTransform(for: stroke.id)
-            let path = StrokeRenderer.path(
-                for: stroke,
-                viewport: viewport,
-                pointTransform: transform
-            ).cgPath
-            context.addPath(path)
+            context.saveGState()
+            context.setAlpha(document.opacity(forLayerID: stroke.layerID))
+            if stroke.isClosed, !stroke.isConstruction {
+                context.addPath(StrokeRenderer.path(for: stroke, viewport: viewport, pointTransform: transform).cgPath)
+                context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
+                context.fillPath(using: stroke.cutoutPoints.isEmpty ? .winding : .evenOdd)
+            }
+            context.addPath(StrokeRenderer.outlinePath(for: stroke, viewport: viewport, pointTransform: transform).cgPath)
             context.setStrokeColor(strokeColor(for: stroke))
             context.setLineWidth(stroke.strokeWidth)
             context.setLineCap(.round)
@@ -68,14 +70,9 @@ enum TiledPDFExporter {
             if stroke.isConstruction {
                 context.setLineDash(phase: 0, lengths: [10, 6])
             }
-            if stroke.isClosed, !stroke.isConstruction {
-                context.setFillColor(UIColor.systemGray.withAlphaComponent(0.25).cgColor)
-                let fillMode: CGPathDrawingMode = stroke.cutoutPoints.isEmpty ? .fillStroke : .eoFillStroke
-                context.drawPath(using: fillMode)
-            } else {
-                context.strokePath()
-            }
+            context.strokePath()
             context.setLineDash(phase: 0, lengths: [])
+            context.restoreGState()
         }
     }
 
@@ -89,9 +86,20 @@ enum TiledPDFExporter {
                 transform: document.effectivePrintTransform(for: element.id)
             )
             guard let path = TextOutline.path(for: element).copy(using: &transform) else { continue }
+            context.saveGState()
+            context.setAlpha(document.opacity(forLayerID: element.layerID))
             context.addPath(path)
-            context.setFillColor(element.cgColor)
-            context.fillPath()
+            if element.isOutline {
+                context.setStrokeColor(element.strokeCGColor)
+                context.setLineWidth(element.strokeWidth)
+                context.setLineCap(.round)
+                context.setLineJoin(.round)
+                context.strokePath()
+            } else {
+                context.setFillColor(element.cgColor)
+                context.fillPath()
+            }
+            context.restoreGState()
         }
     }
 

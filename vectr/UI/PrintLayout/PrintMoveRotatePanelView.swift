@@ -5,12 +5,13 @@
 
 import SwiftUI
 
-/// Command panel shown when an element is selected in Print Layout. Mirrors the
-/// design-mode Rotate panel: absolute-degree input where 0 is the original
-/// drawn angle, a reset, and an opt-in rotate mode that reveals the drag handle.
+/// Command panel shown when an element is selected in Print Layout. Includes
+/// optional axis-locked move, absolute-degree rotate, an opt-in rotate handle,
+/// and flip.
 struct PrintMoveRotatePanelView: View {
     @Bindable var document: VectrDocument
     @Binding var rotateModeActive: Bool
+    @Binding var axisLockEnabled: Bool
     var onChanged: () -> Void
     var onClose: () -> Void
 
@@ -28,10 +29,27 @@ struct PrintMoveRotatePanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                ToolPanelHeader("Rotate")
+                ToolPanelHeader("Move")
                 Spacer()
                 ToolPanelCancelButton { onClose() }
             }
+
+            Text("Drag the selection to reposition it. Turn on axis lock to constrain movement to X or Y.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ToolPanelLabelButton(
+                title: axisLockEnabled ? "Axis locked" : "Lock to axis",
+                prominent: axisLockEnabled,
+                fullWidth: true
+            ) {
+                axisLockEnabled.toggle()
+            }
+
+            Divider()
+
+            ToolPanelSectionLabel("Rotate")
 
             Text("0° is the original drawn angle. Enter a degree or tap Rotate to drag the handle.")
                 .font(.system(size: 10))

@@ -36,6 +36,12 @@ enum IntersectionAnchorEngine {
             for secondIndex in strokes.indices where secondIndex > firstIndex {
                 let secondStroke = strokes[secondIndex]
                 guard !secondStroke.isConstruction else { continue }
+                guard firstStroke.layerID == secondStroke.layerID else { continue }
+                // Open lines are reference geometry (centerlines on the x/y axis,
+                // construction-style guides drawn with the line tool). Crossing them
+                // must not stamp extra vertices into a closed shape. Only two closed
+                // shapes may split each other at their intersections.
+                guard firstStroke.isClosed, secondStroke.isClosed else { continue }
 
                 if let candidateIDs,
                    !candidateIDs.contains(firstStroke.id),
@@ -152,15 +158,40 @@ enum IntersectionAnchorEngine {
             cornerRadius: 0,
             isConstruction: stroke.isConstruction,
             shapeType: normalizedShapeType,
-            cutoutPoints: stroke.cutoutPoints
+            cutoutPoints: stroke.cutoutPoints,
+            openCutoutIndices: stroke.openCutoutIndices,
+            fillOpacity: stroke.fillOpacity
         )
     }
 
     /// Open lines/polylines are never subdivided — repositioning a line should never carve
-    /// extra anchors into it. Closed shapes (rectangles, closed polygons, circles, …) still
-    /// gain anchors where other geometry crosses them.
+    /// extra anchors into it. Parametric shapes (circles, ellipses, arcs) are also left
+    /// untouched: a circle/ellipse must always keep exactly its 4 cardinal quadrant anchors and
+    /// an arc must always keep its default 2 / 3 / 4 anchors (start, end, and any cardinals
+    /// the sweep crosses). The only way to add anchors to any of these is through the Add Anchor tool.
+    ///
+    /// Closed polygons/rectangles still gain anchors where another *same-layer* closed
+    /// shape crosses them. Layers are independent: dragging a shape over geometry on
+    /// another layer must not mutate either outline.
+    ///
+    /// Live or baked fillets are also left untouched: rebuilding as a sharp polyline
+    /// would drop rounded corners (the same failure Duplicate used to hit when the
+    /// offset copy overlapped the original and a later move reconciled intersections).
     private static func acceptsInsertedAnchors(_ stroke: VectorStroke) -> Bool {
-        !(stroke.shapeType == .polyline && !stroke.isClosed)
+        if stroke.hasAnyCornerFillets || stroke.hasBakedSmoothCorners {
+            return false
+        }
+        switch stroke.shapeType {
+        case .circle, .ellipse, .arc, .curve:
+            // Curves carry editable Bezier handles that a flat polyline rebuild would
+            // destroy (and would resample the smooth shape into dense line segments),
+            // so never subdivide them here — anchors are added via the Add Anchor tool.
+            return false
+        case .polyline:
+            return stroke.isClosed
+        default:
+            return true
+        }
     }
 
     private static func segmentCount(for stroke: VectorStroke, points: [CGPoint]) -> Int {

@@ -218,7 +218,7 @@ enum ShapeGeometry {
                 )
             case .arc:
                 guard controlPoints.count >= 3 else { return nil }
-                return VectorStroke(
+                let draft = VectorStroke(
                     layerID: layerID,
                     points: points,
                     strokeWidth: strokeWidth,
@@ -226,6 +226,7 @@ enum ShapeGeometry {
                     isClosed: false,
                     shapeType: .arc
                 )
+                return withCompactedCircularAnchors(draft)
             }
         case .circle:
             switch circleVariant {
@@ -276,7 +277,10 @@ enum ShapeGeometry {
                     rotation: stroke.resolvedShapeRotation
                 )
             }
-            return stroke.points.count == 4 ? stroke.points : handlePointsForLegacyCircle(stroke.points)
+            if stroke.points.count >= 8 {
+                return handlePointsForLegacyCircle(stroke.points)
+            }
+            return stroke.points
         case .ellipse:
             if stroke.points.count == 4, let ellipse = ellipseFromCardinalPoints(stroke.points) {
                 return orientedCardinalPoints(
@@ -287,11 +291,58 @@ enum ShapeGeometry {
                 )
             }
             return stroke.points
-        case .rectangle:
+        case .arc:
+            if stroke.points.count >= 8 {
+                return arcAnchorPoints(stroke.points) ?? stroke.points
+            }
             return stroke.points
         default:
-            return stroke.points
+            let compacted = withCompactedCircularAnchors(stroke)
+            if compacted.shapeType == .circle
+                || compacted.shapeType == .ellipse
+                || compacted.shapeType == .arc {
+                return handlePoints(for: compacted)
+            }
+            return compacted.points
         }
+    }
+
+    /// Moves one stored anchor. Circles and ellipses stay parametric (radius /
+    /// axis resize). Adjacent Bézier handles are cleared on leftover curves so
+    /// joined circular segments do not implode from stale tangent offsets.
+    static func applyingMovedAnchor(
+        _ stroke: VectorStroke,
+        at index: Int,
+        to point: CGPoint
+    ) -> VectorStroke {
+        guard stroke.points.indices.contains(index) else { return stroke }
+        switch stroke.shapeType {
+        case .circle:
+            var updated = stroke
+            updated.points = updateCircleHandle(at: index, to: point, stroke: stroke)
+            return updated
+        case .ellipse:
+            var updated = stroke
+            updated.points = updateEllipseHandle(at: index, to: point, stroke: stroke)
+            return updated
+        default:
+            break
+        }
+        var updated = stroke
+        updated.points[index] = point
+        guard var handles = updated.curveHandles, handles.count == updated.points.count else {
+            return updated
+        }
+        let count = updated.points.count
+        handles[index] = CurveHandle()
+        if updated.isClosed || index > 0 {
+            handles[(index - 1 + count) % count].outOffset = .zero
+        }
+        if updated.isClosed || index < count - 1 {
+            handles[(index + 1) % count].inOffset = .zero
+        }
+        updated.curveHandles = handles
+        return updated
     }
 
     static func filletCornerIndices(for stroke: VectorStroke) -> [Int] {
@@ -315,6 +366,9 @@ enum ShapeGeometry {
             return circleFromCardinalPoints(stroke.points)?.center
         case .ellipse:
             return ellipseFromCardinalPoints(stroke.points)?.center
+        case .arc:
+            // Geometric circle center — not the bbox midpoint, which drifts for partial arcs.
+            return arcCircle(for: stroke)?.center
         case .rectangle:
             if stroke.points.count == 4 {
                 return CGPoint(
@@ -494,12 +548,31 @@ enum ShapeGeometry {
             }
             return stroke.points
         case .arc:
+            if let first = stroke.points.first,
+               let last = stroke.points.last,
+               let circle = arcCircle(for: stroke)
+                ?? (stroke.points.count >= 3
+                    ? arcCenter(start: first, end: last, through: stroke.points[1])
+                    : nil),
+               let sweep = signedCircularSweep(
+                    of: stroke.points,
+                    around: circle.center,
+                    closed: stroke.isClosed
+               ),
+               abs(sweep) > 0.0001 {
+                return arcPoints(
+                    center: circle.center,
+                    start: first,
+                    end: last,
+                    sweep: sweep
+                )
+            }
             return stroke.points
         case .curve:
             if let handles = stroke.curveHandles, handles.count == stroke.points.count {
-                return curvePoints(anchors: stroke.points, handles: handles)
+                return curvePoints(anchors: stroke.points, handles: handles, closed: stroke.isClosed)
             }
-            return smoothCurvePoints(anchors: stroke.points)
+            return smoothCurvePoints(anchors: stroke.points, closed: stroke.isClosed)
         default:
             if let smooth = stroke.smoothCornerIndices, !smooth.isEmpty {
                 return smoothedContourPoints(
@@ -573,6 +646,17 @@ enum ShapeGeometry {
                 .reduce(0, +) / CGFloat(stroke.points.count)
             guard radius > 0.001 else { return nil }
             return (center, radius)
+        case .curve:
+            guard stroke.points.count <= 4,
+                  let handles = stroke.curveHandles,
+                  handles.count == stroke.points.count else { return nil }
+            let samples = renderPoints(for: stroke)
+            guard samples.count >= 8, let circle = fitCircle(from: samples) else { return nil }
+            let tolerance = max(0.75, circle.radius * 0.025)
+            guard samples.allSatisfy({
+                abs(hypot($0.x - circle.center.x, $0.y - circle.center.y) - circle.radius) <= tolerance
+            }) else { return nil }
+            return circle
         default:
             return nil
         }
@@ -616,7 +700,7 @@ enum ShapeGeometry {
         return circleCardinalPoints(center: circle.center, radius: circle.radius)
     }
 
-    private static func fitCircle(from points: [CGPoint]) -> (center: CGPoint, radius: CGFloat)? {
+    static func fitCircle(from points: [CGPoint]) -> (center: CGPoint, radius: CGFloat)? {
         guard points.count >= 8 else { return nil }
         let center = CGPoint(
             x: points.map(\.x).reduce(0, +) / CGFloat(points.count),
@@ -778,17 +862,25 @@ enum ShapeGeometry {
     /// The curvature at each anchor is derived from the direction (slope) of the
     /// adjacent drawn lines: gentle turns stay round and flowing, sharp turns
     /// tighten toward a crisp corner.
-    static func smoothCurvePoints(anchors: [CGPoint], samplesPerSegment: Int = 24) -> [CGPoint] {
+    static func smoothCurvePoints(anchors: [CGPoint], closed: Bool = false, samplesPerSegment: Int = 24) -> [CGPoint] {
         guard anchors.count >= 3 else { return anchors }
 
         var result: [CGPoint] = []
         let count = anchors.count
+        let segmentCount = closed ? count : count - 1
 
-        for index in 0..<(count - 1) {
+        for index in 0..<segmentCount {
             let p1 = anchors[index]
-            let p2 = anchors[index + 1]
-            let p0 = index > 0 ? anchors[index - 1] : p1
-            let p3 = index < count - 2 ? anchors[index + 2] : p2
+            let p2 = anchors[(index + 1) % count]
+            let p0: CGPoint
+            let p3: CGPoint
+            if closed {
+                p0 = anchors[(index - 1 + count) % count]
+                p3 = anchors[(index + 2) % count]
+            } else {
+                p0 = index > 0 ? anchors[index - 1] : p1
+                p3 = index < count - 2 ? anchors[index + 2] : p2
+            }
 
             let tension1 = curveTension(prev: p0, cur: p1, next: p2)
             let tension2 = curveTension(prev: p1, cur: p2, next: p3)
@@ -818,23 +910,26 @@ enum ShapeGeometry {
     static func curvePoints(
         anchors: [CGPoint],
         handles: [CurveHandle],
+        closed: Bool = false,
         samplesPerSegment: Int = 24
     ) -> [CGPoint] {
         guard anchors.count >= 2, handles.count == anchors.count else { return anchors }
 
         var result: [CGPoint] = []
         let count = anchors.count
+        let segmentCount = closed ? count : count - 1
 
-        for index in 0..<(count - 1) {
+        for index in 0..<segmentCount {
+            let nextIndex = (index + 1) % count
             let p1 = anchors[index]
-            let p2 = anchors[index + 1]
+            let p2 = anchors[nextIndex]
             let control1 = CGPoint(
                 x: p1.x + handles[index].outOffset.x,
                 y: p1.y + handles[index].outOffset.y
             )
             let control2 = CGPoint(
-                x: p2.x + handles[index + 1].inOffset.x,
-                y: p2.y + handles[index + 1].inOffset.y
+                x: p2.x + handles[nextIndex].inOffset.x,
+                y: p2.y + handles[nextIndex].inOffset.y
             )
 
             let firstStep = index == 0 ? 0 : 1
@@ -849,19 +944,28 @@ enum ShapeGeometry {
 
     /// Derives editable tangent handles from the auto-computed cardinal spline so a
     /// freshly committed curve keeps its current look but becomes reshapeable.
-    static func defaultCurveHandles(anchors: [CGPoint]) -> [CurveHandle] {
+    static func defaultCurveHandles(anchors: [CGPoint], closed: Bool = false) -> [CurveHandle] {
         let count = anchors.count
         guard count >= 2 else {
             return anchors.map { _ in CurveHandle() }
         }
 
         var handles = anchors.map { _ in CurveHandle() }
+        let segmentCount = closed ? count : count - 1
 
-        for index in 0..<(count - 1) {
+        for index in 0..<segmentCount {
+            let nextIndex = (index + 1) % count
             let p1 = anchors[index]
-            let p2 = anchors[index + 1]
-            let p0 = index > 0 ? anchors[index - 1] : p1
-            let p3 = index < count - 2 ? anchors[index + 2] : p2
+            let p2 = anchors[nextIndex]
+            let p0: CGPoint
+            let p3: CGPoint
+            if closed {
+                p0 = anchors[(index - 1 + count) % count]
+                p3 = anchors[(index + 2) % count]
+            } else {
+                p0 = index > 0 ? anchors[index - 1] : p1
+                p3 = index < count - 2 ? anchors[index + 2] : p2
+            }
 
             let tension1 = curveTension(prev: p0, cur: p1, next: p2)
             let tension2 = curveTension(prev: p1, cur: p2, next: p3)
@@ -872,7 +976,7 @@ enum ShapeGeometry {
                 y: (p2.y - p0.y) * tension1 / 6
             )
             // Incoming handle at p2 for this segment.
-            handles[index + 1].inOffset = CGPoint(
+            handles[nextIndex].inOffset = CGPoint(
                 x: -(p3.x - p1.x) * tension2 / 6,
                 y: -(p3.y - p1.y) * tension2 / 6
             )
@@ -897,7 +1001,7 @@ enum ShapeGeometry {
         return 1 - deflection / .pi
     }
 
-    private static func cubicBezierPoint(
+    static func cubicBezierPoint(
         _ p0: CGPoint,
         _ p1: CGPoint,
         _ p2: CGPoint,
@@ -987,69 +1091,353 @@ enum ShapeGeometry {
         }
     }
 
+    /// What stays put when a rectangle dimension changes. `.center` grows both sides
+    /// equally; `.nearEdge` holds the side at the rectangle's local origin; `.farEdge`
+    /// holds the opposite side.
+    enum DimensionAnchor {
+        case center
+        case nearEdge
+        case farEdge
+    }
+
+    /// A rectangle edge in the shape's local frame; raw values match the pill ids
+    /// emitted by `semanticDimensions`.
+    enum RectangleEdge: String {
+        case top = "width-top"
+        case bottom = "width-bottom"
+        case left = "height-left"
+        case right = "height-right"
+    }
+
+    /// Circles, ellipses, rectangles, and 4-point quads show every dimension on select.
+    /// Multi-segment polylines and arcs reveal one edge at a time.
+    static func showsDimensionsAutomatically(_ stroke: VectorStroke) -> Bool {
+        switch stroke.shapeType {
+        case .circle, .ellipse, .rectangle:
+            return true
+        default:
+            return isEditableQuad(stroke)
+        }
+    }
+
+    /// Nearest per-segment dimension on a complex stroke, using the same edges
+    /// `semanticDimensions` emits so tap targets match visible labels.
+    static func nearestSegmentDimension(
+        on stroke: VectorStroke,
+        to point: CGPoint,
+        threshold: CGFloat
+    ) -> (dimension: SemanticDimension, distance: CGFloat)? {
+        let dims = semanticDimensions(for: stroke)
+        var best: (SemanticDimension, CGFloat)?
+        for dim in dims {
+            guard case .segmentLength(let index) = dim.kind else { continue }
+            let points = stroke.points
+            guard points.indices.contains(index) else { continue }
+            let start = points[index]
+            let end = points[(index + 1) % points.count]
+            let distance = StrokeEditor.projectPointOnSegment(
+                point: point,
+                start: start,
+                end: end
+            ).distance
+            if distance < threshold, best == nil || distance < best!.1 {
+                best = (dim, distance)
+            }
+        }
+        return best.map { (dimension: $0.0, distance: $0.1) }
+    }
+
+    /// Whether the stroke gets the paired quad dimension treatment: a true rectangle,
+    /// or a closed four-corner polyline such as a trapezoid made by edge edits.
+    static func isEditableQuad(_ stroke: VectorStroke) -> Bool {
+        guard stroke.points.count == 4 else { return false }
+        switch stroke.shapeType {
+        case .rectangle:
+            return true
+        case .polyline:
+            return stroke.isClosed && (stroke.curveHandles?.isEmpty ?? true)
+        default:
+            return false
+        }
+    }
+
+    /// Resizes a single edge about its own midpoint along its own direction, leaving
+    /// the opposite edge exactly where it is. Used when the opposite edge is pinned so
+    /// the two can differ; a rectangle is demoted to a closed polyline once its
+    /// opposite edges stop matching.
+    static func applyEdgeLength(_ edge: RectangleEdge, newValue: CGFloat, to stroke: VectorStroke) -> VectorStroke? {
+        guard isEditableQuad(stroke) else { return nil }
+        let half = max(0.001, newValue) / 2
+        var p = stroke.points
+
+        let (startIndex, endIndex): (Int, Int)
+        switch edge {
+        case .top: (startIndex, endIndex) = (0, 1)
+        case .bottom: (startIndex, endIndex) = (3, 2)
+        case .left: (startIndex, endIndex) = (0, 3)
+        case .right: (startIndex, endIndex) = (1, 2)
+        }
+        let vector = CGPoint(x: p[endIndex].x - p[startIndex].x, y: p[endIndex].y - p[startIndex].y)
+        let length = hypot(vector.x, vector.y)
+        guard length > 0.001 else { return nil }
+        let dir = CGPoint(x: vector.x / length, y: vector.y / length)
+        let m = midpoint(p[startIndex], p[endIndex])
+        p[startIndex] = CGPoint(x: m.x - dir.x * half, y: m.y - dir.y * half)
+        p[endIndex] = CGPoint(x: m.x + dir.x * half, y: m.y + dir.y * half)
+
+        var updated = stroke
+        updated.points = p
+        if stroke.shapeType == .rectangle {
+            let topLength = hypot(p[1].x - p[0].x, p[1].y - p[0].y)
+            let bottomLength = hypot(p[2].x - p[3].x, p[2].y - p[3].y)
+            let leftLength = hypot(p[3].x - p[0].x, p[3].y - p[0].y)
+            let rightLength = hypot(p[2].x - p[1].x, p[2].y - p[1].y)
+            let stillRectangle = abs(topLength - bottomLength) < 0.01 && abs(leftLength - rightLength) < 0.01
+            if !stillRectangle {
+                updated.shapeType = .polyline
+                updated.shapeRotation = nil
+                updated.rotationBasePoints = nil
+                updated.rotationBaseCenter = nil
+            }
+        }
+        return updated
+    }
+
+    /// Sets an edge's length by sliding the quad's two side groups apart along the
+    /// axis between them, keeping the adjacent edges rigid. On a rectangle this is the
+    /// familiar axis resize; on a trapezoid it keeps the shape symmetric, so editing
+    /// one leg brings its unlocked partner along. The anchor picks which side group
+    /// stays put (`.center` splits the motion evenly).
+    static func applyQuadEdge(
+        _ edge: RectangleEdge,
+        newValue: CGFloat,
+        to stroke: VectorStroke,
+        anchor: DimensionAnchor
+    ) -> VectorStroke? {
+        guard isEditableQuad(stroke) else { return nil }
+        var p = stroke.points
+
+        // The edited edge runs from the near side group to the far side group.
+        let nearGroup: [Int]
+        let farGroup: [Int]
+        let edgeStart: Int
+        let edgeEnd: Int
+        switch edge {
+        case .top:
+            (edgeStart, edgeEnd) = (0, 1)
+            nearGroup = [0, 3]
+            farGroup = [1, 2]
+        case .bottom:
+            (edgeStart, edgeEnd) = (3, 2)
+            nearGroup = [0, 3]
+            farGroup = [1, 2]
+        case .left:
+            (edgeStart, edgeEnd) = (0, 3)
+            nearGroup = [0, 1]
+            farGroup = [3, 2]
+        case .right:
+            (edgeStart, edgeEnd) = (1, 2)
+            nearGroup = [0, 1]
+            farGroup = [3, 2]
+        }
+
+        let nearMid = midpoint(p[nearGroup[0]], p[nearGroup[1]])
+        let farMid = midpoint(p[farGroup[0]], p[farGroup[1]])
+        let axisVector = CGPoint(x: farMid.x - nearMid.x, y: farMid.y - nearMid.y)
+        let axisLength = hypot(axisVector.x, axisVector.y)
+        guard axisLength > 0.001 else { return nil }
+        let n = CGPoint(x: axisVector.x / axisLength, y: axisVector.y / axisLength)
+
+        // Solve |w + t*n| = newValue for the far group's slide distance t.
+        let w = CGPoint(x: p[edgeEnd].x - p[edgeStart].x, y: p[edgeEnd].y - p[edgeStart].y)
+        let target = max(0.001, newValue)
+        let along = w.x * n.x + w.y * n.y
+        let discriminant = along * along - (w.x * w.x + w.y * w.y) + target * target
+        // Negative: the edge cannot reach the target length by sliding, e.g. shorter
+        // than the fixed perpendicular offset between the side groups.
+        guard discriminant >= 0 else { return nil }
+        let t = -along + sqrt(discriminant)
+
+        let nearShift: CGFloat
+        let farShift: CGFloat
+        switch anchor {
+        case .nearEdge:
+            nearShift = 0
+            farShift = t
+        case .farEdge:
+            nearShift = -t
+            farShift = 0
+        case .center:
+            nearShift = -t / 2
+            farShift = t / 2
+        }
+        for index in nearGroup {
+            p[index] = CGPoint(x: p[index].x + n.x * nearShift, y: p[index].y + n.y * nearShift)
+        }
+        for index in farGroup {
+            p[index] = CGPoint(x: p[index].x + n.x * farShift, y: p[index].y + n.y * farShift)
+        }
+
+        // Reject collapses and inversions: shrinking a trapezoid's top too far would
+        // push the bottom edge through zero and out the other side as a bowtie.
+        let edgePairs = [(0, 1), (1, 2), (3, 2), (0, 3)]
+        for (a, b) in edgePairs {
+            let old = CGPoint(x: stroke.points[b].x - stroke.points[a].x, y: stroke.points[b].y - stroke.points[a].y)
+            let new = CGPoint(x: p[b].x - p[a].x, y: p[b].y - p[a].y)
+            if hypot(new.x, new.y) < 0.001 || old.x * new.x + old.y * new.y <= 0 {
+                return nil
+            }
+        }
+
+        var updated = stroke
+        updated.points = p
+        return updated
+    }
+
+    /// Distance in document units between a dimension's anchor point on the shape and
+    /// its resting label position. The overlay may push farther in view space so the
+    /// on-screen label clears the stroke at any zoom.
+    private static let labelStandoff: CGFloat = 28
+
+    /// Unit normal of the edge `start→end` that points away from `reference` (typically
+    /// the shape centroid). Falls back to the CCW perpendicular when the reference sits
+    /// on the edge (e.g. a two-point line).
+    private static func outwardNormal(
+        from start: CGPoint,
+        to end: CGPoint,
+        awayFrom reference: CGPoint
+    ) -> CGPoint {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let length = hypot(dx, dy)
+        guard length > 0.001 else { return CGPoint(x: 0, y: -1) }
+        let ccw = CGPoint(x: -dy / length, y: dx / length)
+        let mid = midpoint(start, end)
+        let away = CGPoint(x: mid.x - reference.x, y: mid.y - reference.y)
+        if hypot(away.x, away.y) < 0.001 {
+            return ccw
+        }
+        return ccw.x * away.x + ccw.y * away.y >= 0
+            ? ccw
+            : CGPoint(x: -ccw.x, y: -ccw.y)
+    }
+
+    private static func labelPlacement(
+        edgeStart: CGPoint,
+        edgeEnd: CGPoint,
+        awayFrom reference: CGPoint,
+        standoff: CGFloat = labelStandoff
+    ) -> (anchor: CGPoint, midPoint: CGPoint) {
+        let anchor = midpoint(edgeStart, edgeEnd)
+        let normal = outwardNormal(from: edgeStart, to: edgeEnd, awayFrom: reference)
+        let midPoint = CGPoint(
+            x: anchor.x + normal.x * standoff,
+            y: anchor.y + normal.y * standoff
+        )
+        return (anchor, midPoint)
+    }
+
+    private static func pointsCentroid(_ points: [CGPoint]) -> CGPoint {
+        guard !points.isEmpty else { return .zero }
+        let sum = points.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
+        let count = CGFloat(points.count)
+        return CGPoint(x: sum.x / count, y: sum.y / count)
+    }
+
+    /// One editable pill per quad edge. Each pill shows its own edge's length (they
+    /// differ on a trapezoid), placed just outside the shape past the edge midpoint.
+    private static func quadDimensions(for stroke: VectorStroke) -> [SemanticDimension] {
+        guard isEditableQuad(stroke) else { return [] }
+        let p = stroke.points
+        let centroid = pointsCentroid(p)
+        let edges: [(edge: RectangleEdge, start: CGPoint, end: CGPoint, kind: SemanticDimension.Kind)] = [
+            (.top, p[0], p[1], .rectangleWidth),
+            (.bottom, p[3], p[2], .rectangleWidth),
+            (.left, p[0], p[3], .rectangleHeight),
+            (.right, p[1], p[2], .rectangleHeight)
+        ]
+        return edges.compactMap { entry in
+            let length = hypot(entry.end.x - entry.start.x, entry.end.y - entry.start.y)
+            guard length > 0.001 else { return nil }
+            let placement = labelPlacement(
+                edgeStart: entry.start,
+                edgeEnd: entry.end,
+                awayFrom: centroid
+            )
+            return SemanticDimension(
+                id: entry.edge.rawValue,
+                label: String(format: "%.3f", length),
+                midPoint: placement.midPoint,
+                value: length,
+                kind: entry.kind,
+                anchor: placement.anchor
+            )
+        }
+    }
+
     static func semanticDimensions(for stroke: VectorStroke) -> [SemanticDimension] {
         switch stroke.shapeType {
         case .circle:
             guard let circle = circleFromCardinalPoints(stroke.points) else { return [] }
             let diameter = circle.radius * 2
+            let top = CGPoint(x: circle.center.x, y: circle.center.y - circle.radius)
             return [SemanticDimension(
                 id: "diameter",
                 label: String(format: "%.3f", diameter),
-                midPoint: CGPoint(x: circle.center.x, y: circle.center.y - circle.radius - 20),
+                midPoint: CGPoint(x: top.x, y: top.y - labelStandoff),
                 value: diameter,
                 kind: .circleDiameter,
-                anchor: CGPoint(x: circle.center.x, y: circle.center.y - circle.radius)
+                anchor: top
             )]
         case .ellipse:
             guard let ellipse = ellipseFromCardinalPoints(stroke.points) else { return [] }
+            let top = CGPoint(x: ellipse.center.x, y: ellipse.center.y - ellipse.ry)
+            let left = CGPoint(x: ellipse.center.x - ellipse.rx, y: ellipse.center.y)
             return [
                 SemanticDimension(
                     id: "rx",
                     label: String(format: "rx %.3f", ellipse.rx),
-                    midPoint: CGPoint(x: ellipse.center.x + ellipse.rx / 2, y: ellipse.center.y - 24),
+                    midPoint: CGPoint(x: top.x, y: top.y - labelStandoff),
                     value: ellipse.rx,
                     kind: .ellipseRX,
-                    anchor: CGPoint(x: ellipse.center.x + ellipse.rx / 2, y: ellipse.center.y)
+                    anchor: top
                 ),
                 SemanticDimension(
                     id: "ry",
                     label: String(format: "ry %.3f", ellipse.ry),
-                    midPoint: CGPoint(x: ellipse.center.x - ellipse.rx - 24, y: ellipse.center.y),
+                    midPoint: CGPoint(x: left.x - labelStandoff, y: left.y),
                     value: ellipse.ry,
                     kind: .ellipseRY,
-                    anchor: CGPoint(x: ellipse.center.x - ellipse.rx, y: ellipse.center.y)
+                    anchor: left
                 )
             ]
         case .rectangle:
-            guard stroke.points.count == 4 else { return [] }
-            return (0..<4).map { index in
-                let start = stroke.points[index]
-                let end = stroke.points[(index + 1) % 4]
-                let length = hypot(end.x - start.x, end.y - start.y)
-                return SemanticDimension(
-                    id: "side-\(index)",
-                    label: String(format: "%.3f", length),
-                    midPoint: midpoint(start, end),
-                    value: length,
-                    kind: .segmentLength(segmentIndex: index),
-                    anchor: midpoint(start, end)
-                )
-            }
+            return quadDimensions(for: stroke)
         default:
+            if isEditableQuad(stroke) {
+                return quadDimensions(for: stroke)
+            }
             let points = stroke.points
             guard points.count >= 2 else { return [] }
+            let centroid = pointsCentroid(points)
             let count = stroke.isClosed ? points.count : points.count - 1
-            return (0..<count).map { index in
+            return (0..<count).compactMap { index in
                 let start = points[index]
                 let end = points[(index + 1) % points.count]
                 let length = hypot(end.x - start.x, end.y - start.y)
+                guard length > 0.001 else { return nil }
+                let placement = labelPlacement(
+                    edgeStart: start,
+                    edgeEnd: end,
+                    awayFrom: centroid
+                )
                 return SemanticDimension(
                     id: "seg-\(index)",
                     label: String(format: "%.3f", length),
-                    midPoint: midpoint(start, end),
+                    midPoint: placement.midPoint,
                     value: length,
                     kind: .segmentLength(segmentIndex: index),
-                    anchor: midpoint(start, end)
+                    anchor: placement.anchor
                 )
             }
         }
@@ -1068,16 +1456,10 @@ enum ShapeGeometry {
         case .ellipseRY:
             guard let ellipse = ellipseFromCardinalPoints(stroke.points) else { return nil }
             updated.points = ellipseCardinalPoints(center: ellipse.center, rx: ellipse.rx, ry: max(0.001, newValue))
-        case .rectangleWidth:
-            guard stroke.points.count == 4 else { return nil }
-            let center = CGPoint(x: (stroke.points[0].x + stroke.points[2].x) / 2, y: (stroke.points[0].y + stroke.points[2].y) / 2)
-            let halfH = abs(stroke.points[2].y - center.y)
-            updated.points = rectangleFromCenterDistances(center, halfWidth: max(0.001, newValue / 2), halfHeight: halfH)
-        case .rectangleHeight:
-            guard stroke.points.count == 4 else { return nil }
-            let center = CGPoint(x: (stroke.points[0].x + stroke.points[2].x) / 2, y: (stroke.points[0].y + stroke.points[2].y) / 2)
-            let halfW = abs(stroke.points[1].x - center.x)
-            updated.points = rectangleFromCenterDistances(center, halfWidth: halfW, halfHeight: max(0.001, newValue / 2))
+        case .rectangleWidth, .rectangleHeight:
+            // Quad edges are routed through applyQuadEdge/applyEdgeLength, which know
+            // which specific edge is being edited.
+            return nil
         case .segmentLength(let segmentIndex):
             let points = stroke.points
             guard points.count >= 2 else { return nil }
@@ -1145,19 +1527,149 @@ enum ShapeGeometry {
         CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
     }
 
+    /// Default editable anchors of an arc: start, end, and any cardinals the sweep
+    /// crosses — 2, 3, or 4 points depending on length. Dense tessellations collapse
+    /// back to that set. Very short arcs that cannot recover a circle keep start/end.
+    static func arcAnchorPoints(_ points: [CGPoint]) -> [CGPoint]? {
+        guard let first = points.first, let last = points.last else { return nil }
+        if points.count < 8 { return points }
+        guard points.count >= 3 else { return nil }
+        let through = points[1]
+        guard let circle = arcCenter(start: first, end: last, through: through) else {
+            return [first, points[points.count / 2], last]
+        }
+        let tolerance = max(0.75, circle.radius * 0.025)
+        let allOnCircle = points.allSatisfy {
+            abs(hypot($0.x - circle.center.x, $0.y - circle.center.y) - circle.radius) <= tolerance
+        }
+        guard allOnCircle else { return [first, points[points.count / 2], last] }
+        guard let sweep = signedCircularSweep(of: points, around: circle.center, closed: false) else {
+            return [first, through, last]
+        }
+        return defaultCircularAnchors(
+            center: circle.center,
+            radius: circle.radius,
+            start: first,
+            end: last,
+            sweep: sweep,
+            closed: false
+        )
+    }
+
+    /// Signed sweep along `points` about `center`, walking every consecutive pair so a
+    /// 270° leftover after a quadrant trim is not collapsed to the 90° short arc
+    /// that shares the same endpoints.
+    static func signedCircularSweep(
+        of points: [CGPoint],
+        around center: CGPoint,
+        closed: Bool = false
+    ) -> CGFloat? {
+        guard let first = points.first else { return nil }
+        var total: CGFloat = 0
+        var previous = atan2(first.y - center.y, first.x - center.x)
+        let chain: [CGPoint]
+        if closed {
+            chain = Array(points.dropFirst()) + [first]
+        } else {
+            chain = Array(points.dropFirst())
+        }
+        guard !chain.isEmpty else { return nil }
+        for point in chain {
+            let angle = atan2(point.y - center.y, point.x - center.x)
+            var step = angle - previous
+            if step > .pi { step -= 2 * .pi }
+            if step < -.pi { step += 2 * .pi }
+            total += step
+            previous = angle
+        }
+        if closed, abs(total) < 0.05 {
+            return copysign(2 * .pi, total == 0 ? 1 : total)
+        }
+        return total
+    }
+
+    /// Cubic Bezier handles that approximate the circular arc through `start`, `mid`,
+    /// and `end` as two segments (`start→mid`, `mid→end`). Used when an arc is joined
+    /// into a `.curve` stroke so the circular geometry survives as editable tangents.
+    static func curveHandlesApproximatingArc(
+        start: CGPoint,
+        mid: CGPoint,
+        end: CGPoint
+    ) -> [CurveHandle]? {
+        guard let circle = arcCenter(start: start, end: end, through: mid) else { return nil }
+        var handles = [CurveHandle(), CurveHandle(), CurveHandle()]
+        let first = circularArcHandleOffsets(
+            from: start,
+            to: mid,
+            center: circle.center,
+            radius: circle.radius,
+            through: mid
+        )
+        handles[0].outOffset = first.outFromStart
+        handles[1].inOffset = first.inToEnd
+        let second = circularArcHandleOffsets(
+            from: mid,
+            to: end,
+            center: circle.center,
+            radius: circle.radius,
+            through: end
+        )
+        handles[1].outOffset = second.outFromStart
+        handles[2].inOffset = second.inToEnd
+        return handles
+    }
+
+    /// Standard cubic approximation of a circular arc: κ = 4/3 · tan(θ/4).
+    static func circularArcHandleOffsets(
+        from start: CGPoint,
+        to end: CGPoint,
+        center: CGPoint,
+        radius: CGFloat,
+        through: CGPoint
+    ) -> (outFromStart: CGPoint, inToEnd: CGPoint) {
+        let startAngle = atan2(start.y - center.y, start.x - center.x)
+        let endAngle = atan2(end.y - center.y, end.x - center.x)
+        var sweep = endAngle - startAngle
+        var testSweep = atan2(through.y - center.y, through.x - center.x) - startAngle
+        while testSweep > .pi { testSweep -= 2 * .pi }
+        while testSweep < -.pi { testSweep += 2 * .pi }
+        while sweep > .pi { sweep -= 2 * .pi }
+        while sweep < -.pi { sweep += 2 * .pi }
+        // When `through` is the segment end itself, keep the short-arc sweep.
+        if through != end, (testSweep > 0) != (sweep > 0) {
+            sweep = testSweep > 0 ? sweep + 2 * .pi : sweep - 2 * .pi
+        }
+        guard abs(sweep) > 0.0001, radius > 0.001 else {
+            return (.zero, .zero)
+        }
+        let kappa = (4.0 / 3.0) * tan(sweep / 4.0) * radius
+        let outFromStart = CGPoint(
+            x: -sin(startAngle) * kappa,
+            y: cos(startAngle) * kappa
+        )
+        let inToEnd = CGPoint(
+            x: sin(endAngle) * kappa,
+            y: -cos(endAngle) * kappa
+        )
+        return (outFromStart, inToEnd)
+    }
+
     private static func arcControlCenter(from arcPoints: [CGPoint]) -> CGPoint? {
         guard arcPoints.count >= 3 else { return nil }
-        if let fitted = fitCircle(from: arcPoints) {
-            return fitted.center
-        }
         let start = arcPoints.first!
         let end = arcPoints.last!
         let through = arcPoints[arcPoints.count / 2]
+        // Circumcenter of start/mid/end — stable for partial arcs. Do not use the
+        // sample centroid (`fitCircle`), which shifts toward the remaining sweep.
         if let arc = arcCenter(start: start, end: end, through: through) {
             return arc.center
         }
-        if let bbox = VectorStroke(layerID: UUID(), points: arcPoints).boundingBox() {
-            return CGPoint(x: bbox.midX, y: bbox.midY)
+        if let fitted = fitCircle(from: arcPoints), arcPoints.count >= 24 {
+            // Dense near-full contours only; centroid is usable when coverage is high.
+            let span = hypot(end.x - start.x, end.y - start.y)
+            if span <= fitted.radius * 0.35 {
+                return fitted.center
+            }
         }
         return nil
     }

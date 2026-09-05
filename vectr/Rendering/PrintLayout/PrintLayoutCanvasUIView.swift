@@ -11,6 +11,7 @@ final class PrintLayoutCanvasUIView: UIView {
     }
 
     var onCanvasTap: ((CGPoint) -> Void)?
+    var onTwoFingerTap: (() -> Void)?
 
     private let sheetsLayer = CALayer()
     private let artworkLayer = CALayer()
@@ -26,6 +27,7 @@ final class PrintLayoutCanvasUIView: UIView {
 
     private var pinchStartScale: CGFloat = 1
     private var pinchAnchor: CGPoint = .zero
+    private var lastLaidOutSize: CGSize = .zero
 
     init(document: VectrDocument) {
         self.document = document
@@ -50,13 +52,45 @@ final class PrintLayoutCanvasUIView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        sheetsLayer.frame = bounds
-        artworkLayer.frame = bounds
-        overlayLayer.frame = bounds
-        reloadAll()
+        let newSize = bounds.size
+        let sizeChanged = lastLaidOutSize.width == 0
+            || abs(newSize.width - lastLaidOutSize.width) > 0.5
+            || abs(newSize.height - lastLaidOutSize.height) > 0.5
+
+        performWithoutLayerAnimation {
+            if sizeChanged, lastLaidOutSize.width > 0, lastLaidOutSize.height > 0 {
+                var viewport = document.viewport
+                viewport.preserveCenter(from: lastLaidOutSize, to: newSize)
+                if viewport != document.viewport {
+                    document.viewport = viewport
+                }
+            }
+            sheetsLayer.frame = bounds
+            artworkLayer.frame = bounds
+            overlayLayer.frame = bounds
+            if sizeChanged {
+                reloadAllContents()
+            }
+        }
+
+        if sizeChanged {
+            lastLaidOutSize = newSize
+        }
     }
 
     func reloadAll() {
+        performWithoutLayerAnimation {
+            reloadAllContents()
+        }
+    }
+
+    func refreshViewport() {
+        performWithoutLayerAnimation {
+            reloadAllContents()
+        }
+    }
+
+    private func reloadAllContents() {
         reloadSheets()
         reloadStrokes()
         reloadTextElements()
@@ -65,53 +99,80 @@ final class PrintLayoutCanvasUIView: UIView {
         reloadBorders()
     }
 
-    func refreshViewport() {
-        reloadSheets()
-        reloadStrokes()
-        reloadTextElements()
-        reloadDimOverlay()
-        reloadMarginGuide()
-        reloadBorders()
+    private func performWithoutLayerAnimation(_ updates: () -> Void) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        updates()
+        CATransaction.commit()
     }
 
     // MARK: - Rendering
 
     private func reloadSheets() {
-        sheetLayers.forEach { $0.removeFromSuperlayer() }
-        sheetLayers.removeAll()
+        let sheets = PrintPageGridEngine.sheets(for: document.printLayout)
+        let needed = sheets.count * 2
+        while sheetLayers.count > needed {
+            sheetLayers.removeLast().removeFromSuperlayer()
+        }
 
-        for sheet in PrintPageGridEngine.sheets(for: document.printLayout) {
+        for (index, sheet) in sheets.enumerated() {
             let viewOrigin = document.viewport.documentToView(sheet.frame.origin)
             let viewSize = CGSize(
                 width: document.viewport.documentToView(distance: sheet.frame.width),
                 height: document.viewport.documentToView(distance: sheet.frame.height)
             )
             let sheetViewFrame = CGRect(origin: viewOrigin, size: viewSize)
+            let paperIndex = index * 2
+            let labelIndex = paperIndex + 1
 
-            let layer = CALayer()
-            layer.backgroundColor = UIColor.white.cgColor
-            layer.frame = sheetViewFrame
-            layer.shadowColor = UIColor.black.cgColor
-            layer.shadowOpacity = 0.12
-            layer.shadowRadius = 4
-            layer.shadowOffset = CGSize(width: 0, height: 2)
-            // Distinct border so each page reads as an individual sheet of paper.
-            layer.borderColor = UIColor.systemGray2.cgColor
-            layer.borderWidth = 1
-            sheetsLayer.addSublayer(layer)
-            sheetLayers.append(layer)
+            let paper: CALayer
+            if paperIndex < sheetLayers.count {
+                paper = sheetLayers[paperIndex]
+            } else {
+                paper = makePaperLayer()
+                sheetsLayer.addSublayer(paper)
+                sheetLayers.append(paper)
+            }
+            paper.frame = sheetViewFrame
 
-            // Page number in the bottom-right corner of each sheet.
-            let label = makePageNumberLayer(number: sheet.id + 1, sheetViewFrame: sheetViewFrame)
-            sheetsLayer.addSublayer(label)
-            sheetLayers.append(label)
+            let label: CATextLayer
+            if labelIndex < sheetLayers.count, let existing = sheetLayers[labelIndex] as? CATextLayer {
+                label = existing
+            } else {
+                label = makePageNumberLayer(number: sheet.id + 1, sheetViewFrame: sheetViewFrame)
+                sheetsLayer.addSublayer(label)
+                sheetLayers.append(label)
+            }
+            label.string = "\(sheet.id + 1)"
+            label.frame = pageNumberFrame(in: sheetViewFrame)
         }
     }
 
-    private func makePageNumberLayer(number: Int, sheetViewFrame: CGRect) -> CATextLayer {
+    private func makePaperLayer() -> CALayer {
+        let layer = CALayer()
+        layer.backgroundColor = UIColor.white.cgColor
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.12
+        layer.shadowRadius = 4
+        layer.shadowOffset = CGSize(width: 0, height: 2)
+        layer.borderColor = UIColor.systemGray2.cgColor
+        layer.borderWidth = 1
+        return layer
+    }
+
+    private func pageNumberFrame(in sheetViewFrame: CGRect) -> CGRect {
         let width: CGFloat = 44
         let height: CGFloat = 16
         let inset: CGFloat = 8
+        return CGRect(
+            x: sheetViewFrame.maxX - width - inset,
+            y: sheetViewFrame.maxY - height - inset,
+            width: width,
+            height: height
+        )
+    }
+
+    private func makePageNumberLayer(number: Int, sheetViewFrame: CGRect) -> CATextLayer {
         let label = CATextLayer()
         label.string = "\(number)"
         label.fontSize = 12
@@ -119,12 +180,7 @@ final class PrintLayoutCanvasUIView: UIView {
         label.alignmentMode = .right
         label.truncationMode = .none
         label.contentsScale = UIScreen.main.scale
-        label.frame = CGRect(
-            x: sheetViewFrame.maxX - width - inset,
-            y: sheetViewFrame.maxY - height - inset,
-            width: width,
-            height: height
-        )
+        label.frame = pageNumberFrame(in: sheetViewFrame)
         return label
     }
 
@@ -139,11 +195,12 @@ final class PrintLayoutCanvasUIView: UIView {
         for stroke in printStrokes {
             let transform = document.effectivePrintTransform(for: stroke.id)
             let transformed = document.transformedPrintStroke(stroke)
-            let opacity = PrintBorderRenderer.strokeOpacity(
+            let cutOpacity = PrintBorderRenderer.strokeOpacity(
                 for: transformed,
                 settings: document.printLayout
             )
             let isSelected = stroke.id == document.printSelectedStrokeID
+            let opacity = document.opacity(forLayerID: stroke.layerID) * (isSelected ? 1 : cutOpacity)
 
             if let layer = strokeLayers[stroke.id] {
                 StrokeRenderer.updateShapeLayer(
@@ -151,14 +208,14 @@ final class PrintLayoutCanvasUIView: UIView {
                     stroke: stroke,
                     viewport: document.viewport,
                     pointTransform: transform,
-                    opacity: isSelected ? 1 : opacity
+                    opacity: opacity
                 )
             } else {
                 let layer = StrokeRenderer.makeShapeLayer(
                     for: stroke,
                     viewport: document.viewport,
                     pointTransform: transform,
-                    opacity: isSelected ? 1 : opacity
+                    opacity: opacity
                 )
                 artworkLayer.addSublayer(layer)
                 strokeLayers[stroke.id] = layer
@@ -189,22 +246,37 @@ final class PrintLayoutCanvasUIView: UIView {
             let viewPath = TextOutline.path(for: element).copy(using: &transform)
 
             let isSelected = element.id == document.printSelectedTextID
-            let opacity = isSelected ? 1 : textOpacity(for: element, transform: printTransform)
+            let cutOpacity = isSelected ? 1 : textOpacity(for: element, transform: printTransform)
+            let opacity = document.opacity(forLayerID: element.layerID) * cutOpacity
+            let lineWidth = document.viewport.documentToView(distance: element.strokeWidth)
 
             if let layer = textLayers[element.id] {
                 layer.path = viewPath
-                layer.fillColor = element.cgColor
+                applyTextStyle(to: layer, element: element, lineWidth: lineWidth)
                 layer.opacity = Float(opacity)
             } else {
                 let layer = CAShapeLayer()
                 layer.fillRule = .nonZero
-                layer.strokeColor = nil
+                layer.lineJoin = .round
+                layer.lineCap = .round
                 layer.path = viewPath
-                layer.fillColor = element.cgColor
+                applyTextStyle(to: layer, element: element, lineWidth: lineWidth)
                 layer.opacity = Float(opacity)
                 artworkLayer.addSublayer(layer)
                 textLayers[element.id] = layer
             }
+        }
+    }
+
+    /// Applies fill vs. outline (stroke-only) styling to a text layer.
+    private func applyTextStyle(to layer: CAShapeLayer, element: TextElement, lineWidth: CGFloat) {
+        if element.isOutline {
+            layer.fillColor = nil
+            layer.strokeColor = element.strokeCGColor
+            layer.lineWidth = lineWidth
+        } else {
+            layer.fillColor = element.cgColor
+            layer.strokeColor = nil
         }
     }
 
@@ -272,6 +344,17 @@ final class PrintLayoutCanvasUIView: UIView {
         twoFingerPan.minimumNumberOfTouches = 2
         twoFingerPan.maximumNumberOfTouches = 2
         addGestureRecognizer(twoFingerPan)
+
+        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
+        twoFingerTap.numberOfTouchesRequired = 2
+        twoFingerTap.require(toFail: pinch)
+        twoFingerTap.require(toFail: twoFingerPan)
+        addGestureRecognizer(twoFingerTap)
+    }
+
+    @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended else { return }
+        onTwoFingerTap?()
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {

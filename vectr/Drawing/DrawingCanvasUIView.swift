@@ -15,14 +15,29 @@ final class DrawingCanvasUIView: UIView {
     weak var delegate: DrawingCanvasDelegate?
 
     var document: VectrDocument {
-        didSet { reloadStrokes(); reloadReferenceImage(); setNeedsDisplay() }
+        didSet {
+            performWithoutLayerAnimation {
+                reloadStrokes()
+                reloadReferenceImage()
+            }
+            setNeedsDisplay()
+        }
     }
 
     var isCommandMode = false
-    var activeCategory: ToolCategory = .line {
+    var activeCategory: ToolCategory? {
         didSet {
             if oldValue == .curve, activeCategory != .curve {
+                // Don't discard an in-progress curve when leaving the tool: commit it
+                // so the drawn strokes persist. Deferred to avoid mutating document
+                // state during a SwiftUI view update.
+                let anchors = curveDraft?.anchors ?? []
                 resetCurve()
+                if anchors.count >= 2 {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onCurveCommitted?(anchors)
+                    }
+                }
             }
         }
     }
@@ -42,11 +57,25 @@ final class DrawingCanvasUIView: UIView {
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
     var onCanvasTap: ((CGPoint) -> Void)?
+    /// Two-finger tap — same as the toolbar undo button (Procreate-style).
+    var onTwoFingerTap: (() -> Void)?
     var onDragDrawBegan: ((CGPoint) -> Void)?
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
+    /// In-progress curve anchors and per-segment undo, owned by the editor.
+    var curveDraft: CurveDraftSession? {
+        didSet {
+            if oldValue !== curveDraft {
+                oldValue?.detachCanvas(self)
+                curveDraft?.attachCanvas(self)
+            }
+            updateCurvePreview()
+        }
+    }
     /// Emitted when a curve is finished (double-tap) with its drawn anchor points.
     var onCurveCommitted: (([CGPoint]) -> Void)?
+    /// Bounds size and safe-area insets in this view's own coordinate space.
+    var onLayoutMetrics: ((CGSize, UIEdgeInsets) -> Void)?
 
     private var strokeLayers: [UUID: CAShapeLayer] = [:]
     private var textLayers: [UUID: CAShapeLayer] = [:]
@@ -59,7 +88,6 @@ final class DrawingCanvasUIView: UIView {
     private var pinchAnchor: CGPoint = .zero
     private var dragDrawStart: CGPoint?
     private var dragDrawCurrent: CGPoint?
-    private var curveAnchors: [CGPoint] = []
     private var curveDragStart: CGPoint?
     private var curveDragCurrent: CGPoint?
     private var curvePreviewLayer: CAShapeLayer?
@@ -68,6 +96,10 @@ final class DrawingCanvasUIView: UIView {
     private var referenceImageLayer: CALayer?
     private var cachedReferenceImageData: Data?
     private var cachedReferenceImage: UIImage?
+    private var lastLaidOutSize: CGSize = .zero
+    private var lastEmittedLayoutSize: CGSize = .zero
+    private var lastEmittedSafeAreaInsets: UIEdgeInsets = .zero
+    private var layoutMetricsWorkItem: DispatchWorkItem?
 
     // Object snapping (endpoints/midpoints). Decoupled engine + per-gesture lock session +
     // visual/haptic feedback. Toggle globally via `document.isSnappingEnabled`.
@@ -76,10 +108,19 @@ final class DrawingCanvasUIView: UIView {
     private let snapHaptics = SnapHaptics()
     private let snapIndicator = SnapIndicatorRenderer()
 
+    /// Color of the canvas sheet itself (the area within the canvas bounds). The view's
+    /// `backgroundColor` is the surrounding dark pasteboard shown when zoomed out.
+    var canvasFillColor: UIColor = UIColor(Color(hex: AppearanceSettings.defaultCanvasHex)) {
+        didSet {
+            guard canvasFillColor != oldValue else { return }
+            setNeedsDisplay()
+        }
+    }
+
     init(document: VectrDocument) {
         self.document = document
         super.init(frame: .zero)
-        backgroundColor = UIColor(Color(hex: AppearanceSettings.defaultCanvasHex))
+        backgroundColor = UIColor(Color(hex: AppearanceSettings.pasteboardHex))
         isMultipleTouchEnabled = true
         layer.addSublayer(gridLayer)
         setupGestures()
@@ -92,23 +133,68 @@ final class DrawingCanvasUIView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        gridLayer.frame = bounds
-        clampViewportToCanvasExtent()
-        reloadStrokes()
-        reloadReferenceImage()
-        refreshCommandPreview()
+        let newSize = bounds.size
+        let sizeChanged = lastLaidOutSize.width == 0
+            || abs(newSize.width - lastLaidOutSize.width) > 0.5
+            || abs(newSize.height - lastLaidOutSize.height) > 0.5
+
+        performWithoutLayerAnimation {
+            if sizeChanged, lastLaidOutSize.width > 0, lastLaidOutSize.height > 0 {
+                applyViewportIfNeeded {
+                    $0.preserveCenter(from: lastLaidOutSize, to: newSize)
+                }
+            }
+            gridLayer.frame = bounds
+            clampViewportToCanvasExtent()
+            if sizeChanged {
+                if strokeLayers.isEmpty && textLayers.isEmpty {
+                    reloadStrokes()
+                    reloadReferenceImage()
+                    refreshCommandPreview()
+                    setNeedsDisplay()
+                } else {
+                    refreshViewportContents()
+                }
+            }
+        }
+
+        if sizeChanged {
+            lastLaidOutSize = newSize
+        }
+        scheduleLayoutMetricsNotification(immediate: lastEmittedLayoutSize == .zero)
     }
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
+        drawCanvasSheet(in: context)
         GridRenderer.drawGrid(
             in: context,
             bounds: bounds,
             viewport: document.viewport,
             grid: document.grid,
             documentSettings: document.settings,
-            canvasExtent: document.settings.canvasExtent
+            canvasSize: document.settings.canvasSize
         )
+    }
+
+    /// Fills the canvas rectangle with the sheet color on top of the pasteboard background.
+    private func drawCanvasSheet(in context: CGContext) {
+        let size = document.settings.canvasSize
+        guard size.width > 0, size.height > 0 else { return }
+        let halfWidth = size.width / 2
+        let halfHeight = size.height / 2
+        let topLeft = document.viewport.documentToView(CGPoint(x: -halfWidth, y: -halfHeight))
+        let bottomRight = document.viewport.documentToView(CGPoint(x: halfWidth, y: halfHeight))
+        let rect = CGRect(
+            x: topLeft.x,
+            y: topLeft.y,
+            width: bottomRight.x - topLeft.x,
+            height: bottomRight.y - topLeft.y
+        )
+        context.saveGState()
+        context.setFillColor(canvasFillColor.cgColor)
+        context.fill(rect)
+        context.restoreGState()
     }
 
     // MARK: - Touch navigation
@@ -170,7 +256,12 @@ final class DrawingCanvasUIView: UIView {
 
         for stroke in visible {
             if let existing = strokeLayers[stroke.id] {
-                StrokeRenderer.updateShapeLayer(existing, stroke: stroke, viewport: document.viewport)
+                StrokeRenderer.updateShapeLayer(
+                    existing,
+                    stroke: stroke,
+                    viewport: document.viewport,
+                    opacity: document.opacity(forLayerID: stroke.layerID)
+                )
             } else {
                 addStrokeLayer(stroke)
             }
@@ -192,10 +283,11 @@ final class DrawingCanvasUIView: UIView {
         }
 
         for element in visible {
+            let opacity = document.opacity(forLayerID: element.layerID)
             if let existing = textLayers[element.id] {
-                TextRenderer.update(existing, for: element, viewport: document.viewport)
+                TextRenderer.update(existing, for: element, viewport: document.viewport, opacity: opacity)
             } else {
-                let created = TextRenderer.makeLayer(for: element, viewport: document.viewport)
+                let created = TextRenderer.makeLayer(for: element, viewport: document.viewport, opacity: opacity)
                 layer.addSublayer(created)
                 textLayers[element.id] = created
             }
@@ -251,14 +343,20 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func addStrokeLayer(_ stroke: VectorStroke) {
-        let shapeLayer = StrokeRenderer.makeShapeLayer(for: stroke, viewport: document.viewport)
+        let shapeLayer = StrokeRenderer.makeShapeLayer(
+            for: stroke,
+            viewport: document.viewport,
+            opacity: document.opacity(forLayerID: stroke.layerID)
+        )
         layer.addSublayer(shapeLayer)
         strokeLayers[stroke.id] = shapeLayer
     }
 
     private func reloadStrokesHighlight() {
         for (id, layer) in strokeLayers {
-            layer.opacity = id == document.selectedStrokeID ? 1 : 0.85
+            guard let stroke = document.stroke(with: id) else { continue }
+            let base = document.opacity(forLayerID: stroke.layerID)
+            layer.opacity = Float(base * (id == document.selectedStrokeID ? 1 : 0.85))
         }
     }
 
@@ -267,14 +365,31 @@ final class DrawingCanvasUIView: UIView {
     }
 
     func refreshViewport() {
+        performWithoutLayerAnimation {
+            refreshViewportContents()
+        }
+    }
+
+    private func refreshViewportContents() {
         for (id, layer) in strokeLayers {
             if let stroke = document.stroke(with: id) {
-                StrokeRenderer.updateShapeLayer(layer, stroke: stroke, viewport: document.viewport)
+                StrokeRenderer.updateShapeLayer(
+                    layer,
+                    stroke: stroke,
+                    viewport: document.viewport,
+                    opacity: document.opacity(forLayerID: stroke.layerID)
+                )
             }
         }
+        reloadStrokesHighlight()
         for (id, layer) in textLayers {
             if let element = document.textElement(with: id) {
-                TextRenderer.update(layer, for: element, viewport: document.viewport)
+                TextRenderer.update(
+                    layer,
+                    for: element,
+                    viewport: document.viewport,
+                    opacity: document.opacity(forLayerID: element.layerID)
+                )
             }
         }
         reloadReferenceImage()
@@ -282,6 +397,54 @@ final class DrawingCanvasUIView: UIView {
         updateDragPreviewLayer()
         updateCurvePreview()
         setNeedsDisplay()
+    }
+
+    private func performWithoutLayerAnimation(_ updates: () -> Void) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        updates()
+        CATransaction.commit()
+    }
+
+    /// Avoid writing `document.viewport` when nothing changed — VectrDocument is
+    /// `@Observable`, so a no-op assign still rebuilds the SwiftUI editor mid-rotation.
+    private func applyViewportIfNeeded(_ mutate: (inout ViewportTransform) -> Void) {
+        var viewport = document.viewport
+        mutate(&viewport)
+        guard viewport != document.viewport else { return }
+        document.viewport = viewport
+        delegate?.canvasDidUpdate(document: document)
+    }
+
+    /// Trailing-debounce layout metrics so rotation does not poke SwiftUI every frame.
+    /// The first layout is reported immediately so the initial viewport can be framed.
+    private func scheduleLayoutMetricsNotification(immediate: Bool) {
+        let emit = { [weak self] in
+            guard let self else { return }
+            let size = self.bounds.size
+            let insets = self.safeAreaInsets
+            let sizeChanged = abs(size.width - self.lastEmittedLayoutSize.width) > 0.5
+                || abs(size.height - self.lastEmittedLayoutSize.height) > 0.5
+            let insetsChanged = abs(insets.top - self.lastEmittedSafeAreaInsets.top) > 0.5
+                || abs(insets.bottom - self.lastEmittedSafeAreaInsets.bottom) > 0.5
+                || abs(insets.left - self.lastEmittedSafeAreaInsets.left) > 0.5
+                || abs(insets.right - self.lastEmittedSafeAreaInsets.right) > 0.5
+            guard sizeChanged || insetsChanged else { return }
+            self.lastEmittedLayoutSize = size
+            self.lastEmittedSafeAreaInsets = insets
+            self.onLayoutMetrics?(size, insets)
+        }
+
+        if immediate {
+            layoutMetricsWorkItem?.cancel()
+            emit()
+            return
+        }
+
+        layoutMetricsWorkItem?.cancel()
+        let work = DispatchWorkItem(block: emit)
+        layoutMetricsWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
     }
 
     // MARK: - Gestures
@@ -297,18 +460,25 @@ final class DrawingCanvasUIView: UIView {
         twoFingerPan.delegate = self
         addGestureRecognizer(twoFingerPan)
 
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
+        twoFingerTap.numberOfTouchesRequired = 2
+        twoFingerTap.delegate = self
+        twoFingerTap.require(toFail: pinch)
+        twoFingerTap.require(toFail: twoFingerPan)
+        addGestureRecognizer(twoFingerTap)
+
+        let tap = PreciseTapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.delegate = self
         tap.require(toFail: twoFingerPan)
         addGestureRecognizer(tap)
 
-        let dragDraw = UIPanGestureRecognizer(target: self, action: #selector(handleDragDraw(_:)))
+        let dragDraw = PrecisePanGestureRecognizer(target: self, action: #selector(handleDragDraw(_:)))
         dragDraw.maximumNumberOfTouches = 1
         dragDraw.delegate = self
         addGestureRecognizer(dragDraw)
         tap.require(toFail: dragDraw)
 
-        let curveFinish = UITapGestureRecognizer(target: self, action: #selector(handleCurveFinish(_:)))
+        let curveFinish = PreciseTapGestureRecognizer(target: self, action: #selector(handleCurveFinish(_:)))
         curveFinish.numberOfTapsRequired = 2
         curveFinish.delegate = self
         addGestureRecognizer(curveFinish)
@@ -353,8 +523,13 @@ final class DrawingCanvasUIView: UIView {
         }
     }
 
+    @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended else { return }
+        onTwoFingerTap?()
+    }
+
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        let viewPoint = gesture.location(in: self)
+        let viewPoint = drawingViewPoint(from: gesture)
         let documentPoint = document.viewport.viewToDocument(viewPoint)
 
         switch activeCategory {
@@ -362,17 +537,13 @@ final class DrawingCanvasUIView: UIView {
             if isCommandMode {
                 onCanvasTap?(documentPoint)
             }
-        case .trim, .delete, .addAnchor, .type:
+        case .trim, .delete, .addAnchor, .type, .copy, .scale, .fillet, .pattern, .dimensions, .curve:
+            // Forward taps so empty-canvas / outside-shape hits can dismiss the tool.
+            // Scale/fillet handles still win via the overlay's high-priority gestures.
             onCanvasTap?(documentPoint)
-        case .curve:
-            // Curve points come from Pencil drags; a double-tap finishes it.
+        case .move, nil:
+            // Move (the idle default) is handled by the SwiftUI overlay.
             break
-        case .move, .scale, .fillet, .pattern:
-            // Selection/manipulation for these tools is handled by the SwiftUI
-            // canvas overlay so group-aware selection is preserved.
-            break
-        default:
-            handleSelection(at: viewPoint)
         }
     }
 
@@ -389,7 +560,7 @@ final class DrawingCanvasUIView: UIView {
             break
         }
 
-        let viewPoint = gesture.location(in: self)
+        let viewPoint = drawingViewPoint(from: gesture)
         let rawPoint = document.viewport.viewToDocument(viewPoint)
         // Tangent snapping needs the anchored end of the in-progress line, which is
         // `dragDrawStart` once the drag is underway (nil during `.began`).
@@ -435,19 +606,29 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func snappedDragPoint(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint {
-        // Object snapping (centers/quadrants/endpoints/midpoints/intersections/tangents) takes
-        // precedence over grid snapping so the pencil magnetically locks to real geometry when
-        // it is in range.
-        if let objectSnapped = resolveObjectSnap(rawPoint: point, referenceStart: referenceStart) {
-            return objectSnapped
-        }
-        let enabled = document.snapEnabled && document.grid.snapEnabled
-        return snapDrawingPoint(
+        snapDrawingEndpoint(
             point,
+            origin: referenceStart,
+            applyAngleSnap: shouldAngleSnapDrawnSegment,
             grid: document.grid,
             settings: document.settings,
-            enabled: enabled
+            gridSnapEnabled: document.snapEnabled && document.grid.snapEnabled,
+            scale: document.viewport.scale,
+            objectSnap: { query, alignmentOrigin, alignmentThrough in
+                resolveObjectSnap(
+                    rawPoint: query,
+                    referenceStart: referenceStart,
+                    alignmentOrigin: alignmentOrigin,
+                    alignmentThrough: alignmentThrough
+                )
+            }
         )
+    }
+
+    /// Polar tracking applies to straight segments (line / construction / curve), not arcs
+    /// or 2-axis shapes whose opposite corner should stay free.
+    private var shouldAngleSnapDrawnSegment: Bool {
+        activeCategory == .line && lineVariant != .arc
     }
 
     /// Runs the snapping engine for a live pencil position, updates the visual indicator and
@@ -455,7 +636,12 @@ final class DrawingCanvasUIView: UIView {
     ///
     /// Thresholds are defined in view points and converted to document units here so the feel
     /// stays constant across zoom levels.
-    private func resolveObjectSnap(rawPoint: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint? {
+    private func resolveObjectSnap(
+        rawPoint: CGPoint,
+        referenceStart: CGPoint? = nil,
+        alignmentOrigin: CGPoint? = nil,
+        alignmentThrough: CGPoint? = nil
+    ) -> CGPoint? {
         let enabledKinds = document.enabledSnapKinds
         guard !enabledKinds.isEmpty else {
             finishSnapInteraction()
@@ -463,15 +649,23 @@ final class DrawingCanvasUIView: UIView {
         }
 
         let scale = max(document.viewport.scale, 0.0001)
+        let alignmentTolerance = alignmentOrigin == nil ? 0 : 4 / scale
+        let endpointRadius = shouldAngleSnapDrawnSegment
+            ? SnapTuning.lineEndpointSnapRadiusPoints / scale
+            : nil
         let update = snapSession.update(
             rawPoint: rawPoint,
             engine: snapEngine,
-            strokes: document.strokes,
+            strokes: document.interactiveStrokes(),
             enabledKinds: enabledKinds,
             snapRadius: SnapTuning.snapRadiusPoints / scale,
             breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
             breakawayVelocity: SnapTuning.breakawayVelocityPoints / scale,
-            referenceStarts: referenceStart.map { [$0] } ?? []
+            referenceStarts: referenceStart.map { [$0] } ?? [],
+            alignmentOrigin: alignmentOrigin,
+            alignmentThrough: alignmentThrough,
+            alignmentTolerance: alignmentTolerance,
+            endpointRadius: endpointRadius
         )
 
         if let candidate = update.candidate {
@@ -504,9 +698,10 @@ final class DrawingCanvasUIView: UIView {
     }
 
     /// Snap a new circle's center to an existing circle center when starting a concentric ring.
+    /// Only geometry on the active layer is considered so other layers stay independent.
     private func snappedCircleCenter(from point: CGPoint) -> CGPoint {
         let tolerance = document.grid.visualSpacing(for: document.settings) * 0.5
-        for stroke in document.strokes.reversed() {
+        for stroke in document.interactiveStrokes().reversed() {
             guard stroke.shapeType == .circle,
                   stroke.isClosed,
                   let circle = ShapeGeometry.circleFromCardinalPoints(stroke.points) else { continue }
@@ -527,7 +722,7 @@ final class DrawingCanvasUIView: UIView {
             break
         }
 
-        let rawPoint = document.viewport.viewToDocument(gesture.location(in: self))
+        let rawPoint = document.viewport.viewToDocument(drawingViewPoint(from: gesture))
         let documentPoint = snappedDragPoint(rawPoint, referenceStart: curveDragStart)
 
         switch gesture.state {
@@ -535,6 +730,7 @@ final class DrawingCanvasUIView: UIView {
             snapHaptics.prepare()
             curveDragStart = documentPoint
             curveDragCurrent = documentPoint
+            curveDraft?.beginDrag()
             updateCurvePreview()
         case .changed:
             curveDragCurrent = documentPoint
@@ -543,14 +739,11 @@ final class DrawingCanvasUIView: UIView {
             if let start = curveDragStart {
                 appendCurveLine(start: start, end: documentPoint)
             }
-            curveDragStart = nil
-            curveDragCurrent = nil
-            finishSnapInteraction()
+            clearInProgressCurveDrag()
             updateCurvePreview()
         case .cancelled, .failed:
-            curveDragStart = nil
-            curveDragCurrent = nil
-            finishSnapInteraction()
+            curveDraft?.endDrag()
+            clearInProgressCurveDrag()
             updateCurvePreview()
         default:
             break
@@ -558,19 +751,28 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func appendCurveLine(start: CGPoint, end: CGPoint) {
-        let tolerance = curveConnectTolerance
-        if curveAnchors.isEmpty {
-            curveAnchors.append(start)
-        } else if let last = curveAnchors.last,
-                  hypot(start.x - last.x, start.y - last.y) > tolerance {
-            // New line started away from the last point: bridge with a jump anchor.
-            curveAnchors.append(start)
+        curveDraft?.appendSegment(start: start, end: end, connectTolerance: curveConnectTolerance)
+    }
+
+    @discardableResult
+    func undoLastCurveSegment() -> Bool {
+        if curveDragStart != nil {
+            curveDraft?.endDrag()
+            clearInProgressCurveDrag()
+            updateCurvePreview()
+            return true
         }
-        if let last = curveAnchors.last,
-           hypot(end.x - last.x, end.y - last.y) <= 0.0001 {
-            return
-        }
-        curveAnchors.append(end)
+        guard curveDraft?.undoCommittedSegment() == true else { return false }
+        updateCurvePreview()
+        return true
+    }
+
+    @discardableResult
+    func redoLastCurveSegment() -> Bool {
+        guard curveDragStart == nil else { return false }
+        guard curveDraft?.redoCommittedSegment() == true else { return false }
+        updateCurvePreview()
+        return true
     }
 
     @objc private func handleCurveFinish(_ gesture: UITapGestureRecognizer) {
@@ -579,17 +781,26 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func commitCurve() {
-        let anchors = curveAnchors
+        let anchors = curveDraft?.anchors ?? []
         resetCurve()
         guard anchors.count >= 2 else { return }
         onCurveCommitted?(anchors)
     }
 
     private func resetCurve() {
-        curveAnchors.removeAll()
+        curveDraft?.reset()
+        clearInProgressCurveDrag()
+        updateCurvePreview()
+    }
+
+    private func clearInProgressCurveDrag() {
         curveDragStart = nil
         curveDragCurrent = nil
-        updateCurvePreview()
+        finishSnapInteraction()
+    }
+
+    private var curveAnchors: [CGPoint] {
+        curveDraft?.anchors ?? []
     }
 
     private var curveConnectTolerance: CGFloat {
@@ -667,6 +878,7 @@ final class DrawingCanvasUIView: UIView {
         ).cgPath
         pathLayer.strokeColor = document.strokeColor.platformCGColor
         pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
+        pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
     }
 
     // MARK: - Command preview
@@ -758,6 +970,7 @@ final class DrawingCanvasUIView: UIView {
             : UIColor.clear.cgColor
         pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
         pathLayer.lineDashPattern = isConstructionPreview ? [10, 6] : nil
+        pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
     }
 
     private func updateDragPreviewLayer() {
@@ -806,6 +1019,7 @@ final class DrawingCanvasUIView: UIView {
             : UIColor.clear.cgColor
         pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
         pathLayer.lineDashPattern = isConstruction ? [10, 6] : nil
+        pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
     }
 
     private func dragPreviewPoints(start: CGPoint, end: CGPoint) -> [CGPoint] {
@@ -886,10 +1100,12 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func clampViewportToCanvasExtent() {
-        document.viewport.clampToCanvasExtent(
-            in: bounds.size,
-            canvasExtent: document.settings.canvasExtent
-        )
+        applyViewportIfNeeded {
+            $0.clampToCanvasSize(
+                in: bounds.size,
+                canvasSize: document.settings.canvasSize
+            )
+        }
     }
 
     private func handleNavigationEnded() {
@@ -901,6 +1117,17 @@ final class DrawingCanvasUIView: UIView {
         if touch.type == .pencil || touch.type == .stylus { return true }
         guard !document.settings.allowsFingerDrawing else { return true }
         return false
+    }
+
+    /// Pencil tip in this view. Falls back to the recognizer centroid for finger input.
+    private func drawingViewPoint(from gesture: UIGestureRecognizer) -> CGPoint {
+        if let pan = gesture as? PrecisePanGestureRecognizer {
+            return pan.drawingViewPoint(fallbackIn: self)
+        }
+        if let tap = gesture as? PreciseTapGestureRecognizer {
+            return tap.drawingViewPoint(fallbackIn: self)
+        }
+        return gesture.location(in: self)
     }
 }
 
@@ -925,21 +1152,31 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
         }
 
         if let tap = gestureRecognizer as? UITapGestureRecognizer {
+            if tap.numberOfTouchesRequired == 2 {
+                // Finger undo stays available even when finger drawing is off.
+                return true
+            }
             if tap.numberOfTapsRequired == 2 {
                 // Double-tap recognizer only finishes curves; inert elsewhere.
-                return activeCategory == .curve && shouldAcceptDrawingTouch(touch)
+                // Accept a finger double-tap too so the curve can always be finished,
+                // even when finger drawing is off and the curve was drawn with a Pencil.
+                return activeCategory == .curve
             }
             if activeCategory == .curve {
-                // Curve points come from Pencil drags; ignore stray single taps.
-                return false
+                // Curve points come from Pencil drags; a single tap still needs to
+                // reach the editor so tapping empty canvas can dismiss the tool.
+                return true
             }
             switch activeCategory {
             case .line, .circle, .rectangle:
                 if isCommandMode {
                     return shouldAcceptDrawingTouch(touch)
                 }
-            case .trim, .delete, .addAnchor:
-                return shouldAcceptDrawingTouch(touch)
+            case .trim, .delete, .addAnchor, .copy, .scale, .fillet, .pattern, .dimensions:
+                // These tools used to hit-test via SwiftUI overlays (finger-friendly).
+                // Always accept finger taps so they keep working when "finger drawing"
+                // is off, including tap-empty-to-dismiss.
+                return true
             default:
                 break
             }

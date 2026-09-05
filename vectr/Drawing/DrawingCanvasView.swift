@@ -8,7 +8,7 @@ import SwiftUI
 struct DrawingCanvasView: UIViewRepresentable {
     @Bindable var document: VectrDocument
     var isCommandMode: Bool = false
-    var activeCategory: ToolCategory = .line
+    var activeCategory: ToolCategory?
     var commandPreviewPoints: [CGPoint] = []
     var commandControlPoints: [CGPoint] = []
     var commandCanFinish: Bool = false
@@ -26,18 +26,26 @@ struct DrawingCanvasView: UIViewRepresentable {
     var rectangleVariant: RectangleVariant = .center
     var canvasBackgroundColor: Color = Color(hex: AppearanceSettings.defaultCanvasHex)
     var onCanvasTap: ((CGPoint) -> Void)?
+    var onTwoFingerTap: (() -> Void)?
     var onStrokeSelected: ((VectorStroke?) -> Void)?
     var onDragDrawBegan: ((CGPoint) -> Void)?
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
+    var curveDraft: CurveDraftSession?
     var onCurveCommitted: (([CGPoint]) -> Void)?
+    var onLayoutMetrics: ((CGSize, UIEdgeInsets) -> Void)?
 
     func makeUIView(context: Context) -> DrawingCanvasUIView {
         let view = DrawingCanvasUIView(document: document)
+        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.delegate = context.coordinator
         configure(view)
         context.coordinator.canvasView = view
         return view
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: DrawingCanvasUIView, context: Context) -> CGSize {
+        CGSize(width: proposal.width ?? uiView.bounds.width, height: proposal.height ?? uiView.bounds.height)
     }
 
     func updateUIView(_ uiView: DrawingCanvasUIView, context: Context) {
@@ -106,9 +114,9 @@ struct DrawingCanvasView: UIViewRepresentable {
     }
 
     private func configure(_ uiView: DrawingCanvasUIView) {
-        let resolvedBackground = UIColor(canvasBackgroundColor)
-        if uiView.backgroundColor != resolvedBackground {
-            uiView.backgroundColor = resolvedBackground
+        let resolvedCanvasFill = UIColor(canvasBackgroundColor)
+        if uiView.canvasFillColor != resolvedCanvasFill {
+            uiView.canvasFillColor = resolvedCanvasFill
         }
         if uiView.isCommandMode != isCommandMode {
             uiView.isCommandMode = isCommandMode
@@ -144,10 +152,15 @@ struct DrawingCanvasView: UIViewRepresentable {
             uiView.rectangleVariant = rectangleVariant
         }
         uiView.onCanvasTap = onCanvasTap
+        uiView.onTwoFingerTap = onTwoFingerTap
         uiView.onDragDrawBegan = onDragDrawBegan
         uiView.onDragDrawChanged = onDragDrawChanged
         uiView.onDragDrawEnded = onDragDrawEnded
+        if uiView.curveDraft !== curveDraft {
+            uiView.curveDraft = curveDraft
+        }
         uiView.onCurveCommitted = onCurveCommitted
+        uiView.onLayoutMetrics = onLayoutMetrics
     }
 
     func makeCoordinator() -> Coordinator {

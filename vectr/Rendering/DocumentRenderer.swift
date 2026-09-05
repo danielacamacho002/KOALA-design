@@ -62,7 +62,7 @@ enum DocumentRenderer {
                 viewport: viewport,
                 grid: document.grid,
                 documentSettings: document.settings,
-                canvasExtent: document.settings.canvasExtent
+                canvasSize: document.settings.canvasSize
             )
         }
 
@@ -80,8 +80,14 @@ enum DocumentRenderer {
         }
 
         for stroke in document.visibleStrokes() {
-            let path = StrokeRenderer.path(for: stroke, viewport: viewport).cgPath
-            context.addPath(path)
+            context.saveGState()
+            context.setAlpha(document.opacity(forLayerID: stroke.layerID))
+            if stroke.isClosed, !stroke.isConstruction {
+                context.addPath(StrokeRenderer.path(for: stroke, viewport: viewport).cgPath)
+                context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
+                context.fillPath(using: stroke.cutoutPoints.isEmpty ? .winding : .evenOdd)
+            }
+            context.addPath(StrokeRenderer.outlinePath(for: stroke, viewport: viewport).cgPath)
             context.setStrokeColor(strokeColor(for: stroke))
             context.setLineWidth(viewport.documentToView(distance: stroke.strokeWidth))
             context.setLineCap(.round)
@@ -89,14 +95,9 @@ enum DocumentRenderer {
             if stroke.isConstruction {
                 context.setLineDash(phase: 0, lengths: [10, 6])
             }
-            if stroke.isClosed, !stroke.isConstruction {
-                context.setFillColor(UIColor.systemGray.withAlphaComponent(0.25).cgColor)
-                let fillMode: CGPathDrawingMode = stroke.cutoutPoints.isEmpty ? .fillStroke : .eoFillStroke
-                context.drawPath(using: fillMode)
-            } else {
-                context.strokePath()
-            }
+            context.strokePath()
             context.setLineDash(phase: 0, lengths: [])
+            context.restoreGState()
         }
 
         let documentToView = CGAffineTransform(
@@ -106,17 +107,28 @@ enum DocumentRenderer {
         for element in document.visibleTextElements() {
             var transform = documentToView
             guard let viewPath = TextOutline.path(for: element).copy(using: &transform) else { continue }
+            context.saveGState()
+            context.setAlpha(document.opacity(forLayerID: element.layerID))
             context.addPath(viewPath)
-            context.setFillColor(element.cgColor)
-            context.fillPath()
+            if element.isOutline {
+                context.setStrokeColor(element.strokeCGColor)
+                context.setLineWidth(viewport.documentToView(distance: element.strokeWidth))
+                context.setLineCap(.round)
+                context.setLineJoin(.round)
+                context.strokePath()
+            } else {
+                context.setFillColor(element.cgColor)
+                context.fillPath()
+            }
+            context.restoreGState()
         }
     }
 
     static func boundingRect(for document: VectrDocument) -> CGRect {
         let points = allPoints(in: document)
         guard !points.isEmpty else {
-            let extent = document.settings.canvasExtent
-            return CGRect(x: -extent / 2, y: -extent / 2, width: extent, height: extent)
+            let size = document.settings.canvasSize
+            return CGRect(x: -size.width / 2, y: -size.height / 2, width: size.width, height: size.height)
         }
         var rect = CGRect.null
         for point in points { rect = rect.union(CGRect(origin: point, size: .zero)) }

@@ -10,8 +10,8 @@ struct ViewportTransform: Codable, Equatable {
     var scale: CGFloat = 1
     var translation: CGPoint = .zero
 
-    static let minScale: CGFloat = 0.1
-    static let maxScale: CGFloat = 8
+    static let minScale: CGFloat = 0.02
+    static let maxScale: CGFloat = 24
 
     mutating func clampScale() {
         scale = min(Self.maxScale, max(Self.minScale, scale))
@@ -26,33 +26,37 @@ struct ViewportTransform: Codable, Equatable {
         )
     }
 
-    /// Constrains pan/zoom so the canvas extent acts as a hard viewport boundary.
-    mutating func clampToCanvasExtent(in viewSize: CGSize, canvasExtent: CGFloat) {
-        guard canvasExtent > 0, viewSize.width > 0, viewSize.height > 0 else { return }
+    /// Fraction of the fit-to-view scale allowed as the zoom-out floor. Lower values let
+    /// you zoom further out, leaving more pasteboard around the canvas.
+    static let canvasFitPadding: CGFloat = 0.4
 
-        let minScaleToFillView = max(
-            viewSize.width / canvasExtent,
-            viewSize.height / canvasExtent
-        )
-        scale = min(Self.maxScale, max(scale, minScaleToFillView))
+    /// Smallest scale that still shows the whole canvas within the view (with a little margin).
+    static func minimumScaleToFitCanvas(in viewSize: CGSize, canvasSize: CGSize) -> CGFloat {
+        guard canvasSize.width > 0, canvasSize.height > 0,
+              viewSize.width > 0, viewSize.height > 0 else { return minScale }
+        let fitScale = min(viewSize.width / canvasSize.width, viewSize.height / canvasSize.height)
+        return max(minScale, fitScale * canvasFitPadding)
+    }
 
-        let half = canvasExtent / 2
+    /// Constrains the zoom level to the supported range. Panning is intentionally left free so the
+    /// canvas can be dragged anywhere on (or off) screen, behaving identically when zoomed in or
+    /// out; the two-finger gesture is what naturally limits how far it travels.
+    mutating func clampToCanvasSize(in viewSize: CGSize, canvasSize: CGSize) {
+        guard canvasSize.width > 0, canvasSize.height > 0,
+              viewSize.width > 0, viewSize.height > 0 else { return }
 
-        let minTranslationX = viewSize.width - half * scale
-        let maxTranslationX = half * scale
-        if minTranslationX <= maxTranslationX {
-            translation.x = min(max(translation.x, minTranslationX), maxTranslationX)
-        } else {
-            translation.x = viewSize.width / 2
-        }
+        let minAllowedScale = Self.minimumScaleToFitCanvas(in: viewSize, canvasSize: canvasSize)
+        scale = min(Self.maxScale, max(scale, minAllowedScale))
+    }
 
-        let minTranslationY = viewSize.height - half * scale
-        let maxTranslationY = half * scale
-        if minTranslationY <= maxTranslationY {
-            translation.y = min(max(translation.y, minTranslationY), maxTranslationY)
-        } else {
-            translation.y = viewSize.height / 2
-        }
+    /// Shifts translation so the same document point stays at the view center after a resize.
+    /// Used during device rotation so the sheet does not sit in the old landscape position
+    /// and then slide into portrait a beat later.
+    mutating func preserveCenter(from oldSize: CGSize, to newSize: CGSize) {
+        guard oldSize.width > 0, oldSize.height > 0,
+              newSize.width > 0, newSize.height > 0 else { return }
+        translation.x += (newSize.width - oldSize.width) / 2
+        translation.y += (newSize.height - oldSize.height) / 2
     }
 
     func viewToDocument(_ point: CGPoint) -> CGPoint {
@@ -89,7 +93,8 @@ struct ViewportTransform: Codable, Equatable {
         _ points: [CGPoint],
         in viewSize: CGSize,
         margin: CGFloat = 48,
-        chrome: ChromeInsets = ChromeInsets()
+        chrome: ChromeInsets = ChromeInsets(),
+        minScale: CGFloat = 2
     ) {
         let leftInset = chrome.left
         let topInset = chrome.top
@@ -102,7 +107,7 @@ struct ViewportTransform: Codable, Equatable {
         let scaleX = drawableWidth / max(bounds.width, 1)
         let scaleY = drawableHeight / max(bounds.height, 1)
         scale = min(scaleX, scaleY, Self.maxScale)
-        scale = max(scale, 2)
+        scale = max(scale, max(minScale, Self.minScale))
 
         let documentCenter = CGPoint(x: bounds.midX, y: bounds.midY)
         let viewCenter = CGPoint(
@@ -132,6 +137,24 @@ struct ViewportTransform: Codable, Equatable {
     mutating func centerOnAxisOrigin(in viewSize: CGSize) {
         guard viewSize.width > 0, viewSize.height > 0 else { return }
         translation = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+    }
+
+    /// Frames the whole canvas sheet inside `visibleRect` and places the document origin
+    /// (the X/Y axis intersection) on the midpoint of that rect.
+    ///
+    /// `visibleRect` is in canvas-view coordinates — the area of the UIView that is not
+    /// covered by the top toolbar. `fillFactor` scales the fit: 1.0 fits the sheet exactly,
+    /// values above 1.0 zoom in so the sheet overflows the visible area.
+    mutating func frameCanvasInDrawableArea(
+        canvasSize: CGSize,
+        visibleRect: CGRect,
+        fillFactor: CGFloat = 1.2
+    ) {
+        guard canvasSize.width > 0, canvasSize.height > 0,
+              visibleRect.width > 0, visibleRect.height > 0 else { return }
+        let fit = min(visibleRect.width / canvasSize.width, visibleRect.height / canvasSize.height) * fillFactor
+        scale = min(Self.maxScale, max(Self.minScale, fit))
+        translation = CGPoint(x: visibleRect.midX, y: visibleRect.midY)
     }
 
     /// Default view for a new empty project: reasonable zoom with origin centered.

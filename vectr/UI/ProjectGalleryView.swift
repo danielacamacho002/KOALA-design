@@ -13,6 +13,7 @@ struct ProjectGalleryView: View {
     @State private var isSelectionMode = false
     @State private var selectedIDs: Set<UUID> = []
     @State private var showImportPicker = false
+    @State private var showNewCanvasSheet = false
     @State private var showExportSheet = false
     @State private var pendingShareAfterDismiss = false
     @State private var exportFormat: ExportFormat = .vectr
@@ -87,6 +88,11 @@ struct ProjectGalleryView: View {
         ) { result in
             handleImport(result)
         }
+        .sheet(isPresented: $showNewCanvasSheet) {
+            CanvasSizeSheet { size, units in
+                createProject(canvasSize: size, units: units)
+            }
+        }
         .sheet(isPresented: $showExportSheet, onDismiss: {
             guard pendingShareAfterDismiss else { return }
             pendingShareAfterDismiss = false
@@ -114,11 +120,11 @@ struct ProjectGalleryView: View {
     }
 
     private var galleryTitle: some View {
-        Text("myda")
-            .font(.custom("CourierNewPSMT", size: 34))
+        Text("koala.")
+            .font(.custom("HelveticaNeue-Bold", size: 34))
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityLabel("myda")
+            .accessibilityLabel("koala.")
     }
 
     @ToolbarContentBuilder
@@ -155,7 +161,7 @@ struct ProjectGalleryView: View {
                 } label: {
                     Image(systemName: "checkmark.circle")
                 }
-                Button { createProject() } label: {
+                Button { showNewCanvasSheet = true } label: {
                     Image(systemName: "plus")
                 }
             }
@@ -189,9 +195,9 @@ struct ProjectGalleryView: View {
         }
     }
 
-    private func createProject() {
+    private func createProject(canvasSize: CGSize? = nil, units: MeasurementUnit = .inches) {
         do {
-            let record = try library.createProject()
+            let record = try library.createProject(canvasSize: canvasSize, units: units)
             navigationPath.append(record.id)
         } catch {
             errorMessage = error.localizedDescription

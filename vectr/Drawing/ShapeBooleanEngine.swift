@@ -17,6 +17,73 @@ import Foundation
 /// fully contained by the base the target contour is used verbatim so the cutout
 /// keeps the target's exact geometry (quad, ellipse, Bézier path, or circle).
 enum ShapeBooleanEngine {
+    /// A reshaped outer contour plus the vertex indices whose outgoing edge is a cut
+    /// edge (bounds the carved notch and should be filled through but not stroked).
+    struct CutContour: Equatable {
+        var points: [CGPoint]
+        var cutEdgeStarts: [Int]
+    }
+
+    /// Outcome of subtracting a target shape from a base shape.
+    enum Subtraction: Equatable {
+        /// Target sits entirely inside the base: punch an even-odd hole by appending
+        /// these contours to `base.cutoutPoints`.
+        case interiorHole([[CGPoint]])
+        /// Target crosses the base boundary: the base's *outer* outline must be
+        /// reshaped. These are the resulting `base − target` contours (largest first).
+        case boundaryCut([CutContour])
+        /// Target fully covers the base: the base is consumed and should be removed.
+        case baseRemoved
+    }
+
+    /// Classifies how `target` subtracts from `base` and returns the geometry needed
+    /// to apply it, or `nil` when the two shapes do not meaningfully overlap.
+    ///
+    /// Both contours are expected to be fully expanded render geometry (tessellated
+    /// circles/ellipses, sampled Béziers, quads), so the result preserves the drawn
+    /// shapes rather than re-approximating them.
+    static func subtract(baseContour: [CGPoint], targetContour: [CGPoint]) -> Subtraction? {
+        let base = normalized(baseContour)
+        let target = normalized(targetContour)
+        guard base.count >= 3, target.count >= 3 else { return nil }
+
+        let baseArea = abs(signedArea(base))
+        let targetArea = abs(signedArea(target))
+        guard baseArea > .ulpOfOne, targetArea > .ulpOfOne else { return nil }
+        let minArea = max(1e-4, min(baseArea, targetArea) * 0.0005)
+
+        // Target fully contained → interior hole preserving the target's boundary.
+        if target.allSatisfy({ polygon(base, contains: $0) }) {
+            return .interiorHole([literalPolygonContour(target)])
+        }
+
+        // Base fully contained → the cut swallows the whole base.
+        if base.allSatisfy({ polygon(target, contains: $0) }) {
+            return .baseRemoved
+        }
+
+        // Must genuinely overlap (crossing edges or partial containment) to subtract.
+        guard PolygonBoolean.polygonsOverlap(base, target) else { return nil }
+
+        let contours = PolygonBoolean.difference(subject: base, clip: target)
+            .filter { $0.points.count >= 3 && abs(signedArea($0.points)) > minArea }
+            .sorted { abs(signedArea($0.points)) > abs(signedArea($1.points)) }
+            .map { CutContour(points: $0.points, cutEdgeStarts: $0.cutEdgeStarts) }
+
+        guard !contours.isEmpty else { return .baseRemoved }
+
+        // Require that a meaningful area was actually carved away. Two shapes that only
+        // touch along a shared edge (adjacent grid cells) pass `polygonsOverlap` because
+        // a boundary vertex reads as "inside" in the even-odd test, yet `difference`
+        // returns the base essentially unchanged. Reporting that as a cut would delete
+        // the target while leaving the base untouched, so callers must keep searching
+        // for a base the target genuinely overlaps.
+        let remainingArea = contours.reduce(CGFloat.zero) { $0 + abs(signedArea($1.points)) }
+        guard baseArea - remainingArea > minArea else { return nil }
+
+        return .boundaryCut(contours)
+    }
+
     /// Contours of `(base ∩ target)` to append to `base.cutoutPoints`, or `nil`
     /// when the two shapes do not meaningfully overlap.
     ///

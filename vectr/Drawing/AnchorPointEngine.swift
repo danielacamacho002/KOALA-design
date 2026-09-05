@@ -77,19 +77,35 @@ enum AnchorPointEngine {
         let bakedBase = bakedFilletStroke(for: stroke) ?? stroke
 
         let working = editableStroke(for: bakedBase)
-        guard let projection = StrokeEditor.projectPointOnNearestEdge(
-            in: working,
-            point: point,
-            threshold: threshold
-        ) else { return nil }
-
-        guard projection.t > endpointEpsilon, projection.t < 1 - endpointEpsilon else { return nil }
+        let path = pathPoints(for: working)
+        let totalLength = perimeterLength(of: path)
+        guard totalLength > 0,
+              let projection = closestPointOnPath(path, to: point, totalLength: totalLength),
+              distance(projection.point, point) <= threshold else { return nil }
 
         var points = dedupedHandlePoints(for: working)
-        let insertIndex = projection.edgeIndex + 1
+        let ordered = anchorsOrderedAlongPath(points, path: path, totalLength: totalLength)
+        guard !ordered.isEmpty else { return nil }
+
+        var insertIndex = points.count
+        for (index, anchor) in ordered.enumerated() {
+            let next = ordered[(index + 1) % ordered.count]
+            let gap = forwardGapLength(from: anchor.arcDistance, to: next.arcDistance, totalLength: totalLength)
+            let offset = forwardGapLength(
+                from: anchor.arcDistance,
+                to: projection.arcDistance,
+                totalLength: totalLength
+            )
+            if offset > endpointEpsilon, offset < gap - endpointEpsilon {
+                if let originalIndex = points.firstIndex(where: { distance($0, anchor.point) <= dedupeEpsilon }) {
+                    insertIndex = originalIndex + 1
+                }
+                break
+            }
+        }
         guard insertIndex <= points.count else { return nil }
 
-        points.insert(projection.projected, at: insertIndex)
+        points.insert(projection.point, at: insertIndex)
 
         let remappedCorners = remappedCornerRadii(
             from: working,
@@ -311,35 +327,17 @@ enum AnchorPointEngine {
     /// Dense path used for edge projection and arc-length placement.
     private static func pathPoints(for stroke: VectorStroke) -> [CGPoint] {
         switch stroke.shapeType {
-        case .circle, .ellipse:
+        case .circle, .ellipse, .arc:
             return ShapeGeometry.renderPoints(for: stroke)
         default:
             return dedupedHandlePoints(for: stroke)
         }
     }
 
-    /// Stroke used for mutations; converts parametric shapes to editable polylines when needed.
+    /// Stroke used for mutations. Circles/arcs stay on their compact default anchors;
+    /// adding a point must not explode them into the 64-sample render polyline.
     private static func editableStroke(for stroke: VectorStroke) -> VectorStroke {
-        switch stroke.shapeType {
-        case .circle, .ellipse:
-            let rendered = ShapeGeometry.renderPoints(for: stroke)
-            guard rendered.count >= 3 else { return stroke }
-            return VectorStroke(
-                id: stroke.id,
-                layerID: stroke.layerID,
-                points: rendered,
-                strokeWidth: stroke.strokeWidth,
-                strokeColor: stroke.strokeColor,
-                isClosed: stroke.isClosed,
-                cornerRadius: 0,
-                cornerRadiiByIndex: nil,
-                isConstruction: stroke.isConstruction,
-                shapeType: .polyline,
-                cutoutPoints: stroke.cutoutPoints
-            )
-        default:
-            return stroke
-        }
+        ShapeGeometry.withCompactedCircularAnchors(stroke)
     }
 
     private static func dedupedHandlePoints(for stroke: VectorStroke) -> [CGPoint] {
@@ -518,6 +516,23 @@ enum AnchorPointEngine {
         hypot(a.x - b.x, a.y - b.y)
     }
 
+    /// True when every new anchor still lies on the original circle.
+    private static func stillCircularClosed(_ stroke: VectorStroke, points: [CGPoint]) -> Bool {
+        let circle: (center: CGPoint, radius: CGFloat)
+        if let existing = ShapeGeometry.arcCircle(for: stroke) {
+            circle = existing
+        } else if let existing = ShapeGeometry.circleFromCardinalPoints(stroke.points) {
+            circle = existing
+        } else {
+            return false
+        }
+        guard points.count >= 2 else { return false }
+        let tolerance = max(0.75, circle.radius * 0.025)
+        return points.allSatisfy {
+            abs(hypot($0.x - circle.center.x, $0.y - circle.center.y) - circle.radius) <= tolerance
+        }
+    }
+
     private static func updatedStroke(
         _ stroke: VectorStroke,
         points: [CGPoint],
@@ -532,11 +547,23 @@ enum AnchorPointEngine {
         }
 
         let keepRectangleRadius = shapeType == .rectangle && points.count == 4
-        // A curve's anchor count changed, so rebuild its tangent handles to stay in
-        // sync; otherwise the move tool can't show/edit the beziers after editing.
-        let curveHandles = shapeType == .curve
-            ? ShapeGeometry.defaultCurveHandles(anchors: points)
-            : nil
+        let curveHandles: [CurveHandle]?
+        var resolvedSmooth = smoothMiddles
+        if stillCircularClosed(stroke, points: points) {
+            if points.count == 4 {
+                shapeType = .circle
+                curveHandles = nil
+                resolvedSmooth = nil
+            } else {
+                shapeType = .polyline
+                curveHandles = nil
+                resolvedSmooth = Set(points.indices)
+            }
+        } else if shapeType == .curve {
+            curveHandles = ShapeGeometry.defaultCurveHandles(anchors: points, closed: true)
+        } else {
+            curveHandles = nil
+        }
         return VectorStroke(
             id: stroke.id,
             layerID: stroke.layerID,
@@ -546,7 +573,7 @@ enum AnchorPointEngine {
             isClosed: true,
             cornerRadius: keepRectangleRadius ? stroke.cornerRadius : 0,
             cornerRadiiByIndex: keepRectangleRadius ? cornerRadiiByIndex : nil,
-            smoothCornerIndices: smoothMiddles,
+            smoothCornerIndices: resolvedSmooth,
             isConstruction: stroke.isConstruction,
             shapeType: shapeType,
             cutoutPoints: stroke.cutoutPoints,

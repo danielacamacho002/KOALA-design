@@ -40,9 +40,26 @@ struct VectorStroke: Identifiable, Codable, Equatable {
     var rotationBaseCenter: CGPoint? = nil
     /// Nested closed contours subtracted from the fill (even-odd), e.g. inner circle holes.
     var cutoutPoints: [[CGPoint]] = []
+    /// Indices `i` (into `points`) whose outgoing edge `points[i] → points[i+1]` is a
+    /// Boolean *cut* edge: it bounds a notch carved out of an edge and must be filled
+    /// through but NOT stroked, so a through-cut has no outline along the removed area.
+    var openEdgeStarts: [Int]? = nil
+    /// Indices into `cutoutPoints` for holes punched by a Boolean cut. They still carve
+    /// the fill (even-odd) but are NOT stroked, so a punched hole has no outline —
+    /// unlike donut rings, whose inner circle is a real, stroked edge.
+    var openCutoutIndices: Set<Int>? = nil
     /// Editable Bezier tangent handles for `.curve` strokes, one entry per anchor in `points`.
     /// When nil, curves fall back to the auto-computed cardinal spline.
     var curveHandles: [CurveHandle]? = nil
+    /// Fill opacity (0...1) for closed shapes. `nil` falls back to `defaultFillOpacity`.
+    var fillOpacity: CGFloat? = nil
+    /// When `true`, omitted from canvas, hit-testing, and export.
+    /// Optional so older documents without this key still decode: synthesized
+    /// Codable throws on a missing non-optional key even when a default exists.
+    var isHidden: Bool? = nil
+
+    /// Default plane fill opacity for closed shapes that have never been customized.
+    static let defaultFillOpacity: CGFloat = 0.25
 
     init(
         id: UUID = UUID(),
@@ -60,7 +77,11 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         rotationBasePoints: [CGPoint]? = nil,
         rotationBaseCenter: CGPoint? = nil,
         cutoutPoints: [[CGPoint]] = [],
-        curveHandles: [CurveHandle]? = nil
+        openEdgeStarts: [Int]? = nil,
+        openCutoutIndices: Set<Int>? = nil,
+        curveHandles: [CurveHandle]? = nil,
+        fillOpacity: CGFloat? = nil,
+        isHidden: Bool? = nil
     ) {
         self.id = id
         self.layerID = layerID
@@ -77,11 +98,23 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         self.rotationBasePoints = rotationBasePoints
         self.rotationBaseCenter = rotationBaseCenter
         self.cutoutPoints = cutoutPoints
+        self.openEdgeStarts = openEdgeStarts
+        self.openCutoutIndices = openCutoutIndices
         self.curveHandles = curveHandles
+        self.fillOpacity = fillOpacity
+        self.isHidden = isHidden
     }
+
+    /// True when this stroke should be omitted from canvas, hit-testing, and export.
+    var isHiddenFromCanvas: Bool { isHidden == true }
 
     var resolvedShapeRotation: CGFloat {
         shapeRotation ?? 0
+    }
+
+    /// Effective fill opacity for closed, non-construction shapes, clamped to 0...1.
+    var resolvedFillOpacity: CGFloat {
+        min(1, max(0, fillOpacity ?? VectorStroke.defaultFillOpacity))
     }
 
     var rotationDegrees: Double {
@@ -169,9 +202,15 @@ struct VectorStroke: Identifiable, Codable, Equatable {
 
     func cgPath() -> CGPath {
         let path = CGMutablePath()
-        // Curves are stored as sparse anchors; expand to the smoothed geometry so
-        // exported/extruded paths match what is drawn on screen.
-        let pathPoints = shapeType == .curve ? ShapeGeometry.renderPoints(for: self) : points
+        // Sparse parametric shapes expand through renderPoints so export/extrude
+        // match on-canvas geometry (curves, circles, ellipses, and arcs).
+        let pathPoints: [CGPoint]
+        switch shapeType {
+        case .curve, .circle, .ellipse, .arc:
+            pathPoints = ShapeGeometry.renderPoints(for: self)
+        default:
+            pathPoints = points
+        }
         guard let first = pathPoints.first else { return path }
         path.move(to: first)
         for point in pathPoints.dropFirst() {
@@ -201,6 +240,34 @@ struct VectorStroke: Identifiable, Codable, Equatable {
             width: maxX - minX + padding * 2,
             height: maxY - minY + padding * 2
         )
+    }
+
+    /// Independent copy translated by `offset`, keeping every modifier so Duplicate
+    /// matches the original: fillets, baked smooth corners, holes, cut edges, curve
+    /// handles, rotation baseline, and fill.
+    func duplicated(offset: CGPoint) -> VectorStroke {
+        var copy = self
+        copy.id = UUID()
+        return copy.offsettingGeometry(by: offset)
+    }
+
+    /// Shifts every stored point by `offset` without changing identity or modifiers.
+    func offsettingGeometry(by offset: CGPoint) -> VectorStroke {
+        guard offset != .zero else { return self }
+        var copy = self
+        copy.points = copy.points.map { CGPoint(x: $0.x + offset.x, y: $0.y + offset.y) }
+        copy.cutoutPoints = copy.cutoutPoints.map { contour in
+            contour.map { CGPoint(x: $0.x + offset.x, y: $0.y + offset.y) }
+        }
+        if let basePoints = copy.rotationBasePoints {
+            copy.rotationBasePoints = basePoints.map {
+                CGPoint(x: $0.x + offset.x, y: $0.y + offset.y)
+            }
+        }
+        if let center = copy.rotationBaseCenter {
+            copy.rotationBaseCenter = CGPoint(x: center.x + offset.x, y: center.y + offset.y)
+        }
+        return copy
     }
 
     func distance(to point: CGPoint) -> CGFloat {
