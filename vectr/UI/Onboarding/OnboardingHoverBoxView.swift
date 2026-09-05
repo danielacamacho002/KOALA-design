@@ -52,7 +52,10 @@ struct OnboardingTourOverlay: View {
     private let margin: CGFloat = 12
 
     var body: some View {
-        if controller.isActive, let step = controller.currentStep {
+        if controller.isActive,
+           let step = controller.currentStep,
+           step.target.boxPlacement != .aboveSnaps {
+            let origin = followOrigin(for: step)
             OnboardingHoverBoxView(
                 step: step,
                 stepNumber: controller.stepNumber,
@@ -60,22 +63,44 @@ struct OnboardingTourOverlay: View {
                 onNext: { controller.advance() },
                 onSkipAll: { controller.skipAll() }
             )
-            .padding(boxOrigin(for: step) == nil ? step.padding : EdgeInsets())
+            .padding(boxPadding(for: step, followOrigin: origin))
             .alignmentGuide(.leading) { guide in
-                guard let origin = boxOrigin(for: step) else { return guide[.leading] }
+                guard let origin else { return guide[.leading] }
                 return -origin.x
             }
             .alignmentGuide(.top) { guide in
-                guard let origin = boxOrigin(for: step) else { return guide[.top] }
+                guard let origin else { return guide[.top] }
                 return -origin.y
             }
             .transition(.opacity.combined(with: .move(edge: .leading)))
         }
     }
 
-    /// Top-leading origin of the hover box in overlay coordinates, when a target is measured.
-    private func boxOrigin(for step: OnboardingStep) -> CGPoint? {
-        guard step.target != .none,
+    private func boxPadding(for step: OnboardingStep, followOrigin: CGPoint?) -> EdgeInsets {
+        switch step.target.boxPlacement {
+        case .aboveSnaps:
+            if let target = anchors[OnboardingTarget.snaps.anchorID], overlayFrame.width > 0 {
+                return EdgeInsets(
+                    top: 0,
+                    leading: max(margin, target.minX - overlayFrame.minX),
+                    bottom: max(8, overlayFrame.maxY - target.minY + 8),
+                    trailing: margin
+                )
+            }
+            return step.padding
+
+        case .trailingPark:
+            return EdgeInsets(top: 56, leading: 12, bottom: 0, trailing: 16)
+
+        case .followTarget:
+            return followOrigin == nil ? step.padding : EdgeInsets()
+        }
+    }
+
+    /// Top-leading origin used only when the box follows a measured toolbar target.
+    private func followOrigin(for step: OnboardingStep) -> CGPoint? {
+        guard step.target.boxPlacement == .followTarget,
+              step.target != .none,
               let target = anchors[step.target.anchorID],
               overlayFrame.width > 0
         else { return nil }
@@ -92,36 +117,12 @@ struct OnboardingTourOverlay: View {
             }
             return CGPoint(x: x, y: y)
 
-        case .layers:
-            let x = target.minX - overlayFrame.minX - panelWidth - margin
-            let y = max(8, target.minY - overlayFrame.minY)
-            if x < margin {
-                return CGPoint(
-                    x: max(margin, overlayFrame.width - panelWidth - margin),
-                    y: max(8, target.maxY - overlayFrame.minY + 8)
-                )
-            }
-            return CGPoint(x: x, y: y)
-
-        case .snaps:
-            let estimatedHeight: CGFloat = 156
-            let x = clampedLeading(centeringOn: target)
-            let aboveY = target.minY - overlayFrame.minY - estimatedHeight - 8
-            if aboveY >= 8 {
-                return CGPoint(x: x, y: aboveY)
-            }
-            return CGPoint(
-                x: min(max(margin, target.maxX - overlayFrame.minX + margin), overlayFrame.width - panelWidth - margin),
-                y: max(8, target.minY - overlayFrame.minY)
-            )
-
-        case .tool, .share, .save, .printLayout,
-             .modes, .paperGrid, .margins, .printTool, .export, .designChip:
+        case .tool, .modes, .paperGrid, .margins, .printTool, .export, .designChip:
             let x = clampedLeading(centeringOn: target)
             let y = max(8, target.maxY - overlayFrame.minY + 8)
             return CGPoint(x: x, y: y)
 
-        case .none:
+        default:
             return nil
         }
     }
@@ -164,8 +165,13 @@ extension View {
     ) -> some View {
         let alignment: Alignment = {
             guard let step = controller.currentStep else { return .topLeading }
-            let hasAnchor = anchors[step.target.anchorID] != nil && overlayFrame.width > 0
-            return step.target == .none || !hasAnchor ? step.alignment : .topLeading
+            switch step.target.boxPlacement {
+            case .aboveSnaps: return .bottomLeading
+            case .trailingPark: return .topTrailing
+            case .followTarget:
+                let hasAnchor = anchors[step.target.anchorID] != nil && overlayFrame.width > 0
+                return step.target == .none || !hasAnchor ? step.alignment : .topLeading
+            }
         }()
 
         return overlay(alignment: alignment) {

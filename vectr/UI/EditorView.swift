@@ -352,12 +352,25 @@ struct EditorView: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                SnapToggleBar(
-                    document: store.document,
-                    isTourHighlighted: designOnboarding.currentTarget == .snaps
-                )
-                    .padding(.leading, 16)
-                    .padding(.bottom, 16)
+                VStack(alignment: .leading, spacing: 8) {
+                    if designOnboarding.currentTarget == .snaps, let step = designOnboarding.currentStep {
+                        OnboardingHoverBoxView(
+                            step: step,
+                            stepNumber: designOnboarding.stepNumber,
+                            stepCount: designOnboarding.stepCount,
+                            onNext: { designOnboarding.advance() },
+                            onSkipAll: { designOnboarding.skipAll() }
+                        )
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
+                    SnapToggleBar(
+                        document: store.document,
+                        isTourHighlighted: designOnboarding.currentTarget == .snaps
+                    )
+                }
+                .animation(.easeInOut(duration: 0.15), value: designOnboarding.stepIndex)
+                .padding(.leading, 16)
+                .padding(.bottom, 16)
             }
             .overlay(alignment: .topTrailing) {
                 LayersPanelView(

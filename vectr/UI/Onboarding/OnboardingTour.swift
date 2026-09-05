@@ -43,6 +43,22 @@ enum OnboardingTarget: Equatable {
         case .printTool(let tool): return "printTool.\(tool.rawValue)"
         }
     }
+
+    /// Where the hover box sits. Snaps lifts above the bar; layers through the
+    /// last design steps park on the trailing edge and stay there.
+    var boxPlacement: OnboardingBoxPlacement {
+        switch self {
+        case .snaps: return .aboveSnaps
+        case .layers, .share, .save, .printLayout: return .trailingPark
+        default: return .followTarget
+        }
+    }
+}
+
+enum OnboardingBoxPlacement: Equatable {
+    case followTarget
+    case aboveSnaps
+    case trailingPark
 }
 
 /// A single instructional hover-box step.
