@@ -16,6 +16,7 @@ struct ToolCommandPanelView: View {
     var onDone: () -> Void
     var onCancel: () -> Void
     var onVariantChanged: () -> Void
+    var isTourHighlighted: Bool = false
 
     private let panelWidth: CGFloat = 150
     private static let thicknessRange: ClosedRange<CGFloat> = 0.5...48
@@ -70,6 +71,8 @@ struct ToolCommandPanelView: View {
             }
         }
         .toolPanelChrome(width: panelWidth)
+        .onboardingAnchor(.commandPanel)
+        .onboardingHighlight(isTourHighlighted, cornerRadius: 0)
         .onAppear { syncThicknessText() }
         .onChange(of: document.strokeWidth) { _, _ in syncThicknessText() }
     }

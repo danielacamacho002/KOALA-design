@@ -11,6 +11,7 @@ import SwiftUI
 /// document toggles.
 struct SnapToggleBar: View {
     @Bindable var document: VectrDocument
+    var isTourHighlighted: Bool = false
 
     private let iconSize: CGFloat = 34
 
@@ -76,5 +77,7 @@ struct SnapToggleBar: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.primary.opacity(0.05))
         }
+        .onboardingAnchor(.snaps)
+        .onboardingHighlight(isTourHighlighted, cornerRadius: 10, color: .accentColor)
     }
 }

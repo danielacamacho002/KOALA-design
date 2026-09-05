@@ -27,6 +27,10 @@ final class OnboardingController {
         return tour.steps[stepIndex]
     }
 
+    var currentTarget: OnboardingTarget? {
+        currentStep?.target
+    }
+
     var stepNumber: Int { stepIndex + 1 }
 
     var stepCount: Int { tour.stepCount }

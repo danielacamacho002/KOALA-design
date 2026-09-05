@@ -27,6 +27,8 @@ struct PrintLayoutView: View {
         tour: .printLayout,
         completedKey: OnboardingSettings.printTourCompletedKey
     )
+    @State private var onboardingAnchors: [String: CGRect] = [:]
+    @State private var onboardingOverlayFrame: CGRect = .zero
 
     private var hasPrintSelection: Bool {
         document.printSelectedStrokeID != nil || document.printSelectedTextID != nil
@@ -111,7 +113,11 @@ struct PrintLayoutView: View {
                         }
                 }
             }
-            .onboardingTourOverlay(controller: printOnboarding)
+            .onboardingTourOverlay(
+                controller: printOnboarding,
+                anchors: onboardingAnchors,
+                overlayFrame: onboardingOverlayFrame
+            )
             .onAppear {
                 onLayoutReady(geometry.size)
             }
@@ -132,9 +138,12 @@ struct PrintLayoutView: View {
                 onSave: onSave,
                 onSwitchToDesign: onSwitchToDesign,
                 onExport: onExport,
-                onSettingsChanged: onChanged
+                onSettingsChanged: onChanged,
+                highlightedTarget: printOnboarding.currentTarget
             )
         }
+        .onPreferenceChange(OnboardingAnchorPreferenceKey.self) { onboardingAnchors = $0 }
+        .onPreferenceChange(OnboardingOverlayFrameKey.self) { onboardingOverlayFrame = $0 }
     }
 
     private func handleCanvasTap(at documentPoint: CGPoint) {

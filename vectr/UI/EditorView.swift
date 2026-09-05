@@ -49,6 +49,8 @@ struct EditorView: View {
         tour: .design,
         completedKey: OnboardingSettings.designTourCompletedKey
     )
+    @State private var onboardingAnchors: [String: CGRect] = [:]
+    @State private var onboardingOverlayFrame: CGRect = .zero
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
 
     init(projectURL: URL? = nil, projectLibrary: ProjectLibrary? = nil) {
@@ -326,7 +328,8 @@ struct EditorView: View {
                             updateChromeInsets()
                             refreshCanvas()
                         },
-                        onVariantChanged: { startDrawingSessionIfNeeded() }
+                        onVariantChanged: { startDrawingSessionIfNeeded() },
+                        isTourHighlighted: designOnboarding.currentTarget == .commandPanel
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
@@ -348,12 +351,19 @@ struct EditorView: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                SnapToggleBar(document: store.document)
+                SnapToggleBar(
+                    document: store.document,
+                    isTourHighlighted: designOnboarding.currentTarget == .snaps
+                )
                     .padding(.leading, 16)
                     .padding(.bottom, 16)
             }
             .overlay(alignment: .topTrailing) {
-                LayersPanelView(document: store.document, isExpanded: $showLayersPanel) {
+                LayersPanelView(
+                    document: store.document,
+                    isExpanded: $showLayersPanel,
+                    isTourHighlighted: designOnboarding.currentTarget == .layers
+                ) {
                     refreshCanvas()
                 }
             }
@@ -379,7 +389,11 @@ struct EditorView: View {
                         }
                 }
             }
-            .onboardingTourOverlay(controller: designOnboarding)
+            .onboardingTourOverlay(
+                controller: designOnboarding,
+                anchors: onboardingAnchors,
+                overlayFrame: onboardingOverlayFrame
+            )
             .onAppear {
                 canvasSize = geometry.size
                 updateChromeInsets()
@@ -416,8 +430,14 @@ struct EditorView: View {
                 onShare: { showExportSheet = true },
                 onSave: { saveDocumentNow() },
                 onToolSelected: handleToolSelected,
-                onSwitchToPrintLayout: { switchToPrintLayoutMode() }
+                onSwitchToPrintLayout: { switchToPrintLayoutMode() },
+                highlightedTarget: designOnboarding.currentTarget
             )
+        }
+        .onPreferenceChange(OnboardingAnchorPreferenceKey.self) { onboardingAnchors = $0 }
+        .onPreferenceChange(OnboardingOverlayFrameKey.self) { onboardingOverlayFrame = $0 }
+        .onChange(of: designOnboarding.stepIndex) { _, _ in
+            revealCommandPanelIfNeeded()
         }
     }
 
@@ -846,6 +866,16 @@ struct EditorView: View {
             top: 56,
             bottom: 20
         )
+    }
+
+    private func revealCommandPanelIfNeeded() {
+        guard designOnboarding.currentTarget == .commandPanel else { return }
+        if store.document.activeCategory.isDrawingTool, commandSession.isActive, showCommandPanel {
+            return
+        }
+        store.document.selectTool(.line)
+        handleToolSelected(.line)
+        startDrawingSessionIfNeeded()
     }
 
     private func handleToolSelected(_ category: ToolCategory) {

@@ -8,6 +8,7 @@ import SwiftUI
 struct SideToolPaletteView: View {
     @Bindable var document: VectrDocument
     var onToolSelected: (ToolCategory) -> Void
+    var highlightedTarget: OnboardingTarget? = nil
 
     private let iconSize: CGFloat = 34
 
@@ -32,7 +33,8 @@ struct SideToolPaletteView: View {
     }
 
     private func toolButton(_ category: ToolCategory) -> some View {
-        StudioIconButton(
+        let isHighlighted = highlightedTarget == .tool(category)
+        return StudioIconButton(
             systemImage: category.systemImage,
             isActive: document.activeCategory == category,
             size: iconSize,
@@ -42,6 +44,8 @@ struct SideToolPaletteView: View {
             onToolSelected(category)
         }
         .accessibilityLabel(category.label)
+        .onboardingAnchor(.tool(category))
+        .onboardingHighlight(isHighlighted)
     }
 }
 
