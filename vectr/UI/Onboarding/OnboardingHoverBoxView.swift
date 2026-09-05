@@ -15,20 +15,22 @@ struct OnboardingHoverBoxView: View {
     var onSkipAll: () -> Void
 
     private let panelWidth: CGFloat = 220
+    private let bodyHeight: CGFloat = 56
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ToolPanelHeader(step.title)
-                .foregroundStyle(.white)
+                .foregroundStyle(.black)
 
             Text(step.body)
                 .font(.system(size: 11))
-                .foregroundStyle(.white)
-                .fixedSize(horizontal: false, vertical: true)
+                .foregroundStyle(.black)
+                .frame(maxWidth: .infinity, minHeight: bodyHeight, maxHeight: bodyHeight, alignment: .topLeading)
+                .lineLimit(4)
 
             Text("\(stepNumber) / \(stepCount)")
                 .font(.caption2)
-                .foregroundStyle(.white)
+                .foregroundStyle(.black)
 
             HStack(spacing: 8) {
                 ToolPanelLabelButton(title: "Skip all", action: onSkipAll)
