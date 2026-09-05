@@ -363,15 +363,24 @@ struct CodableColor: Codable, Equatable {
         var a: CGFloat = 1
         #if canImport(UIKit)
         let platform = UIColor(color)
-        platform.getRed(&r, green: &g, blue: &b, alpha: &a)
+        if let space = CGColorSpace(name: CGColorSpace.sRGB),
+           let srgb = platform.cgColor.converted(to: space, intent: .defaultIntent, options: nil),
+           let comps = srgb.components, comps.count >= 3 {
+            r = comps[0]
+            g = comps[1]
+            b = comps[2]
+            if comps.count > 3 { a = comps[3] }
+        } else {
+            platform.getRed(&r, green: &g, blue: &b, alpha: &a)
+        }
         #elseif canImport(AppKit)
         let platform = NSColor(color)
         platform.getRed(&r, green: &g, blue: &b, alpha: &a)
         #endif
-        red = r
-        green = g
-        blue = b
-        alpha = a
+        red = min(1, max(0, r))
+        green = min(1, max(0, g))
+        blue = min(1, max(0, b))
+        alpha = min(1, max(0, a))
     }
 
     init(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat = 1) {
