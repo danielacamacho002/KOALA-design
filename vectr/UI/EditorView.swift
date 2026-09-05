@@ -487,7 +487,7 @@ struct EditorView: View {
         .onPreferenceChange(OnboardingAnchorPreferenceKey.self) { onboardingAnchors = $0 }
         .onPreferenceChange(OnboardingOverlayFrameKey.self) { onboardingOverlayFrame = $0 }
         .onChange(of: designOnboarding.stepIndex) { _, _ in
-            revealCommandPanelIfNeeded()
+            syncPanelForTourStep()
         }
     }
 
@@ -1032,14 +1032,37 @@ struct EditorView: View {
         designOnboarding.restart()
     }
 
-    private func revealCommandPanelIfNeeded() {
-        guard designOnboarding.currentTarget == .commandPanel else { return }
-        if store.document.activeCategory.isDrawingTool, commandSession.isActive, showCommandPanel {
-            return
+    private func syncPanelForTourStep() {
+        guard designOnboarding.isActive else { return }
+        switch designOnboarding.currentTarget {
+        case .tool(let category):
+            selectToolForTour(category)
+        case .commandPanel:
+            selectToolForTour(.line)
+        default:
+            break
         }
-        store.document.selectTool(.line)
-        handleToolSelected(.line)
-        startDrawingSessionIfNeeded()
+    }
+
+    /// Selects a tool during the tour without committing destructive actions
+    /// (delete) or toggling dimensions off if they are already visible.
+    private func selectToolForTour(_ category: ToolCategory) {
+        switch category {
+        case .delete:
+            store.document.selectTool(.delete)
+            showCommandPanel = false
+            commandSession.cancel()
+            updateChromeInsets()
+        case .dimensions:
+            store.document.activeCategory = .dimensions
+            store.document.dimensionsVisible = true
+            showCommandPanel = false
+            commandSession.cancel()
+            updateChromeInsets()
+        default:
+            store.document.selectTool(category)
+            handleToolSelected(category)
+        }
     }
 
     private func handleToolSelected(_ category: ToolCategory?) {
