@@ -55,6 +55,8 @@ enum TiledPDFExporter {
     ) {
         for stroke in document.printLayoutStrokes() {
             let transform = document.effectivePrintTransform(for: stroke.id)
+            context.saveGState()
+            context.setAlpha(document.opacity(forLayerID: stroke.layerID))
             if stroke.isClosed, !stroke.isConstruction {
                 context.addPath(StrokeRenderer.path(for: stroke, viewport: viewport, pointTransform: transform).cgPath)
                 context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
@@ -70,6 +72,7 @@ enum TiledPDFExporter {
             }
             context.strokePath()
             context.setLineDash(phase: 0, lengths: [])
+            context.restoreGState()
         }
     }
 
@@ -83,6 +86,8 @@ enum TiledPDFExporter {
                 transform: document.effectivePrintTransform(for: element.id)
             )
             guard let path = TextOutline.path(for: element).copy(using: &transform) else { continue }
+            context.saveGState()
+            context.setAlpha(document.opacity(forLayerID: element.layerID))
             context.addPath(path)
             if element.isOutline {
                 context.setStrokeColor(element.strokeCGColor)
@@ -94,6 +99,7 @@ enum TiledPDFExporter {
                 context.setFillColor(element.cgColor)
                 context.fillPath()
             }
+            context.restoreGState()
         }
     }
 

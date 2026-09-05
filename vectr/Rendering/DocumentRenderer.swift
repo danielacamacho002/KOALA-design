@@ -80,6 +80,8 @@ enum DocumentRenderer {
         }
 
         for stroke in document.visibleStrokes() {
+            context.saveGState()
+            context.setAlpha(document.opacity(forLayerID: stroke.layerID))
             if stroke.isClosed, !stroke.isConstruction {
                 context.addPath(StrokeRenderer.path(for: stroke, viewport: viewport).cgPath)
                 context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
@@ -95,6 +97,7 @@ enum DocumentRenderer {
             }
             context.strokePath()
             context.setLineDash(phase: 0, lengths: [])
+            context.restoreGState()
         }
 
         let documentToView = CGAffineTransform(
@@ -104,6 +107,8 @@ enum DocumentRenderer {
         for element in document.visibleTextElements() {
             var transform = documentToView
             guard let viewPath = TextOutline.path(for: element).copy(using: &transform) else { continue }
+            context.saveGState()
+            context.setAlpha(document.opacity(forLayerID: element.layerID))
             context.addPath(viewPath)
             if element.isOutline {
                 context.setStrokeColor(element.strokeCGColor)
@@ -115,6 +120,7 @@ enum DocumentRenderer {
                 context.setFillColor(element.cgColor)
                 context.fillPath()
             }
+            context.restoreGState()
         }
     }
 

@@ -36,10 +36,15 @@ struct DrawingCanvasView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> DrawingCanvasUIView {
         let view = DrawingCanvasUIView(document: document)
+        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.delegate = context.coordinator
         configure(view)
         context.coordinator.canvasView = view
         return view
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: DrawingCanvasUIView, context: Context) -> CGSize {
+        CGSize(width: proposal.width ?? uiView.bounds.width, height: proposal.height ?? uiView.bounds.height)
     }
 
     func updateUIView(_ uiView: DrawingCanvasUIView, context: Context) {
