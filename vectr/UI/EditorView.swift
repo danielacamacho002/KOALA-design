@@ -215,6 +215,7 @@ struct EditorView: View {
                     onLayoutMetrics: updateCanvasLayoutMetrics
                 )
                 .ignoresSafeArea()
+                .transaction { $0.animation = nil }
 
                 if isDragDrawing, let start = dragDrawStart, let end = dragDrawEnd,
                    let category = store.document.activeCategory {
@@ -228,6 +229,7 @@ struct EditorView: View {
                     )
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
+                    .transaction { $0.animation = nil }
                 }
 
                 CanvasOverlayView(
@@ -245,11 +247,13 @@ struct EditorView: View {
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(canvasOverlayAcceptsHits)
+                .transaction { $0.animation = nil }
 
                 DimensionOverlayView(document: store.document) {
                     refreshCanvas()
                 }
                 .ignoresSafeArea()
+                .transaction { $0.animation = nil }
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .fillet {
@@ -455,7 +459,10 @@ struct EditorView: View {
             printLayoutNeedsInitialFit = false
             fitPrintLayoutToGrid(in: rect)
         } else {
-            centerPrintLayoutWithoutRescaling(in: rect)
+            // Keep size tracking current; the print canvas recenters itself
+            // during bounds changes so rotation does not wait on this callback.
+            canvasSize = rect.size
+            printCanvasRect = rect
         }
     }
 
