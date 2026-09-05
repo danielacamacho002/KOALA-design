@@ -22,6 +22,8 @@ struct LayersPanelView: View {
     @FocusState private var renameFieldFocused: Bool
     /// Layers picked for a group/merge operation (independent of the active layer).
     @State private var selectedLayerIDs: Set<UUID> = []
+    /// Local slider value so programmatic sync does not rewrite the document.
+    @State private var opacitySlider: Double = 1
 
     private let panelWidth: CGFloat = 248
     private let rowHeight: CGFloat = 44
@@ -46,6 +48,10 @@ struct LayersPanelView: View {
                 selectedLayerIDs = []
             }
         }
+        .onAppear { syncOpacitySlider() }
+        .onChange(of: document.activeLayerID) { _, _ in syncOpacitySlider() }
+        .onChange(of: selectedLayerIDs) { _, _ in syncOpacitySlider() }
+        .onChange(of: document.geometryRevision) { _, _ in syncOpacitySlider() }
     }
 
     // MARK: - Collapsed toggle
@@ -69,6 +75,7 @@ struct LayersPanelView: View {
     private var panelCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             panelHeader
+            opacityControls
             if !selectedLayerIDs.isEmpty {
                 selectionBar
             }
@@ -111,6 +118,34 @@ struct LayersPanelView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Collapse layers panel")
         }
+    }
+
+    private var opacityControls: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(opacityTargetIDs.count > 1 ? "Opacity (\(opacityTargetIDs.count))" : "Opacity")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(opacityLabel)
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(
+                value: opacityBinding,
+                in: 0...1,
+                onEditingChanged: { editing in
+                    if editing {
+                        document.beginInteractiveEdit()
+                    } else {
+                        onChanged()
+                    }
+                }
+            )
+            .controlSize(.small)
+            .accessibilityLabel("Layer opacity")
+        }
+        .padding(.horizontal, 2)
     }
 
     /// Contextual actions shown while one or more layers are selected.
@@ -282,6 +317,15 @@ struct LayersPanelView: View {
                     )
             }
 
+            let memberOpacities = members.map(\.resolvedOpacity)
+            if let first = memberOpacities.first,
+               first < 0.999,
+               memberOpacities.allSatisfy({ abs($0 - first) < 0.001 }) {
+                Text("\(Int((first * 100).rounded()))%")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
             let allVisible = document.layerGroupIsVisible(id: group.id)
             Image(systemName: allVisible ? "eye" : "eye.slash")
                 .font(.caption)
@@ -311,6 +355,15 @@ struct LayersPanelView: View {
                     beginRenameGroup(group)
                 } label: {
                     Label("Rename Folder", systemImage: "pencil")
+                }
+
+                if members.contains(where: { $0.resolvedOpacity < 0.999 }) {
+                    Button {
+                        document.setLayerGroupOpacity(id: group.id, opacity: 1)
+                        onChanged()
+                    } label: {
+                        Label("Reset Opacity", systemImage: "circle.lefthalf.filled")
+                    }
                 }
 
                 Button {
@@ -364,6 +417,7 @@ struct LayersPanelView: View {
             }
 
             LayerThumbnailView(document: document, layerID: layer.id)
+                .opacity(layer.resolvedOpacity)
                 .onTapGesture { activate(layer) }
 
             if renamingLayerID == layer.id {
@@ -381,6 +435,12 @@ struct LayersPanelView: View {
                                 before: TapGesture().onEnded { activate(layer) }
                             )
                     )
+            }
+
+            if layer.resolvedOpacity < 0.999 {
+                Text("\(Int((layer.resolvedOpacity * 100).rounded()))%")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
 
             Image(systemName: layer.isVisible ? "eye" : "eye.slash")
@@ -410,6 +470,15 @@ struct LayersPanelView: View {
                     beginRename(layer)
                 } label: {
                     Label("Rename", systemImage: "pencil")
+                }
+
+                if layer.resolvedOpacity < 0.999 {
+                    Button {
+                        document.setLayerOpacity(id: layer.id, opacity: 1)
+                        onChanged()
+                    } label: {
+                        Label("Reset Opacity", systemImage: "circle.lefthalf.filled")
+                    }
                 }
 
                 if layer.groupID != nil {
@@ -470,6 +539,40 @@ struct LayersPanelView: View {
 
     private var validSelection: Set<UUID> {
         selectedLayerIDs.intersection(Set(document.layers.map(\.id)))
+    }
+
+    /// Selected layers when a multi-select is active; otherwise the active layer.
+    private var opacityTargetIDs: Set<UUID> {
+        let selected = validSelection
+        if !selected.isEmpty { return selected }
+        return [document.activeLayerID]
+    }
+
+    private var opacityLabel: String {
+        let values = document.layers.filter { opacityTargetIDs.contains($0.id) }.map(\.resolvedOpacity)
+        guard let first = values.first else { return "100%" }
+        if values.contains(where: { abs($0 - first) > 0.001 }) {
+            return "Mixed"
+        }
+        return "\(Int((first * 100).rounded()))%"
+    }
+
+    private var opacityBinding: Binding<Double> {
+        Binding(
+            get: { opacitySlider },
+            set: { newValue in
+                opacitySlider = newValue
+                document.setLayersOpacity(ids: opacityTargetIDs, opacity: CGFloat(newValue), recordUndo: false)
+                onChanged()
+            }
+        )
+    }
+
+    private func syncOpacitySlider() {
+        let values = document.layers.filter { opacityTargetIDs.contains($0.id) }.map(\.resolvedOpacity)
+        if let first = values.first {
+            opacitySlider = Double(first)
+        }
     }
 
     private func toggleSelection(_ id: UUID) {

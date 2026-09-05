@@ -49,6 +49,16 @@ struct ViewportTransform: Codable, Equatable {
         scale = min(Self.maxScale, max(scale, minAllowedScale))
     }
 
+    /// Shifts translation so the same document point stays at the view center after a resize.
+    /// Used during device rotation so the sheet does not sit in the old landscape position
+    /// and then slide into portrait a beat later.
+    mutating func preserveCenter(from oldSize: CGSize, to newSize: CGSize) {
+        guard oldSize.width > 0, oldSize.height > 0,
+              newSize.width > 0, newSize.height > 0 else { return }
+        translation.x += (newSize.width - oldSize.width) / 2
+        translation.y += (newSize.height - oldSize.height) / 2
+    }
+
     func viewToDocument(_ point: CGPoint) -> CGPoint {
         CGPoint(
             x: (point.x - translation.x) / scale,

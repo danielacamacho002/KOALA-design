@@ -26,6 +26,7 @@ struct DrawingCanvasView: UIViewRepresentable {
     var rectangleVariant: RectangleVariant = .center
     var canvasBackgroundColor: Color = Color(hex: AppearanceSettings.defaultCanvasHex)
     var onCanvasTap: ((CGPoint) -> Void)?
+    var onTwoFingerTap: (() -> Void)?
     var onStrokeSelected: ((VectorStroke?) -> Void)?
     var onDragDrawBegan: ((CGPoint) -> Void)?
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
@@ -36,10 +37,15 @@ struct DrawingCanvasView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> DrawingCanvasUIView {
         let view = DrawingCanvasUIView(document: document)
+        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.delegate = context.coordinator
         configure(view)
         context.coordinator.canvasView = view
         return view
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: DrawingCanvasUIView, context: Context) -> CGSize {
+        CGSize(width: proposal.width ?? uiView.bounds.width, height: proposal.height ?? uiView.bounds.height)
     }
 
     func updateUIView(_ uiView: DrawingCanvasUIView, context: Context) {
@@ -146,6 +152,7 @@ struct DrawingCanvasView: UIViewRepresentable {
             uiView.rectangleVariant = rectangleVariant
         }
         uiView.onCanvasTap = onCanvasTap
+        uiView.onTwoFingerTap = onTwoFingerTap
         uiView.onDragDrawBegan = onDragDrawBegan
         uiView.onDragDrawChanged = onDragDrawChanged
         uiView.onDragDrawEnded = onDragDrawEnded

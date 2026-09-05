@@ -65,11 +65,7 @@ struct EditorView: View {
                     canUndo: store.document.canUndo,
                     canRedo: store.document.canRedo,
                     onBack: handleBack,
-                    onUndo: {
-                        store.document.undo()
-                        store.markDirty()
-                        refreshCanvas()
-                    },
+                    onUndo: performUndo,
                     onRedo: {
                         store.document.redo()
                         store.markDirty()
@@ -176,6 +172,7 @@ struct EditorView: View {
                     rectangleVariant: store.document.rectangleVariant,
                     canvasBackgroundColor: Color(hex: canvasColorHex),
                     onCanvasTap: handleCanvasTap,
+                    onTwoFingerTap: handleDesignUndo,
                     onStrokeSelected: { stroke in
                         if let stroke {
                             store.document.selectStrokeConsideringGroups(stroke.id)
@@ -217,6 +214,7 @@ struct EditorView: View {
                     onLayoutMetrics: updateCanvasLayoutMetrics
                 )
                 .ignoresSafeArea()
+                .transaction { $0.animation = nil }
 
                 if isDragDrawing, let start = dragDrawStart, let end = dragDrawEnd,
                    let category = store.document.activeCategory {
@@ -230,6 +228,7 @@ struct EditorView: View {
                     )
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
+                    .transaction { $0.animation = nil }
                 }
 
                 CanvasOverlayView(
@@ -247,11 +246,13 @@ struct EditorView: View {
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(canvasOverlayAcceptsHits)
+                .transaction { $0.animation = nil }
 
                 DimensionOverlayView(document: store.document) {
                     refreshCanvas()
                 }
                 .ignoresSafeArea()
+                .transaction { $0.animation = nil }
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .fillet {
@@ -449,7 +450,10 @@ struct EditorView: View {
             printLayoutNeedsInitialFit = false
             fitPrintLayoutToGrid(in: rect)
         } else {
-            centerPrintLayoutWithoutRescaling(in: rect)
+            // Keep size tracking current; the print canvas recenters itself
+            // during bounds changes so rotation does not wait on this callback.
+            canvasSize = rect.size
+            printCanvasRect = rect
         }
     }
 
@@ -1697,6 +1701,12 @@ struct EditorView: View {
             return
         }
         patternPreviewStrokes = PatternEngine.generatedCopies(from: stroke, settings: patternSettings)
+    }
+
+    private func performUndo() {
+        store.document.undo()
+        store.markDirty()
+        refreshCanvas()
     }
 
     private func refreshCanvas() {
