@@ -39,6 +39,10 @@ final class OnboardingController {
         stepIndex >= tour.stepCount - 1
     }
 
+    var isFirstStep: Bool {
+        stepIndex <= 0
+    }
+
     func advance() {
         guard isActive else { return }
         if isLastStep {
@@ -46,6 +50,11 @@ final class OnboardingController {
         } else {
             stepIndex += 1
         }
+    }
+
+    func retreat() {
+        guard isActive, !isFirstStep else { return }
+        stepIndex -= 1
     }
 
     func skipAll() {

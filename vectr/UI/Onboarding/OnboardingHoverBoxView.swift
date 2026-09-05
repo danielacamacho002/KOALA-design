@@ -12,7 +12,9 @@ struct OnboardingHoverBoxView: View {
     let stepNumber: Int
     let stepCount: Int
     var onNext: () -> Void
+    var onBack: () -> Void
     var onSkipAll: () -> Void
+    var canGoBack: Bool = false
 
     private let panelWidth: CGFloat = 220
     private let bodyHeight: CGFloat = 56
@@ -35,7 +37,13 @@ struct OnboardingHoverBoxView: View {
             HStack(spacing: 8) {
                 ToolPanelLabelButton(title: "Skip all", action: onSkipAll)
                 Spacer(minLength: 0)
-                ToolPanelLabelButton(title: "Next", prominent: true, action: onNext)
+                ToolPanelLabelButton(title: "Back", isDisabled: !canGoBack, action: onBack)
+                ToolPanelLabelButton(
+                    title: "Next",
+                    prominent: true,
+                    fill: Color(hex: "D1D1D6"),
+                    action: onNext
+                )
             }
         }
         .toolPanelChrome(width: panelWidth)
@@ -64,7 +72,9 @@ struct OnboardingTourOverlay: View {
                 stepNumber: controller.stepNumber,
                 stepCount: controller.stepCount,
                 onNext: { controller.advance() },
-                onSkipAll: { controller.skipAll() }
+                onBack: { controller.retreat() },
+                onSkipAll: { controller.skipAll() },
+                canGoBack: !controller.isFirstStep
             )
             .padding(boxPadding(for: step, followOrigin: origin))
             .alignmentGuide(.leading) { guide in

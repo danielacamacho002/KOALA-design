@@ -343,7 +343,9 @@ struct EditorView: View {
                             stepNumber: designOnboarding.stepNumber,
                             stepCount: designOnboarding.stepCount,
                             onNext: { designOnboarding.advance() },
-                            onSkipAll: { designOnboarding.skipAll() }
+                            onBack: { designOnboarding.retreat() },
+                            onSkipAll: { designOnboarding.skipAll() },
+                            canGoBack: !designOnboarding.isFirstStep
                         )
                         .transition(.identity)
                         .transaction { $0.animation = nil }
@@ -375,7 +377,9 @@ struct EditorView: View {
                             stepNumber: designOnboarding.stepNumber,
                             stepCount: designOnboarding.stepCount,
                             onNext: { designOnboarding.advance() },
-                            onSkipAll: { designOnboarding.skipAll() }
+                            onBack: { designOnboarding.retreat() },
+                            onSkipAll: { designOnboarding.skipAll() },
+                            canGoBack: !designOnboarding.isFirstStep
                         )
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }

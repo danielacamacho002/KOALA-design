@@ -123,6 +123,7 @@ struct ToolPanelLabelButton: View {
     var isDisabled: Bool = false
     var fullWidth: Bool = false
     var alignment: Alignment = .center
+    var fill: Color? = nil
     let action: () -> Void
 
     var body: some View {
@@ -133,7 +134,7 @@ struct ToolPanelLabelButton: View {
                 .frame(maxWidth: fullWidth ? .infinity : nil, alignment: alignment)
                 .padding(.horizontal, 8)
                 .frame(height: 26)
-                .background(prominent ? Color.accentColor : Color.toolPanelButtonFill)
+                .background(fill ?? (prominent ? Color.accentColor : Color.toolPanelButtonFill))
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
