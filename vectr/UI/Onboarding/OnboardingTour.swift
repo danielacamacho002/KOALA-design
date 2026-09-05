@@ -112,7 +112,7 @@ struct OnboardingTour: Equatable {
             ),
             designTool(
                 .line,
-                body: "Draw straight lines. Arc and construction variants live in the command panel."
+                body: "Draw straight lines, arcs and construction lines."
             ),
             designTool(
                 .circle,
@@ -124,11 +124,15 @@ struct OnboardingTour: Equatable {
             ),
             designTool(
                 .curve,
-                body: "Sketch freehand or draw a curve on the canvas."
+                body: "Draw a Bézier curve on the canvas."
             ),
-            designTool(
-                .type,
-                body: "Place and edit text on the canvas."
+            OnboardingStep(
+                id: "design.type",
+                title: "Text",
+                body: "Place and edit text on the canvas.",
+                alignment: .topLeading,
+                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
+                target: .tool(.type)
             ),
             OnboardingStep(
                 id: "design.command",
@@ -138,9 +142,13 @@ struct OnboardingTour: Equatable {
                 padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .commandPanel
             ),
-            designTool(
-                .move,
-                body: "Select artwork, then move or rotate it."
+            OnboardingStep(
+                id: "design.move",
+                title: "Edit",
+                body: "Allows you to move and edit a shape.",
+                alignment: .topLeading,
+                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
+                target: .tool(.move)
             ),
             designTool(
                 .scale,
@@ -148,7 +156,7 @@ struct OnboardingTour: Equatable {
             ),
             designTool(
                 .dimensions,
-                body: "Add measurement dimensions to your drawing."
+                body: "View or edit dimensions on your drawing."
             ),
             designTool(
                 .trim,
@@ -164,11 +172,11 @@ struct OnboardingTour: Equatable {
             ),
             designTool(
                 .pattern,
-                body: "Repeat a selection in a pattern."
+                body: "Create a pattern of selected drawing."
             ),
             designTool(
                 .delete,
-                body: "Remove selected artwork."
+                body: "Delete or cut holes on drawings."
             ),
             OnboardingStep(
                 id: "design.snaps",
