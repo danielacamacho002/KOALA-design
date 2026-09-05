@@ -139,11 +139,12 @@ final class PrintLayoutCanvasUIView: UIView {
         for stroke in printStrokes {
             let transform = document.effectivePrintTransform(for: stroke.id)
             let transformed = document.transformedPrintStroke(stroke)
-            let opacity = PrintBorderRenderer.strokeOpacity(
+            let cutOpacity = PrintBorderRenderer.strokeOpacity(
                 for: transformed,
                 settings: document.printLayout
             )
             let isSelected = stroke.id == document.printSelectedStrokeID
+            let opacity = document.opacity(forLayerID: stroke.layerID) * (isSelected ? 1 : cutOpacity)
 
             if let layer = strokeLayers[stroke.id] {
                 StrokeRenderer.updateShapeLayer(
@@ -151,14 +152,14 @@ final class PrintLayoutCanvasUIView: UIView {
                     stroke: stroke,
                     viewport: document.viewport,
                     pointTransform: transform,
-                    opacity: isSelected ? 1 : opacity
+                    opacity: opacity
                 )
             } else {
                 let layer = StrokeRenderer.makeShapeLayer(
                     for: stroke,
                     viewport: document.viewport,
                     pointTransform: transform,
-                    opacity: isSelected ? 1 : opacity
+                    opacity: opacity
                 )
                 artworkLayer.addSublayer(layer)
                 strokeLayers[stroke.id] = layer
@@ -189,7 +190,8 @@ final class PrintLayoutCanvasUIView: UIView {
             let viewPath = TextOutline.path(for: element).copy(using: &transform)
 
             let isSelected = element.id == document.printSelectedTextID
-            let opacity = isSelected ? 1 : textOpacity(for: element, transform: printTransform)
+            let cutOpacity = isSelected ? 1 : textOpacity(for: element, transform: printTransform)
+            let opacity = document.opacity(forLayerID: element.layerID) * cutOpacity
             let lineWidth = document.viewport.documentToView(distance: element.strokeWidth)
 
             if let layer = textLayers[element.id] {
