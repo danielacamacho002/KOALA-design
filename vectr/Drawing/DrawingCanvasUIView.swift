@@ -82,6 +82,7 @@ final class DrawingCanvasUIView: UIView {
     private var commandPreviewLayer: CAShapeLayer?
     private var dragPreviewLayer: CAShapeLayer?
     private var commandPointLayers: [CAShapeLayer] = []
+    private var trimHighlightLayer: CAShapeLayer?
     private var isPanning = false
     private var lastPanLocation: CGPoint?
     private var pinchStartScale: CGFloat = 1
@@ -1020,6 +1021,51 @@ final class DrawingCanvasUIView: UIView {
         pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
         pathLayer.lineDashPattern = isConstruction ? [10, 6] : nil
         pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
+    }
+
+    // MARK: - Trim Highlight
+    
+    static let trimHighlightZPosition: CGFloat = 15_000
+    
+    func showTrimHighlight(points: [CGPoint], strokeWidth: CGFloat, isClosed: Bool) {
+        clearTrimHighlight()
+        
+        guard points.count >= 2 else { return }
+        
+        let pathLayer = CAShapeLayer()
+        let path = UIBezierPath()
+        
+        // Convert points to view space and build path
+        let viewPoints = points.map { document.viewport.documentToView($0) }
+        path.move(to: viewPoints[0])
+        for i in 1..<viewPoints.count {
+            path.addLine(to: viewPoints[i])
+        }
+        if isClosed {
+            path.close()
+        }
+        
+        pathLayer.path = path.cgPath
+        pathLayer.strokeColor = UIColor.systemRed.cgColor
+        pathLayer.fillColor = isClosed 
+            ? UIColor.systemRed.withAlphaComponent(0.15).cgColor 
+            : UIColor.clear.cgColor
+        pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: strokeWidth))
+        pathLayer.lineCap = .round
+        pathLayer.lineJoin = .round
+        pathLayer.zPosition = Self.trimHighlightZPosition
+        
+        performWithoutLayerAnimation {
+            self.layer.addSublayer(pathLayer)
+            self.trimHighlightLayer = pathLayer
+        }
+    }
+    
+    func clearTrimHighlight() {
+        performWithoutLayerAnimation {
+            trimHighlightLayer?.removeFromSuperlayer()
+            trimHighlightLayer = nil
+        }
     }
 
     private func dragPreviewPoints(start: CGPoint, end: CGPoint) -> [CGPoint] {

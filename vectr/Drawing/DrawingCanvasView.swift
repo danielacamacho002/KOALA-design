@@ -34,6 +34,7 @@ struct DrawingCanvasView: UIViewRepresentable {
     var curveDraft: CurveDraftSession?
     var onCurveCommitted: (([CGPoint]) -> Void)?
     var onLayoutMetrics: ((CGSize, UIEdgeInsets) -> Void)?
+    var onCanvasReady: ((DrawingCanvasUIView) -> Void)?
 
     func makeUIView(context: Context) -> DrawingCanvasUIView {
         let view = DrawingCanvasUIView(document: document)
@@ -41,6 +42,7 @@ struct DrawingCanvasView: UIViewRepresentable {
         view.delegate = context.coordinator
         configure(view)
         context.coordinator.canvasView = view
+        onCanvasReady?(view)
         return view
     }
 

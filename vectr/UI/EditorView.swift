@@ -50,6 +50,7 @@ struct EditorView: View {
     @State private var patternSettings = PatternSettings()
     @State private var patternPreviewStrokes: [VectorStroke] = []
     @State private var autoSaveTask: Task<Void, Never>?
+    @State private var canvasView: DrawingCanvasUIView?
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
 
     init(projectURL: URL? = nil, projectLibrary: ProjectLibrary? = nil) {
@@ -211,7 +212,10 @@ struct EditorView: View {
                     },
                     curveDraft: curveDraft,
                     onCurveCommitted: commitCurve,
-                    onLayoutMetrics: updateCanvasLayoutMetrics
+                    onLayoutMetrics: updateCanvasLayoutMetrics,
+                    onCanvasReady: { canvas in
+                        canvasView = canvas
+                    }
                 )
                 .ignoresSafeArea()
                 .transaction { $0.animation = nil }
@@ -1301,25 +1305,29 @@ struct EditorView: View {
             // opens the shape; a collinear point is removed without changing the geometry.
             if store.document.deleteStrokeAnchor(near: documentPoint, threshold: threshold) {
                 refreshCanvas()
-            } else if store.document.trimAt(documentPoint, threshold: threshold) {
-                refreshCanvas()
-            } else if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
-                // Non-CAD shapes previously trimmed via edge/vertex handles. Keep that
-                // behavior by tapping the geometry itself (no overlay handles).
-                let usesCADTrim = stroke.shapeType == .circle
-                    || stroke.shapeType == .ellipse
-                    || (stroke.shapeType == .arc && !stroke.isClosed)
-                if !usesCADTrim,
-                   let edgeIndex = StrokeEditor.nearestEdgeIndex(
-                       in: stroke,
-                       point: documentPoint,
-                       threshold: threshold
-                   ),
-                   closingEdgeFallbackAllowed(stroke, edgeIndex: edgeIndex) {
-                    store.document.deleteStrokeEdge(at: edgeIndex)
-                    refreshCanvas()
-                } else {
-                    statusMessage = "Tap the line segment to trim away"
+            } else {
+                store.document.trimAt(documentPoint, threshold: threshold, canvas: canvasView) { success in
+                    if success {
+                        refreshCanvas()
+                    } else if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
+                        // Non-CAD shapes previously trimmed via edge/vertex handles. Keep that
+                        // behavior by tapping the geometry itself (no overlay handles).
+                        let usesCADTrim = stroke.shapeType == .circle
+                            || stroke.shapeType == .ellipse
+                            || (stroke.shapeType == .arc && !stroke.isClosed)
+                        if !usesCADTrim,
+                           let edgeIndex = StrokeEditor.nearestEdgeIndex(
+                               in: stroke,
+                               point: documentPoint,
+                               threshold: threshold
+                           ),
+                           closingEdgeFallbackAllowed(stroke, edgeIndex: edgeIndex) {
+                            store.document.deleteStrokeEdge(at: edgeIndex)
+                            refreshCanvas()
+                        } else {
+                            statusMessage = "Tap the line segment to trim away"
+                        }
+                    }
                 }
             } else {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
