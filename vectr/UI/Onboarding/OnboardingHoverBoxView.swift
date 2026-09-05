@@ -228,7 +228,7 @@ extension View {
         overlay {
             if isHighlighted {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(color, lineWidth: 2)
+                    .strokeBorder(color, lineWidth: 2)
             }
         }
     }
