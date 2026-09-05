@@ -52,6 +52,12 @@ final class OnboardingController {
         complete()
     }
 
+    func restart() {
+        UserDefaults.standard.set(false, forKey: completedKey)
+        stepIndex = 0
+        isActive = true
+    }
+
     private func complete() {
         UserDefaults.standard.set(true, forKey: completedKey)
         isActive = false

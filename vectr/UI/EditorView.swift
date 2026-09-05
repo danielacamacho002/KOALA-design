@@ -95,7 +95,8 @@ struct EditorView: View {
             SettingsView(
                 document: store.document,
                 fileName: $store.fileName,
-                onFileNameChanged: handleFileNameChanged
+                onFileNameChanged: handleFileNameChanged,
+                onReplayTutorial: replayTutorials
             )
         }
         .sheet(isPresented: $showExportSheet, onDismiss: {
@@ -866,6 +867,11 @@ struct EditorView: View {
             top: 56,
             bottom: 20
         )
+    }
+
+    private func replayTutorials() {
+        OnboardingSettings.resetAllTours()
+        designOnboarding.restart()
     }
 
     private func revealCommandPanelIfNeeded() {

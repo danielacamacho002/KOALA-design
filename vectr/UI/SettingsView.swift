@@ -9,6 +9,7 @@ struct SettingsView: View {
     @Bindable var document: VectrDocument
     @Binding var fileName: String
     var onFileNameChanged: () -> Void
+    var onReplayTutorial: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     @State private var editingName = ""
@@ -106,6 +107,16 @@ struct SettingsView: View {
                     }
 
                     Text("New rectangles use this fillet radius from Settings.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Help") {
+                    Button("View tutorial") {
+                        onReplayTutorial?()
+                        dismiss()
+                    }
+                    Text("Replay the design tutorial. The Print Layout tutorial will show again the next time you open that mode.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

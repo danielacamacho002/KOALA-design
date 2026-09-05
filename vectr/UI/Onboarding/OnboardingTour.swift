@@ -153,20 +153,20 @@ struct OnboardingTour: Equatable {
                 body: "Remove selected artwork."
             ),
             OnboardingStep(
-                id: "design.layers",
-                title: "Layers",
-                body: "Show, hide, lock, and reorder layers to keep artwork organized.",
-                alignment: .topTrailing,
-                padding: EdgeInsets(top: 56, leading: 12, bottom: 0, trailing: 12),
-                target: .layers
-            ),
-            OnboardingStep(
                 id: "design.snaps",
                 title: "Snaps",
                 body: "Toggle endpoint, midpoint, intersection, center, quadrant, and tangent snaps.",
                 alignment: .bottomLeading,
                 padding: EdgeInsets(top: 0, leading: 16, bottom: 64, trailing: 16),
                 target: .snaps
+            ),
+            OnboardingStep(
+                id: "design.layers",
+                title: "Layers",
+                body: "Show, hide, lock, and reorder layers to keep artwork organized.",
+                alignment: .topTrailing,
+                padding: EdgeInsets(top: 56, leading: 12, bottom: 0, trailing: 12),
+                target: .layers
             ),
             OnboardingStep(
                 id: "design.share",
@@ -280,4 +280,9 @@ struct OnboardingTour: Equatable {
 enum OnboardingSettings {
     static let designTourCompletedKey = "onboarding.designTourCompleted.v3"
     static let printTourCompletedKey = "onboarding.printTourCompleted.v2"
+
+    static func resetAllTours() {
+        UserDefaults.standard.set(false, forKey: designTourCompletedKey)
+        UserDefaults.standard.set(false, forKey: printTourCompletedKey)
+    }
 }
