@@ -391,7 +391,8 @@ struct EditorView: View {
             }
             .overlay(alignment: .bottomLeading) {
                 VStack(alignment: .leading, spacing: 8) {
-                    if designOnboarding.currentTarget == .snaps, let step = designOnboarding.currentStep {
+                    if designOnboarding.currentStep?.target.boxPlacement == .aboveSnaps,
+                       let step = designOnboarding.currentStep {
                         OnboardingHoverBoxView(
                             step: step,
                             stepNumber: designOnboarding.stepNumber,
@@ -401,14 +402,14 @@ struct EditorView: View {
                             onSkipAll: { designOnboarding.skipAll() },
                             canGoBack: !designOnboarding.isFirstStep
                         )
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        .transition(.identity)
+                        .transaction { $0.animation = nil }
                     }
                     SnapToggleBar(
                         document: store.document,
-                        isTourHighlighted: designOnboarding.currentTarget == .snaps
+                        highlightedTarget: designOnboarding.currentTarget
                     )
                 }
-                .animation(.easeInOut(duration: 0.15), value: designOnboarding.stepIndex)
                 .padding(.leading, 16)
                 .padding(.bottom, 16)
             }

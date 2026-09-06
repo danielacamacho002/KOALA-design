@@ -11,8 +11,15 @@ import SwiftUI
 /// document toggles.
 struct SnapToggleBar: View {
     @Bindable var document: VectrDocument
-    var isTourHighlighted: Bool = false
+    var highlightedTarget: OnboardingTarget? = nil
     @State private var isExpanded = false
+
+    private var isSnapTourActive: Bool {
+        switch highlightedTarget {
+        case .snaps, .snap: return true
+        default: return false
+        }
+    }
 
     private let iconSize: CGFloat = 34
 
@@ -41,13 +48,16 @@ struct SnapToggleBar: View {
                 .fill(Color.primary.opacity(0.05))
         }
         .onboardingAnchor(.snaps)
-        .onboardingHighlight(isTourHighlighted, cornerRadius: 10, color: .accentColor)
+        .onboardingHighlight(highlightedTarget == .snaps, cornerRadius: 10, color: .accentColor)
         // The bar sits on the cream canvas, so icons must stay dark even when
         // the rest of the app is in dark mode (Color.primary would otherwise
         // go white and vanish).
         .environment(\.colorScheme, .light)
-        .onChange(of: isTourHighlighted) { _, highlighted in
-            if highlighted {
+        .onAppear {
+            if isSnapTourActive { isExpanded = true }
+        }
+        .onChange(of: isSnapTourActive) { _, active in
+            if active {
                 withAnimation(.easeOut(duration: 0.15)) {
                     isExpanded = true
                 }
@@ -57,62 +67,82 @@ struct SnapToggleBar: View {
 
     @ViewBuilder
     private var snapToggles: some View {
-        StudioIconButton(
-            isActive: document.endpointSnapEnabled,
-            size: iconSize,
-            action: { document.endpointSnapEnabled.toggle() }
-        ) {
+        constraintButton(.endpoint, isActive: document.endpointSnapEnabled) {
+            document.endpointSnapEnabled.toggle()
+        } icon: {
             EndpointSnapIcon()
                 .frame(width: 17, height: 17)
         }
-        .accessibilityLabel("Endpoint snap")
 
-        StudioIconButton(
-            isActive: document.midpointSnapEnabled,
-            size: iconSize,
-            action: { document.midpointSnapEnabled.toggle() }
-        ) {
+        constraintButton(.midpoint, isActive: document.midpointSnapEnabled) {
+            document.midpointSnapEnabled.toggle()
+        } icon: {
             MidpointSnapIcon()
                 .frame(width: 17, height: 17)
         }
-        .accessibilityLabel("Midpoint snap")
 
-        StudioIconButton(
+        constraintButton(
+            .intersection,
             systemImage: "xmark",
-            isActive: document.intersectionSnapEnabled,
-            size: iconSize
+            isActive: document.intersectionSnapEnabled
         ) {
             document.intersectionSnapEnabled.toggle()
         }
-        .accessibilityLabel("Intersection snap")
 
-        StudioIconButton(
+        constraintButton(
+            .center,
             systemImage: "smallcircle.circle",
-            isActive: document.centerSnapEnabled,
-            size: iconSize
+            isActive: document.centerSnapEnabled
         ) {
             document.centerSnapEnabled.toggle()
         }
-        .accessibilityLabel("Center point snap")
 
-        StudioIconButton(
-            isActive: document.quadrantSnapEnabled,
-            size: iconSize,
-            action: { document.quadrantSnapEnabled.toggle() }
-        ) {
+        constraintButton(.quadrant, isActive: document.quadrantSnapEnabled) {
+            document.quadrantSnapEnabled.toggle()
+        } icon: {
             QuadrantSnapIcon()
                 .frame(width: 21, height: 21)
         }
-        .accessibilityLabel("Quadrant snap")
 
-        StudioIconButton(
-            isActive: document.tangentSnapEnabled,
-            size: iconSize,
-            action: { document.tangentSnapEnabled.toggle() }
-        ) {
+        constraintButton(.tangent, isActive: document.tangentSnapEnabled) {
+            document.tangentSnapEnabled.toggle()
+        } icon: {
             TangentSnapIcon()
                 .frame(width: 21, height: 21)
         }
-        .accessibilityLabel("Tangential snap")
+    }
+
+    private func constraintButton(
+        _ kind: SnapConstraint,
+        systemImage: String,
+        isActive: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        StudioIconButton(
+            systemImage: systemImage,
+            isActive: isActive,
+            size: iconSize,
+            action: action
+        )
+        .accessibilityLabel(kind.title)
+        .onboardingAnchor(.snap(kind))
+        .onboardingHighlight(highlightedTarget == .snap(kind), color: .accentColor)
+    }
+
+    private func constraintButton<Icon: View>(
+        _ kind: SnapConstraint,
+        isActive: Bool,
+        action: @escaping () -> Void,
+        @ViewBuilder icon: () -> Icon
+    ) -> some View {
+        StudioIconButton(
+            isActive: isActive,
+            size: iconSize,
+            action: action,
+            icon: icon
+        )
+        .accessibilityLabel(kind.title)
+        .onboardingAnchor(.snap(kind))
+        .onboardingHighlight(highlightedTarget == .snap(kind), color: .accentColor)
     }
 }

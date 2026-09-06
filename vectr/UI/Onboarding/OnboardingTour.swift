@@ -14,6 +14,7 @@ enum OnboardingTarget: Equatable {
     case commandPanel
     case layers
     case snaps
+    case snap(SnapConstraint)
     case share
     case save
     case printLayout
@@ -31,6 +32,7 @@ enum OnboardingTarget: Equatable {
         case .commandPanel: return "commandPanel"
         case .layers: return "layers"
         case .snaps: return "snaps"
+        case .snap(let kind): return "snap.\(kind.rawValue)"
         case .share: return "share"
         case .save: return "save"
         case .printLayout: return "printLayout"
@@ -48,10 +50,42 @@ enum OnboardingTarget: Equatable {
     /// last design steps park on the trailing edge and stay there.
     var boxPlacement: OnboardingBoxPlacement {
         switch self {
-        case .snaps: return .aboveSnaps
+        case .snaps, .snap: return .aboveSnaps
         case .layers, .share, .save, .printLayout: return .trailingPark
         case .tool, .commandPanel: return .besideCommandPanel
         default: return .followTarget
+        }
+    }
+}
+
+/// Individual snap / constraint toggles in the bottom-left bar.
+enum SnapConstraint: String, CaseIterable {
+    case endpoint
+    case midpoint
+    case intersection
+    case center
+    case quadrant
+    case tangent
+
+    var title: String {
+        switch self {
+        case .endpoint: return "Endpoint"
+        case .midpoint: return "Midpoint"
+        case .intersection: return "Intersection"
+        case .center: return "Center"
+        case .quadrant: return "Quadrant"
+        case .tangent: return "Tangent"
+        }
+    }
+
+    var body: String {
+        switch self {
+        case .endpoint: return "Snap to the ends of lines and paths."
+        case .midpoint: return "Snap to the middle of a segment."
+        case .intersection: return "Snap to where paths cross."
+        case .center: return "Snap to the center of a circle or arc."
+        case .quadrant: return "Snap to the top, bottom, left, and right of a circle."
+        case .tangent: return "Snap a line so it meets a curve at a tangent."
         }
     }
 }
@@ -180,12 +214,18 @@ struct OnboardingTour: Equatable {
             ),
             OnboardingStep(
                 id: "design.snaps",
-                title: "Snaps",
-                body: "Toggle endpoint, midpoint, intersection, center, quadrant, and tangent snaps.",
+                title: "Constraints",
+                body: "Tap a constraint to turn it on or off while you draw.",
                 alignment: .bottomLeading,
                 padding: EdgeInsets(top: 0, leading: 16, bottom: 64, trailing: 16),
                 target: .snaps
             ),
+            snapConstraint(.endpoint),
+            snapConstraint(.midpoint),
+            snapConstraint(.intersection),
+            snapConstraint(.center),
+            snapConstraint(.quadrant),
+            snapConstraint(.tangent),
             OnboardingStep(
                 id: "design.layers",
                 title: "Layers",
@@ -298,6 +338,17 @@ struct OnboardingTour: Equatable {
             alignment: .topLeading,
             padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
             target: .tool(category)
+        )
+    }
+
+    private static func snapConstraint(_ kind: SnapConstraint) -> OnboardingStep {
+        OnboardingStep(
+            id: "design.snap.\(kind.rawValue)",
+            title: kind.title,
+            body: kind.body,
+            alignment: .bottomLeading,
+            padding: EdgeInsets(top: 0, leading: 16, bottom: 64, trailing: 16),
+            target: .snap(kind)
         )
     }
 }

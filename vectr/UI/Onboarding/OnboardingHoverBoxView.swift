@@ -85,7 +85,8 @@ struct OnboardingTourOverlay: View {
                 guard let origin else { return guide[.top] }
                 return -origin.y
             }
-            .transition(.opacity.combined(with: .move(edge: .leading)))
+            .transition(.identity)
+            .transaction { $0.animation = nil }
         }
     }
 
@@ -194,9 +195,10 @@ extension View {
                 anchors: anchors,
                 overlayFrame: overlayFrame
             )
-            .animation(.easeInOut(duration: 0.15), value: controller.stepIndex)
-            .animation(.easeInOut(duration: 0.15), value: controller.isActive)
+            .transaction { $0.animation = nil }
         }
+        .animation(nil, value: controller.stepIndex)
+        .animation(nil, value: controller.isActive)
         .background {
             GeometryReader { geo in
                 Color.clear.preference(
