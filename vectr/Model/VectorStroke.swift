@@ -13,7 +13,7 @@ import UIKit
 import AppKit
 #endif
 
-struct VectorStroke: Identifiable, Codable, Equatable {
+nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
     var id: UUID = UUID()
     var layerID: UUID
     var points: [CGPoint]
@@ -337,7 +337,7 @@ struct VectorStroke: Identifiable, Codable, Equatable {
 
 /// Bezier tangent handles for a single curve anchor, stored as offsets from the anchor.
 /// Absolute control point = anchor + offset.
-struct CurveHandle: Codable, Equatable {
+nonisolated struct CurveHandle: Codable, Equatable, Sendable {
     /// Control point leading into the anchor (from the previous segment).
     var inOffset: CGPoint
     /// Control point leading out of the anchor (toward the next segment).
@@ -350,7 +350,7 @@ struct CurveHandle: Codable, Equatable {
 }
 
 /// Codable wrapper for SwiftUI/UIColor colors in documents.
-struct CodableColor: Codable, Equatable {
+nonisolated struct CodableColor: Codable, Equatable, Sendable {
     var red: CGFloat
     var green: CGFloat
     var blue: CGFloat

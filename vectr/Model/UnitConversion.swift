@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-enum UnitConversion {
+nonisolated enum UnitConversion: Sendable {
     /// Typographic points per inch (screen/document base unit).
     static let pointsPerInch: CGFloat = 72
 

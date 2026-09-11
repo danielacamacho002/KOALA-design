@@ -12,6 +12,7 @@ struct ProjectCardView: View {
     var compact: Bool = false
 
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
+    @State private var thumbnailImage: UIImage?
 
     private var canvasColor: Color { Color(hex: canvasColorHex) }
     private var panelColor: Color { Color(hex: AppearanceSettings.panelHex) }
@@ -89,20 +90,47 @@ struct ProjectCardView: View {
 
     @ViewBuilder
     private var thumbnail: some View {
-        if let url = record.thumbnailURL, let uiImage = UIImage(contentsOfFile: url.path) {
-            Image(uiImage: uiImage)
-                .resizable()
-                .scaledToFill()
-                .background(canvasColor)
-        } else {
-            RoundedRectangle(cornerRadius: cornerRadius)
-                .fill(panelColor.opacity(0.35))
-                .overlay {
-                    Image(systemName: "scribble.variable")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                }
+        Group {
+            if let thumbnailImage {
+                Image(uiImage: thumbnailImage)
+                    .resizable()
+                    .scaledToFill()
+                    .background(canvasColor)
+            } else {
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .fill(panelColor.opacity(0.35))
+                    .overlay {
+                        Image(systemName: "scribble.variable")
+                            .font(.title2)
+                            .foregroundStyle(.white)
+                    }
+            }
         }
+        .task(id: thumbnailTaskID) {
+            await loadThumbnail()
+        }
+    }
+
+    private var thumbnailTaskID: String {
+        "\(record.thumbnailURL?.path ?? "")|\(record.modifiedAt.timeIntervalSince1970)"
+    }
+
+    private func loadThumbnail() async {
+        guard let url = record.thumbnailURL else {
+            thumbnailImage = nil
+            return
+        }
+        if let cached = ProjectThumbnailCache.image(for: url, modifiedAt: record.modifiedAt) {
+            thumbnailImage = cached
+            return
+        }
+        let data = try? await PersistenceWorker.shared.readFileData(from: url)
+        guard let data, let image = UIImage(data: data) else {
+            thumbnailImage = nil
+            return
+        }
+        ProjectThumbnailCache.store(image, for: url, modifiedAt: record.modifiedAt)
+        thumbnailImage = image
     }
 
     private var selectionBadge: some View {

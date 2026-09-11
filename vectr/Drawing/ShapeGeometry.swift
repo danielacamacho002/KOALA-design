@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-enum ShapeGeometry {
+nonisolated enum ShapeGeometry: Sendable {
     static func requiredControlPoints(
         category: ToolCategory,
         lineVariant: LineVariant,

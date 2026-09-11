@@ -5,7 +5,7 @@
 
 import CoreGraphics
 
-enum FilletPathBuilder {
+nonisolated enum FilletPathBuilder: Sendable {
     static func axisAlignedRectangle(from points: [CGPoint]) -> CGRect? {
         axisAlignedRect(from: points)
     }

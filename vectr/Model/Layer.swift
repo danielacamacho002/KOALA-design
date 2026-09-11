@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-struct Layer: Identifiable, Codable, Equatable {
+nonisolated struct Layer: Identifiable, Codable, Equatable, Sendable {
     var id: UUID = UUID()
     var name: String
     var isVisible: Bool = true

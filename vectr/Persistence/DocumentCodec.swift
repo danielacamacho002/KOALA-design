@@ -6,49 +6,42 @@
 import Foundation
 
 enum DocumentCodec {
-    static let fileExtension = "vectr"
+    nonisolated static let fileExtension = "vectr"
 
     static func encode(_ document: VectrDocument) throws -> Data {
-        let snapshot = DocumentSnapshot(
-            layers: document.layers,
-            strokes: document.strokes,
-            textElements: document.textElements,
-            groups: document.groups,
-            layerGroups: document.layerGroups,
-            activeLayerID: document.activeLayerID,
-            viewport: document.viewport,
-            grid: document.grid,
-            settings: document.settings,
-            strokeWidth: document.strokeWidth,
-            strokeColor: document.strokeColor,
-            selectedStrokeID: document.selectedStrokeID,
-            referenceImageData: document.referenceImageData,
-            referenceImageFrame: document.referenceImageFrame,
-            printLayout: document.printLayout,
-            printStrokeTransforms: document.printStrokeTransforms,
-            printPieces: document.printPieces,
-            printHiddenStrokeIDs: document.printHiddenStrokeIDs,
-            dimensionOffsets: document.dimensionOffsets,
-            dimensionLocks: document.dimensionLocks
-        )
+        try encode(document.makeSnapshot())
+    }
+
+    static func decode(_ data: Data) throws -> VectrDocument {
+        VectrDocument(snapshot: try decodeSnapshot(data))
+    }
+
+    static func write(_ document: VectrDocument, to url: URL) throws {
+        try write(document.makeSnapshot(), to: url)
+    }
+
+    static func read(from url: URL) throws -> VectrDocument {
+        VectrDocument(snapshot: try readSnapshot(from: url))
+    }
+
+    nonisolated static func encode(_ snapshot: DocumentSnapshot) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(snapshot)
     }
 
-    static func decode(_ data: Data) throws -> VectrDocument {
+    nonisolated static func decodeSnapshot(_ data: Data) throws -> DocumentSnapshot {
         let decoder = JSONDecoder()
-        let snapshot = try decoder.decode(DocumentSnapshot.self, from: data)
-        return VectrDocument(snapshot: snapshot)
+        return try decoder.decode(DocumentSnapshot.self, from: data)
     }
 
-    static func write(_ document: VectrDocument, to url: URL) throws {
-        let data = try encode(document)
+    nonisolated static func write(_ snapshot: DocumentSnapshot, to url: URL) throws {
+        let data = try encode(snapshot)
         try data.write(to: url, options: .atomic)
     }
 
-    static func read(from url: URL) throws -> VectrDocument {
+    nonisolated static func readSnapshot(from url: URL) throws -> DocumentSnapshot {
         let data = try Data(contentsOf: url)
-        return try decode(data)
+        return try decodeSnapshot(data)
     }
 }
