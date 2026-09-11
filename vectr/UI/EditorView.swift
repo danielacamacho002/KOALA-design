@@ -50,6 +50,7 @@ struct EditorView: View {
     @State private var patternSettings = PatternSettings()
     @State private var patternPreviewStrokes: [VectorStroke] = []
     @State private var autoSaveTask: Task<Void, Never>?
+    @State private var pendingThumbnailRefresh = false
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
 
     init(projectURL: URL? = nil, projectLibrary: ProjectLibrary? = nil) {
@@ -877,21 +878,24 @@ struct EditorView: View {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard !Task.isCancelled else { return }
             guard store.hasUnsavedChanges else { return }
-            saveDocument()
+            saveDocument(refreshThumbnail: false)
         }
     }
 
     private func flushAutoSave() {
         autoSaveTask?.cancel()
         autoSaveTask = nil
-        guard store.hasUnsavedChanges else { return }
-        saveDocument()
+        if store.hasUnsavedChanges {
+            saveDocument(refreshThumbnail: true)
+        } else {
+            refreshGalleryThumbnailIfNeeded()
+        }
     }
 
     private func saveDocumentNow() {
         autoSaveTask?.cancel()
         autoSaveTask = nil
-        saveDocument()
+        saveDocument(refreshThumbnail: true)
     }
 
     private func presentShare(url: URL, image: UIImage? = nil) {
@@ -933,6 +937,7 @@ struct EditorView: View {
 
     private func discardChangesAndDismiss() {
         pendingDismiss = false
+        pendingThumbnailRefresh = false
         autoSaveTask?.cancel()
         autoSaveTask = nil
         if let lastSavedSnapshot {
@@ -1734,7 +1739,7 @@ struct EditorView: View {
         )
     }
 
-    private func saveDocument() {
+    private func saveDocument(refreshThumbnail: Bool = true) {
         do {
             if store.fileURL == nil, let library = projectLibrary {
                 let record = try library.createProject(name: store.fileName)
@@ -1748,13 +1753,30 @@ struct EditorView: View {
             }
             try store.save()
             if let url = store.fileURL, let library = projectLibrary {
-                try library.updateAfterSave(document: store.document, fileURL: url, name: store.fileName)
+                try library.updateAfterSave(
+                    document: store.document,
+                    fileURL: url,
+                    name: store.fileName,
+                    refreshThumbnail: refreshThumbnail
+                )
             }
             lastSavedSnapshot = snapshotFromStore()
+            pendingThumbnailRefresh = !refreshThumbnail
             if pendingDismiss {
                 pendingDismiss = false
                 dismiss()
             }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func refreshGalleryThumbnailIfNeeded() {
+        guard pendingThumbnailRefresh else { return }
+        guard let url = store.fileURL, let library = projectLibrary else { return }
+        do {
+            try library.refreshThumbnail(document: store.document, fileURL: url)
+            pendingThumbnailRefresh = false
         } catch {
             errorMessage = error.localizedDescription
         }

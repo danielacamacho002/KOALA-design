@@ -119,7 +119,12 @@ final class ProjectLibrary {
         return projects.first(where: { $0.id == id })?.fileURL ?? fileURL
     }
 
-    func updateAfterSave(document: VectrDocument, fileURL: URL, name: String) throws {
+    func updateAfterSave(
+        document: VectrDocument,
+        fileURL: URL,
+        name: String,
+        refreshThumbnail: Bool = true
+    ) throws {
         let normalizedURL = fileURL.standardizedFileURL
         let modifiedAt = Date()
         if let index = indexOfProject(at: normalizedURL) {
@@ -128,13 +133,26 @@ final class ProjectLibrary {
             record.modifiedAt = modifiedAt
             record.canvasWidth = document.settings.canvasWidth
             record.canvasHeight = document.settings.canvasHeight
-            try writeThumbnail(for: record, document: document)
+            if refreshThumbnail || thumbnailFileMissing(for: record) {
+                try writeThumbnail(for: record, document: document)
+            }
             projects[index] = record
         } else {
             let record = makeRecord(id: UUID(), name: name, fileURL: fileURL, document: document, modifiedAt: modifiedAt)
             try writeThumbnail(for: record, document: document)
             projects.insert(record, at: 0)
         }
+        saveIndex()
+    }
+
+    /// Rewrites the gallery PNG without persisting the `.vectr` file.
+    func refreshThumbnail(document: VectrDocument, fileURL: URL) throws {
+        let normalizedURL = fileURL.standardizedFileURL
+        guard let index = indexOfProject(at: normalizedURL) else { return }
+        var record = projects[index]
+        try writeThumbnail(for: record, document: document)
+        record.modifiedAt = Date()
+        projects[index] = record
         saveIndex()
     }
 
@@ -254,6 +272,11 @@ final class ProjectLibrary {
     private func writeThumbnail(for record: ProjectRecord, document: VectrDocument) throws {
         guard let url = record.thumbnailURL else { return }
         try ThumbnailRenderer.writeThumbnail(for: document, to: url)
+    }
+
+    private func thumbnailFileMissing(for record: ProjectRecord) -> Bool {
+        guard let url = record.thumbnailURL else { return true }
+        return !fileManager.fileExists(atPath: url.path)
     }
 
     private func sanitizedName(_ name: String) -> String {
