@@ -3096,6 +3096,7 @@ final class VectrDocument {
         }
     }
 
+    /// Undo/redo snapshot. Omits `referenceImageData`; codec and last-saved still include it.
     private func currentSnapshot() -> DocumentSnapshot {
         DocumentSnapshot(
             layers: layers,
@@ -3110,7 +3111,7 @@ final class VectrDocument {
             strokeWidth: strokeWidth,
             strokeColor: strokeColor,
             selectedStrokeID: selectedStrokeID,
-            referenceImageData: referenceImageData,
+            referenceImageData: nil,
             referenceImageFrame: referenceImageFrame,
             printLayout: printLayout,
             printStrokeTransforms: printStrokeTransforms,
@@ -3133,7 +3134,7 @@ final class VectrDocument {
         strokeWidth = snapshot.strokeWidth
         strokeColor = snapshot.strokeColor
         selectedStrokeID = snapshot.selectedStrokeID
-        referenceImageData = snapshot.referenceImageData
+        // Undo snapshots omit image bytes; keep the live document's data.
         referenceImageFrame = snapshot.referenceImageFrame
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
@@ -3143,6 +3144,12 @@ final class VectrDocument {
         dimensionLocks = snapshot.dimensionLocks ?? []
         syncGridFromSettings()
         printLayoutRevision += 1
+    }
+
+    /// Bytes of `referenceImageData` held by undo/redo snapshots. Always 0.
+    var undoRetainedReferenceImageBytes: Int {
+        undoStack.reduce(0) { $0 + ($1.referenceImageData?.count ?? 0) }
+            + redoStack.reduce(0) { $0 + ($1.referenceImageData?.count ?? 0) }
     }
 }
 
