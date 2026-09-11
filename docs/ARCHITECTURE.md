@@ -68,7 +68,7 @@ Print-layout features often need a **second** panel/canvas path. Do not assume d
 
 - Export, save, thumbnails, and project load run on the main thread
 - Undo snapshots can duplicate `referenceImageData` up to 50×
-- Font registration in `vectrApp.init` is sync disk + Core Text
+- Font registration in `FontLibrary.prepareAtLaunch()` is sync disk + Core Text (once per launch)
 - `refreshCanvas()` over-marks dirty (including recenter animation steps)
 - Layer thumbnails regenerate on every `geometryRevision` (including live drag)
 - Pretty-printed JSON on every save
