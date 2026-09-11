@@ -1253,7 +1253,7 @@ struct CanvasOverlayView: View {
         for point in points.dropFirst() {
             path.addLine(to: document.viewport.documentToView(point))
         }
-        if stroke.isClosed {
+        if stroke.isClosed, stroke.shapeType != .arc {
             path.closeSubpath()
         }
         return path

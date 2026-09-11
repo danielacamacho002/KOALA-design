@@ -44,7 +44,7 @@ enum StrokeRenderer {
         appendContour(
             to: path,
             points: ShapeGeometry.renderPoints(for: renderStroke),
-            closed: renderStroke.isClosed,
+            closed: renderStroke.isClosed && renderStroke.shapeType != .arc,
             viewport: viewport
         )
 
@@ -201,7 +201,12 @@ enum StrokeRenderer {
                 }
             }
         } else {
-            appendContour(to: path, points: contour, closed: renderStroke.isClosed, viewport: viewport)
+            appendContour(
+                to: path,
+                points: contour,
+                closed: renderStroke.isClosed && renderStroke.shapeType != .arc,
+                viewport: viewport
+            )
         }
 
         let unstroked = renderStroke.openCutoutIndices ?? []
