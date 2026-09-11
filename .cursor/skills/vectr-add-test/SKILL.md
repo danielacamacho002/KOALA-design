@@ -30,8 +30,8 @@ struct ExampleTests {
 
 3. Suites must be `@MainActor` (app target uses `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`).
 4. Import `CoreGraphics` / `Foundation` in the test file when comparing numeric or codec values (`SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY`).
-4. Cover the new behavior plus one edge case (empty input, identity transform, round-trip).
-5. If `vectrTests` is missing from the Xcode project, add the target first — do not leave orphan files.
+5. Cover the new behavior plus one edge case (empty input, identity transform, round-trip).
+6. If `vectrTests` is missing from the Xcode project, add the target first — do not leave orphan files.
 
 ## Do not
 
