@@ -163,6 +163,20 @@ struct ViewportTransform: Codable, Equatable {
         centerOnAxisOrigin(in: viewSize)
     }
 
+    static func easeInOut(_ t: CGFloat) -> CGFloat {
+        t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+    }
+
+    func interpolated(toward target: ViewportTransform, t: CGFloat) -> ViewportTransform {
+        ViewportTransform(
+            scale: scale + (target.scale - scale) * t,
+            translation: CGPoint(
+                x: translation.x + (target.translation.x - translation.x) * t,
+                y: translation.y + (target.translation.y - translation.y) * t
+            )
+        )
+    }
+
     private static func boundingRect(for points: [CGPoint]) -> CGRect {
         guard let first = points.first else { return .zero }
         if points.count == 1 {

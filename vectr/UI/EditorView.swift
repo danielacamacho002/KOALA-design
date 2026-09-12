@@ -49,7 +49,8 @@ struct EditorView: View {
     @State private var lastSavedSnapshot: DocumentSnapshot?
     @State private var patternSettings = PatternSettings()
     @State private var patternPreviewStrokes: [VectorStroke] = []
-    @State private var autoSaveTask: Task<Void, Never>?
+    @State private var designCanvasHandle = CanvasViewportHandle()
+    @State private var printCanvasHandle = CanvasViewportHandle()
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
 
     init(projectURL: URL? = nil, projectLibrary: ProjectLibrary? = nil) {
@@ -69,17 +70,16 @@ struct EditorView: View {
                     onRedo: {
                         store.document.redo()
                         store.markDirty()
-                        refreshCanvas()
                     },
                     onSave: { saveDocumentNow() },
                     onSwitchToDesign: { switchToDesignMode() },
                     onExport: preparePrintExport,
                     onChanged: {
                         store.markDirty()
-                        refreshCanvas()
                     },
                     onLayoutReady: { rect in handlePrintLayoutReady(in: rect) },
-                    onFitToGrid: { rect in fitPrintLayoutToGrid(in: rect) }
+                    onFitToGrid: { rect in fitPrintLayoutToGrid(in: rect) },
+                    viewportHandle: printCanvasHandle
                 )
             } else {
                 designEditorBody
@@ -109,12 +109,12 @@ struct EditorView: View {
                 shareItems = []
             }
         }
-        .onChange(of: store.contentRevision) { _, _ in
-            if store.hasUnsavedChanges { scheduleAutoSave() }
+        .onAppear {
+            store.persistDocument = { saveDocument() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background || phase == .inactive {
-                flushAutoSave()
+                store.flushAutoSave()
             }
         }
         .alert("Unsaved Changes", isPresented: $showUnsavedAlert) {
@@ -155,7 +155,9 @@ struct EditorView: View {
                     commandRevision: commandSession.revision,
                     strokeCount: store.document.strokes.count,
                     geometryRevision: store.document.geometryRevision,
-                    contentRevision: store.contentRevision,
+                    selectedStrokeID: store.document.selectedStrokeID,
+                    selectedTextID: store.document.selectedTextID,
+                    selectedStrokeIDs: store.document.selectedStrokeIDs,
                     visualGridSpacing: UnitConversion.visualGridSpacing(
                         sliderValue: store.document.settings.defaultGridSpacingInUnits,
                         unit: store.document.settings.units
@@ -179,7 +181,6 @@ struct EditorView: View {
                         } else {
                             store.document.clearElementSelection()
                         }
-                        store.markDirty()
                     },
                     onDragDrawBegan: { start in
                         if beginArcDragIfNeeded(at: start) {
@@ -211,7 +212,8 @@ struct EditorView: View {
                     },
                     curveDraft: curveDraft,
                     onCurveCommitted: commitCurve,
-                    onLayoutMetrics: updateCanvasLayoutMetrics
+                    onLayoutMetrics: updateCanvasLayoutMetrics,
+                    viewportHandle: designCanvasHandle
                 )
                 .ignoresSafeArea()
                 .transaction { $0.animation = nil }
@@ -249,7 +251,7 @@ struct EditorView: View {
                 .transaction { $0.animation = nil }
 
                 DimensionOverlayView(document: store.document) {
-                    refreshCanvas()
+                    store.markDirty()
                 }
                 .ignoresSafeArea()
                 .transaction { $0.animation = nil }
@@ -261,11 +263,10 @@ struct EditorView: View {
                         units: store.document.settings.units,
                         onApply: {
                             store.document.clearToolSelections()
-                            refreshCanvas()
+                            store.markDirty()
                         },
                         onCancel: {
                             store.document.clearToolSelections()
-                            refreshCanvas()
                         }
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
@@ -275,16 +276,15 @@ struct EditorView: View {
                         document: store.document,
                         units: store.document.settings.units
                     ) {
-                        refreshCanvas()
+                        store.markDirty()
                     }
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .addAnchor {
                     AddAnchorPanelView(
                         document: store.document,
-                        onApply: { refreshCanvas() },
+                        onApply: { store.markDirty() },
                         onCancel: {
                             store.document.clearToolSelections()
-                            refreshCanvas()
                         },
                         onStatus: { statusMessage = $0 }
                     )
@@ -297,12 +297,11 @@ struct EditorView: View {
                         onPreviewChange: updatePatternPreview,
                         onApply: {
                             patternPreviewStrokes = []
-                            refreshCanvas()
+                            store.markDirty()
                         },
                         onCancel: {
                             patternPreviewStrokes = []
                             store.document.clearToolSelections()
-                            refreshCanvas()
                         },
                         onStatus: { statusMessage = $0 }
                     )
@@ -310,7 +309,7 @@ struct EditorView: View {
                 } else if store.document.activeCategory == .copy {
                     CopyPastePanelView(
                         document: store.document,
-                        onChanged: { refreshCanvas() },
+                        onChanged: { store.markDirty() },
                         onStatus: { statusMessage = $0 }
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
@@ -321,7 +320,7 @@ struct EditorView: View {
                     TextToolPanelView(
                         document: store.document,
                         elementID: editingTextID,
-                        onChanged: { refreshCanvas() },
+                        onChanged: { store.markDirty() },
                         onDone: { endTextEditingIfNeeded() }
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
@@ -340,7 +339,6 @@ struct EditorView: View {
                         onDone: { commitCommandShape(restart: true) },
                         onCancel: {
                             updateChromeInsets()
-                            refreshCanvas()
                         },
                         onVariantChanged: { startDrawingSessionIfNeeded() }
                     )
@@ -350,7 +348,7 @@ struct EditorView: View {
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .type && editingTextID == nil {
                     FontPickerView(document: store.document, library: FontLibrary.shared) {
-                        refreshCanvas()
+                        store.markDirty()
                     }
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
@@ -358,7 +356,7 @@ struct EditorView: View {
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .scale {
                     ScaleToolPanelView(document: store.document) {
-                        refreshCanvas()
+                        store.markDirty()
                     }
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
@@ -370,7 +368,7 @@ struct EditorView: View {
             }
             .overlay(alignment: .topTrailing) {
                 LayersPanelView(document: store.document, isExpanded: $showLayersPanel) {
-                    refreshCanvas()
+                    store.markDirty()
                 }
             }
             .overlay(alignment: .bottomTrailing) {
@@ -426,7 +424,6 @@ struct EditorView: View {
                 onSwitchToPrintLayout: { switchToPrintLayoutMode() },
                 onVisibilityToggled: {
                     store.markDirty()
-                    refreshCanvas()
                 }
             )
         }
@@ -440,7 +437,7 @@ struct EditorView: View {
         store.document.autoPositionDesignOnPrintGrid()
         printLayoutNeedsInitialFit = true
         fitPrintLayoutToGrid()
-        refreshCanvas()
+        store.markDirty()
     }
 
     /// Fits all sheets into view the first time the layout appears, then only
@@ -462,7 +459,7 @@ struct EditorView: View {
         if let savedDesignViewport {
             store.document.viewport = savedDesignViewport
         }
-        refreshCanvas()
+        designCanvasHandle.refreshViewport()
     }
 
     private func fitPrintLayoutToGrid(in rect: CGRect? = nil) {
@@ -510,7 +507,7 @@ struct EditorView: View {
             x: viewCenter.x - center.x * currentScale,
             y: viewCenter.y - center.y * currentScale
         )
-        refreshCanvas()
+        printCanvasHandle.refreshViewport()
     }
 
     private func boundingRect(for points: [CGPoint]) -> CGRect? {
@@ -687,7 +684,6 @@ struct EditorView: View {
         dragDrawStart = nil
         dragDrawEnd = nil
         isDragDrawing = false
-        refreshCanvas()
         return true
     }
 
@@ -717,7 +713,6 @@ struct EditorView: View {
             commandSession.movePoint(at: 2, to: end)
         }
         commandSession.setArcSweep(arcDragAccumulatedSweep)
-        refreshCanvas()
         return true
     }
 
@@ -819,7 +814,7 @@ struct EditorView: View {
             )
         }
         store.needsInitialViewportLayout = false
-        refreshCanvas()
+        designCanvasHandle.refreshViewport()
     }
 
     private func recenterAnimated() {
@@ -831,39 +826,11 @@ struct EditorView: View {
             canvasSize: store.document.settings.canvasSize,
             visibleRect: visibleRect
         )
-
-        let startScale = store.document.viewport.scale
-        let startTranslation = store.document.viewport.translation
-        let endScale = target.scale
-        let endTranslation = target.translation
-
-        let translationDelta = hypot(endTranslation.x - startTranslation.x, endTranslation.y - startTranslation.y)
-        guard translationDelta > 0.5 || abs(endScale - startScale) > 0.0001 else { return }
-
-        Task { @MainActor in
-            let steps = 24
-            for step in 1...steps {
-                let t = CGFloat(step) / CGFloat(steps)
-                let eased = easeInOut(t)
-                store.document.viewport.scale = startScale + (endScale - startScale) * eased
-                store.document.viewport.translation = CGPoint(
-                    x: startTranslation.x + (endTranslation.x - startTranslation.x) * eased,
-                    y: startTranslation.y + (endTranslation.y - startTranslation.y) * eased
-                )
-                refreshCanvas()
-                try? await Task.sleep(nanoseconds: 12_000_000)
-            }
-            store.document.viewport = target
-            refreshCanvas()
-        }
-    }
-
-    private func easeInOut(_ t: CGFloat) -> CGFloat {
-        t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+        designCanvasHandle.animateViewport(to: target)
     }
 
     private func handleBack() {
-        flushAutoSave()
+        store.flushAutoSave()
         if store.hasUnsavedChanges {
             showUnsavedAlert = true
         } else {
@@ -871,26 +838,8 @@ struct EditorView: View {
         }
     }
 
-    private func scheduleAutoSave() {
-        autoSaveTask?.cancel()
-        autoSaveTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard !Task.isCancelled else { return }
-            guard store.hasUnsavedChanges else { return }
-            saveDocument()
-        }
-    }
-
-    private func flushAutoSave() {
-        autoSaveTask?.cancel()
-        autoSaveTask = nil
-        guard store.hasUnsavedChanges else { return }
-        saveDocument()
-    }
-
     private func saveDocumentNow() {
-        autoSaveTask?.cancel()
-        autoSaveTask = nil
+        store.cancelAutoSave()
         saveDocument()
     }
 
@@ -933,8 +882,7 @@ struct EditorView: View {
 
     private func discardChangesAndDismiss() {
         pendingDismiss = false
-        autoSaveTask?.cancel()
-        autoSaveTask = nil
+        store.cancelAutoSave()
         if let lastSavedSnapshot {
             store.document = VectrDocument(snapshot: lastSavedSnapshot)
             store.hasUnsavedChanges = false
@@ -988,7 +936,7 @@ struct EditorView: View {
         case .delete:
             if !store.document.selectionIsEmpty {
                 store.document.deleteSelectedElements()
-                refreshCanvas()
+                store.markDirty()
             } else {
                 statusMessage = "Select a shape or text to delete"
             }
@@ -1108,7 +1056,6 @@ struct EditorView: View {
             commandSession.addPoint(anchor)
         }
         updateChromeInsets()
-        refreshCanvas()
     }
 
     private var lineConnectTolerance: CGFloat {
@@ -1137,7 +1084,6 @@ struct EditorView: View {
             }
             return
         }
-        refreshCanvas()
         if commandSession.canFinish, shouldAutoCommitAfterPoint {
             commitCommandShape(restart: true)
         }
@@ -1158,7 +1104,7 @@ struct EditorView: View {
         if let element = store.document.textElement(with: id),
            element.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             store.document.removeTextElement(id: id)
-            refreshCanvas()
+            store.markDirty()
         }
     }
 
@@ -1193,7 +1139,6 @@ struct EditorView: View {
         curveDraft.discardRedo()
         store.document.undo()
         store.markDirty()
-        refreshCanvas()
     }
 
     private func handleDesignRedo() {
@@ -1203,7 +1148,6 @@ struct EditorView: View {
         }
         store.document.redo()
         store.markDirty()
-        refreshCanvas()
     }
 
     private func dismissActiveTool() {
@@ -1216,7 +1160,6 @@ struct EditorView: View {
         store.document.clearElementSelection()
         store.document.clearActiveTool()
         updateChromeInsets()
-        refreshCanvas()
     }
 
     private func handleCanvasTap(_ documentPoint: CGPoint) {
@@ -1256,7 +1199,6 @@ struct EditorView: View {
                 store.document.addTextElement(element)
                 beginTextEditing(element.id)
                 store.markDirty()
-                refreshCanvas()
             }
         case .line, .circle, .rectangle:
             guard let category = store.document.activeCategory else { return }
@@ -1285,8 +1227,6 @@ struct EditorView: View {
             }
             if commandSession.canFinish, shouldAutoCommitAfterPoint {
                 commitCommandShape(restart: true)
-            } else {
-                refreshCanvas()
             }
         case .trim:
             if isEmptyCanvasTap(at: documentPoint) {
@@ -1300,9 +1240,9 @@ struct EditorView: View {
             // Anchor-first: tapping a vertex deletes it. A corner drops its two edges and
             // opens the shape; a collinear point is removed without changing the geometry.
             if store.document.deleteStrokeAnchor(near: documentPoint, threshold: threshold) {
-                refreshCanvas()
+                store.markDirty()
             } else if store.document.trimAt(documentPoint, threshold: threshold) {
-                refreshCanvas()
+                store.markDirty()
             } else if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
                 // Non-CAD shapes previously trimmed via edge/vertex handles. Keep that
                 // behavior by tapping the geometry itself (no overlay handles).
@@ -1317,13 +1257,12 @@ struct EditorView: View {
                    ),
                    closingEdgeFallbackAllowed(stroke, edgeIndex: edgeIndex) {
                     store.document.deleteStrokeEdge(at: edgeIndex)
-                    refreshCanvas()
+                    store.markDirty()
                 } else {
                     statusMessage = "Tap the line segment to trim away"
                 }
             } else {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
-                refreshCanvas()
             }
         case .addAnchor:
             if isEmptyCanvasTap(at: documentPoint, viewThreshold: 28) {
@@ -1338,7 +1277,7 @@ struct EditorView: View {
                 if AnchorPointEngine.canEditAnchors(on: stroke) {
                     let snapped = snapDrawingInput(documentPoint)
                     if store.document.insertAnchor(at: snapped, threshold: threshold) {
-                        refreshCanvas()
+                        store.markDirty()
                     } else {
                         statusMessage = "Tap closer to an edge between anchors"
                     }
@@ -1347,7 +1286,6 @@ struct EditorView: View {
                 }
             } else {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
-                refreshCanvas()
             }
         case .pattern:
             if isEmptyCanvasTap(at: documentPoint) {
@@ -1363,7 +1301,6 @@ struct EditorView: View {
                 patternPreviewStrokes = []
             }
             updatePatternPreview()
-            refreshCanvas()
         case .dimensions:
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             switch store.document.handleDimensionTap(at: documentPoint, threshold: threshold) {
@@ -1372,7 +1309,6 @@ struct EditorView: View {
             case .revealedEdge, .hiddenEdge, .autoRevealed, .dismissed, .ignored:
                 break
             }
-            refreshCanvas()
         case .copy:
             if isEmptyCanvasTap(at: documentPoint) {
                 dismissActiveTool()
@@ -1387,7 +1323,6 @@ struct EditorView: View {
                     statusMessage = "Copied \(count) \(noun). Switch layers, then Paste"
                 }
             }
-            refreshCanvas()
         case .delete:
             if isEmptyCanvasTap(at: documentPoint, viewThreshold: 24) {
                 dismissActiveTool()
@@ -1398,7 +1333,7 @@ struct EditorView: View {
             }
             if let text = store.document.textElement(at: documentPoint) {
                 store.document.removeTextElement(id: text.id)
-                refreshCanvas()
+                store.markDirty()
                 return
             }
             let threshold = store.document.viewport.viewToDocument(distance: 24)
@@ -1407,7 +1342,7 @@ struct EditorView: View {
             //    removed is bounded by the arc, so the tap is inherently near the arc line
             //    (which would otherwise be deleted as a whole shape).
             if store.document.sliceArcCut(at: documentPoint) {
-                refreshCanvas()
+                store.markDirty()
                 return
             }
             // 2. Interior fill tap over an overlap: punch a hole (base MINUS target).
@@ -1418,7 +1353,7 @@ struct EditorView: View {
             //    inside a top shape that overlaps a shape beneath, so true edge taps on
             //    standalone shapes still fall through to the outline delete below.
             if store.document.punchOverlapHole(at: documentPoint) {
-                refreshCanvas()
+                store.markDirty()
                 return
             }
             // 3. Edge/line tap: tapping on or near an outline deletes that shape entirely.
@@ -1431,20 +1366,20 @@ struct EditorView: View {
                 let fillUnderTap = store.document.strokeFillHit(at: documentPoint)
                 if fillUnderTap == nil || fillUnderTap?.id == outline.id {
                     store.document.removeStroke(id: outline.id)
-                    refreshCanvas()
+                    store.markDirty()
                     return
                 }
             }
             // 4. Interior fill tap with nothing beneath: delete the filled shape.
             if let fill = store.document.strokeFillHit(at: documentPoint) {
                 store.document.removeStroke(id: fill.id)
-                refreshCanvas()
+                store.markDirty()
                 return
             }
             // 5. Fall back to the current selection.
             if !store.document.selectionIsEmpty {
                 store.document.deleteSelectedElements()
-                refreshCanvas()
+                store.markDirty()
             }
         default:
             if isEmptyCanvasTap(at: documentPoint) {
@@ -1453,7 +1388,6 @@ struct EditorView: View {
             }
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             store.document.selectElement(near: documentPoint, threshold: threshold)
-            refreshCanvas()
         }
     }
 
@@ -1478,7 +1412,6 @@ struct EditorView: View {
 
         store.document.engageMoveTool()
         handleToolSelected(.move)
-        refreshCanvas()
     }
 
     private func commitDragDraw(start: CGPoint, end: CGPoint) {
@@ -1560,7 +1493,6 @@ struct EditorView: View {
         // Select the new curve so its anchor + tangent handles are immediately editable.
         store.document.selectedStrokeID = stroke.id
         store.markDirty()
-        refreshCanvas()
     }
 
     private func dragControlPoints(start: CGPoint, end: CGPoint) -> [CGPoint] {
@@ -1657,7 +1589,6 @@ struct EditorView: View {
         store.document.addStroke(stroke)
         commandSession.finish()
         store.markDirty()
-        refreshCanvas()
 
         if restart, store.document.isDrawingToolActive {
             startDrawingSessionIfNeeded()
@@ -1705,11 +1636,6 @@ struct EditorView: View {
 
     private func performUndo() {
         store.document.undo()
-        store.markDirty()
-        refreshCanvas()
-    }
-
-    private func refreshCanvas() {
         store.markDirty()
     }
 
