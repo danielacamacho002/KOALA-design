@@ -146,7 +146,7 @@ nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
         for point in contour.dropFirst() {
             path.addLine(to: point)
         }
-        if isClosed, contour.count > 2 {
+        if isClosed, shapeType != .arc, contour.count > 2 {
             path.closeSubpath()
         }
         return path
@@ -216,7 +216,7 @@ nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
         for point in pathPoints.dropFirst() {
             path.addLine(to: point)
         }
-        if isClosed, pathPoints.count > 2 {
+        if isClosed, shapeType != .arc, pathPoints.count > 2 {
             path.closeSubpath()
         }
         return path

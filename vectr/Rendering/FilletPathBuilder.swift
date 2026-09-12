@@ -175,25 +175,36 @@ nonisolated enum FilletPathBuilder: Sendable {
             return result.count - 1
         }
 
-        for index in 0..<count {
-            let isEndpoint = !closed && (index == 0 || index == count - 1)
-            if smoothMiddles.contains(index), !isEndpoint {
-                let prev = points[(index - 1 + count) % count]
-                let next = points[(index + 1) % count]
-                for point in ShapeGeometry.arcPointsThrough(
-                    start: prev,
-                    end: next,
-                    through: points[index],
-                    segments: segmentsPerArc
+        let runs = ShapeGeometry.consecutiveSmoothRuns(
+            count: count,
+            smooth: smoothMiddles,
+            closed: closed
+        )
+        var consumed = Set<Int>()
+        var index = 0
+        while index < count {
+            if consumed.contains(index) {
+                index += 1
+                continue
+            }
+            if let run = runs.first(where: { $0.contains(index) }) {
+                for point in ShapeGeometry.expandedSmoothRunPoints(
+                    points: points,
+                    run: run,
+                    closed: closed,
+                    segmentsPerArc: segmentsPerArc
                 ) {
                     append(point)
                 }
-            } else {
-                let newIndex = append(points[index])
-                if let radius = radiiByCorner[index], radius > 0 {
-                    radii[newIndex] = radius
-                }
+                consumed.formUnion(run)
+                index += 1
+                continue
             }
+            let newIndex = append(points[index])
+            if let radius = radiiByCorner[index], radius > 0 {
+                radii[newIndex] = radius
+            }
+            index += 1
         }
 
         if closed,

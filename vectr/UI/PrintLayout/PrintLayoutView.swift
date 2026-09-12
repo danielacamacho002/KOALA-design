@@ -18,6 +18,7 @@ struct PrintLayoutView: View {
     var onChanged: () -> Void
     var onLayoutReady: (CGRect) -> Void
     var onFitToGrid: (CGRect) -> Void
+    var viewportHandle: CanvasViewportHandle
 
     @State private var statusMessage: String?
     @State private var showPaperPanel = false
@@ -39,6 +40,7 @@ struct PrintLayoutView: View {
                     document: document,
                     printLayoutRevision: document.printLayoutRevision,
                     geometryRevision: document.geometryRevision,
+                    viewportHandle: viewportHandle,
                     onCanvasTap: handleCanvasTap,
                     onTwoFingerTap: onUndo
                 )
@@ -145,7 +147,6 @@ struct PrintLayoutView: View {
         case .select:
             let threshold = document.viewport.viewToDocument(distance: 16)
             _ = document.selectPrintElement(near: documentPoint, threshold: threshold)
-            onChanged()
         case .cut:
             let threshold = document.viewport.viewToDocument(distance: 20)
             _ = document.cutAlongNearestPrintBorder(near: documentPoint, threshold: threshold)

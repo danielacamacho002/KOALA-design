@@ -100,6 +100,7 @@ final class DrawingCanvasUIView: UIView {
     private var lastEmittedLayoutSize: CGSize = .zero
     private var lastEmittedSafeAreaInsets: UIEdgeInsets = .zero
     private var layoutMetricsWorkItem: DispatchWorkItem?
+    private var viewportAnimationTask: Task<Void, Never>?
 
     // Object snapping (endpoints/midpoints). Decoupled engine + per-gesture lock session +
     // visual/haptic feedback. Toggle globally via `document.isSnappingEnabled`.
@@ -370,6 +371,37 @@ final class DrawingCanvasUIView: UIView {
         }
     }
 
+    func cancelViewportAnimation() {
+        viewportAnimationTask?.cancel()
+        viewportAnimationTask = nil
+    }
+
+    func animateViewport(to target: ViewportTransform) {
+        cancelViewportAnimation()
+        let start = document.viewport
+        let translationDelta = hypot(
+            target.translation.x - start.translation.x,
+            target.translation.y - start.translation.y
+        )
+        guard translationDelta > 0.5 || abs(target.scale - start.scale) > 0.0001 else { return }
+
+        viewportAnimationTask = Task { @MainActor [weak self] in
+            let steps = 24
+            for step in 1...steps {
+                if Task.isCancelled { return }
+                guard let self else { return }
+                let t = ViewportTransform.easeInOut(CGFloat(step) / CGFloat(steps))
+                self.document.viewport = start.interpolated(toward: target, t: t)
+                self.refreshViewport()
+                try? await Task.sleep(nanoseconds: 12_000_000)
+            }
+            if Task.isCancelled { return }
+            guard let self else { return }
+            self.document.viewport = target
+            self.refreshViewport()
+        }
+    }
+
     private func refreshViewportContents() {
         for (id, layer) in strokeLayers {
             if let stroke = document.stroke(with: id) {
@@ -487,6 +519,7 @@ final class DrawingCanvasUIView: UIView {
     @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
         switch gesture.state {
         case .began:
+            cancelViewportAnimation()
             pinchStartScale = document.viewport.scale
             pinchAnchor = gesture.location(in: self)
         case .changed:
@@ -504,6 +537,7 @@ final class DrawingCanvasUIView: UIView {
         let translation = gesture.translation(in: self)
         switch gesture.state {
         case .began:
+            cancelViewportAnimation()
             lastPanLocation = translation
         case .changed:
             let delta = CGPoint(
@@ -1081,6 +1115,7 @@ final class DrawingCanvasUIView: UIView {
     private func handleNavigationBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         if let event, event.allTouches?.count ?? 0 >= 2 {
             isPanning = true
+            cancelViewportAnimation()
             if let touch = touches.first {
                 lastPanLocation = touch.location(in: self)
             }
