@@ -5,7 +5,13 @@
 
 import UIKit
 
+protocol PrintLayoutCanvasDelegate: AnyObject {
+    func canvasDidUpdate(document: VectrDocument)
+}
+
 final class PrintLayoutCanvasUIView: UIView {
+    weak var delegate: PrintLayoutCanvasDelegate?
+
     var document: VectrDocument {
         didSet { reloadAll() }
     }
@@ -63,13 +69,18 @@ final class PrintLayoutCanvasUIView: UIView {
                 viewport.preserveCenter(from: lastLaidOutSize, to: newSize)
                 if viewport != document.viewport {
                     document.viewport = viewport
+                    delegate?.canvasDidUpdate(document: document)
                 }
             }
             sheetsLayer.frame = bounds
             artworkLayer.frame = bounds
             overlayLayer.frame = bounds
             if sizeChanged {
-                reloadAllContents()
+                if sheetLayers.isEmpty && strokeLayers.isEmpty && textLayers.isEmpty {
+                    reloadAllContents()
+                } else {
+                    refreshViewportContents()
+                }
             }
         }
 
@@ -86,17 +97,71 @@ final class PrintLayoutCanvasUIView: UIView {
 
     func refreshViewport() {
         performWithoutLayerAnimation {
-            reloadAllContents()
+            refreshViewportContents()
+        }
+    }
+
+    func reloadSheets() {
+        performWithoutLayerAnimation {
+            reloadSheetFrames()
+        }
+    }
+
+    func reloadStrokes() {
+        performWithoutLayerAnimation {
+            reloadStrokeLayers()
+        }
+    }
+
+    func reloadTextElements() {
+        performWithoutLayerAnimation {
+            reloadTextLayers()
+        }
+    }
+
+    func reloadSelectedPrintElement() {
+        performWithoutLayerAnimation {
+            if let id = document.printSelectedStrokeID,
+               let stroke = document.printLayoutStroke(with: id) {
+                applyStroke(stroke)
+            } else if let id = document.printSelectedTextID,
+                      let element = document.textElement(with: id) {
+                applyTextElement(element)
+            } else {
+                reloadStrokeLayers()
+                reloadTextLayers()
+            }
+        }
+    }
+
+    func refreshHighlight() {
+        performWithoutLayerAnimation {
+            reloadStrokesHighlight()
+        }
+    }
+
+    func updateOverlays() {
+        performWithoutLayerAnimation {
+            updateOverlayLayers(rebuildStyle: true)
         }
     }
 
     private func reloadAllContents() {
-        reloadSheets()
-        reloadStrokes()
-        reloadTextElements()
-        reloadDimOverlay()
-        reloadMarginGuide()
-        reloadBorders()
+        reloadSheetFrames()
+        reloadStrokeLayers()
+        reloadTextLayers()
+        updateOverlayLayers(rebuildStyle: true)
+    }
+
+    private func refreshViewportContents() {
+        reloadSheetFrames()
+        for stroke in document.printLayoutStrokes() where strokeLayers[stroke.id] != nil {
+            applyStroke(stroke)
+        }
+        for element in document.visibleTextElements() where textLayers[element.id] != nil {
+            applyTextElement(element)
+        }
+        updateOverlayLayers(rebuildStyle: false)
     }
 
     private func performWithoutLayerAnimation(_ updates: () -> Void) {
@@ -108,7 +173,7 @@ final class PrintLayoutCanvasUIView: UIView {
 
     // MARK: - Rendering
 
-    private func reloadSheets() {
+    private func reloadSheetFrames() {
         let sheets = PrintPageGridEngine.sheets(for: document.printLayout)
         let needed = sheets.count * 2
         while sheetLayers.count > needed {
@@ -184,7 +249,7 @@ final class PrintLayoutCanvasUIView: UIView {
         return label
     }
 
-    private func reloadStrokes() {
+    private func reloadStrokeLayers() {
         let printStrokes = document.printLayoutStrokes()
         let visibleIDs = Set(printStrokes.map(\.id))
         for (id, layer) in strokeLayers where !visibleIDs.contains(id) {
@@ -193,79 +258,81 @@ final class PrintLayoutCanvasUIView: UIView {
         }
 
         for stroke in printStrokes {
-            let transform = document.effectivePrintTransform(for: stroke.id)
-            let transformed = document.transformedPrintStroke(stroke)
-            let cutOpacity = PrintBorderRenderer.strokeOpacity(
-                for: transformed,
-                settings: document.printLayout
-            )
-            let isSelected = stroke.id == document.printSelectedStrokeID
-            let opacity = document.opacity(forLayerID: stroke.layerID) * (isSelected ? 1 : cutOpacity)
+            applyStroke(stroke)
+        }
+    }
 
-            if let layer = strokeLayers[stroke.id] {
-                StrokeRenderer.updateShapeLayer(
-                    layer,
-                    stroke: stroke,
-                    viewport: document.viewport,
-                    pointTransform: transform,
-                    opacity: opacity
-                )
-            } else {
-                let layer = StrokeRenderer.makeShapeLayer(
-                    for: stroke,
-                    viewport: document.viewport,
-                    pointTransform: transform,
-                    opacity: opacity
-                )
-                artworkLayer.addSublayer(layer)
-                strokeLayers[stroke.id] = layer
-            }
+    private func applyStroke(_ stroke: VectorStroke) {
+        let transform = document.effectivePrintTransform(for: stroke.id)
+        let opacity = strokeOpacity(for: stroke)
+
+        if let layer = strokeLayers[stroke.id] {
+            StrokeRenderer.updateShapeLayer(
+                layer,
+                stroke: stroke,
+                viewport: document.viewport,
+                pointTransform: transform,
+                opacity: opacity
+            )
+        } else {
+            let layer = StrokeRenderer.makeShapeLayer(
+                for: stroke,
+                viewport: document.viewport,
+                pointTransform: transform,
+                opacity: opacity
+            )
+            artworkLayer.addSublayer(layer)
+            strokeLayers[stroke.id] = layer
         }
     }
 
     /// Renders text elements as filled vector glyph outlines on the print grid,
     /// so text is treated as a shape like strokes. Each element applies its own
     /// print transform (which includes the global artwork `contentOffset`).
-    private func reloadTextElements() {
+    private func reloadTextLayers() {
         let visibleIDs = Set(document.visibleTextElements().map(\.id))
         for (id, layer) in textLayers where !visibleIDs.contains(id) {
             layer.removeFromSuperlayer()
             textLayers.removeValue(forKey: id)
         }
 
-        let documentToView = CGAffineTransform(
+        for element in document.visibleTextElements() {
+            applyTextElement(element)
+        }
+    }
+
+    private func applyTextElement(_ element: TextElement) {
+        let printTransform = document.effectivePrintTransform(for: element.id)
+        var transform = PrintLayoutCoordinateSpace
+            .textPrintTransform(for: element, transform: printTransform)
+            .concatenating(documentToViewTransform)
+        let viewPath = TextOutline.path(for: element).copy(using: &transform)
+
+        let opacity = textElementOpacity(for: element, transform: printTransform)
+        let lineWidth = document.viewport.documentToView(distance: element.strokeWidth)
+
+        if let layer = textLayers[element.id] {
+            layer.path = viewPath
+            applyTextStyle(to: layer, element: element, lineWidth: lineWidth)
+            layer.opacity = Float(opacity)
+        } else {
+            let layer = CAShapeLayer()
+            layer.fillRule = .nonZero
+            layer.lineJoin = .round
+            layer.lineCap = .round
+            layer.path = viewPath
+            applyTextStyle(to: layer, element: element, lineWidth: lineWidth)
+            layer.opacity = Float(opacity)
+            artworkLayer.addSublayer(layer)
+            textLayers[element.id] = layer
+        }
+    }
+
+    private var documentToViewTransform: CGAffineTransform {
+        CGAffineTransform(
             a: document.viewport.scale, b: 0, c: 0, d: document.viewport.scale,
             tx: document.viewport.translation.x, ty: document.viewport.translation.y
         )
-
-        for element in document.visibleTextElements() {
-            let printTransform = document.effectivePrintTransform(for: element.id)
-            var transform = PrintLayoutCoordinateSpace
-                .textPrintTransform(for: element, transform: printTransform)
-                .concatenating(documentToView)
-            let viewPath = TextOutline.path(for: element).copy(using: &transform)
-
-            let isSelected = element.id == document.printSelectedTextID
-            let cutOpacity = isSelected ? 1 : textOpacity(for: element, transform: printTransform)
-            let opacity = document.opacity(forLayerID: element.layerID) * cutOpacity
-            let lineWidth = document.viewport.documentToView(distance: element.strokeWidth)
-
-            if let layer = textLayers[element.id] {
-                layer.path = viewPath
-                applyTextStyle(to: layer, element: element, lineWidth: lineWidth)
-                layer.opacity = Float(opacity)
-            } else {
-                let layer = CAShapeLayer()
-                layer.fillRule = .nonZero
-                layer.lineJoin = .round
-                layer.lineCap = .round
-                layer.path = viewPath
-                applyTextStyle(to: layer, element: element, lineWidth: lineWidth)
-                layer.opacity = Float(opacity)
-                artworkLayer.addSublayer(layer)
-                textLayers[element.id] = layer
-            }
-        }
     }
 
     /// Applies fill vs. outline (stroke-only) styling to a text layer.
@@ -280,6 +347,32 @@ final class PrintLayoutCanvasUIView: UIView {
         }
     }
 
+    private func reloadStrokesHighlight() {
+        for stroke in document.printLayoutStrokes() {
+            strokeLayers[stroke.id]?.opacity = Float(strokeOpacity(for: stroke))
+        }
+        for element in document.visibleTextElements() {
+            let printTransform = document.effectivePrintTransform(for: element.id)
+            textLayers[element.id]?.opacity = Float(textElementOpacity(for: element, transform: printTransform))
+        }
+    }
+
+    private func strokeOpacity(for stroke: VectorStroke) -> CGFloat {
+        let transformed = document.transformedPrintStroke(stroke)
+        let cutOpacity = PrintBorderRenderer.strokeOpacity(
+            for: transformed,
+            settings: document.printLayout
+        )
+        let isSelected = stroke.id == document.printSelectedStrokeID
+        return document.opacity(forLayerID: stroke.layerID) * (isSelected ? 1 : cutOpacity)
+    }
+
+    private func textElementOpacity(for element: TextElement, transform: PrintStrokeTransform) -> CGFloat {
+        let isSelected = element.id == document.printSelectedTextID
+        let cutOpacity = isSelected ? 1 : textOpacity(for: element, transform: transform)
+        return document.opacity(forLayerID: element.layerID) * cutOpacity
+    }
+
     /// Mirrors `PrintBorderRenderer.strokeOpacity`: dims text whose transformed
     /// corners fall outside every printable area.
     private func textOpacity(for element: TextElement, transform: PrintStrokeTransform) -> CGFloat {
@@ -291,44 +384,111 @@ final class PrintLayoutCanvasUIView: UIView {
         return hasUnprintablePoint ? 0.3 : 1
     }
 
-    private func reloadBorders() {
-        borderLayer?.removeFromSuperlayer()
-        borderLayer = nil
-        // The red dashed border is a temporary trim guide shown while cutting.
-        guard document.printLayout.activeTool == .cut else { return }
+    private func updateOverlayLayers(rebuildStyle: Bool) {
+        updateBorderLayer(rebuildStyle: rebuildStyle)
+        updateDimOverlayLayer(rebuildStyle: rebuildStyle)
+        updateMarginGuideLayer(rebuildStyle: rebuildStyle)
+    }
 
+    private func updateBorderLayer(rebuildStyle: Bool) {
+        let shouldShow = document.printLayout.activeTool == .cut
+        if shouldShow {
+            let layer = existingOrMakeBorderLayer()
+            if rebuildStyle {
+                PrintBorderRenderer.configureBorderLayer(
+                    layer,
+                    settings: document.printLayout,
+                    viewport: document.viewport
+                )
+            } else {
+                layer.path = PrintBorderRenderer.combinedBorderPath(
+                    settings: document.printLayout,
+                    viewport: document.viewport
+                )
+            }
+            layer.isHidden = false
+        } else {
+            borderLayer?.isHidden = true
+        }
+    }
+
+    private func updateDimOverlayLayer(rebuildStyle: Bool) {
+        let shouldShow = document.printLayout.activeTool == .cut
+        if shouldShow {
+            let layer = existingOrMakeDimOverlayLayer()
+            if rebuildStyle {
+                PrintBorderRenderer.configureDimOverlayLayer(
+                    layer,
+                    settings: document.printLayout,
+                    viewport: document.viewport
+                )
+            } else {
+                layer.path = PrintBorderRenderer.nonPrintablePath(
+                    settings: document.printLayout,
+                    viewport: document.viewport
+                )
+            }
+            layer.isHidden = false
+        } else {
+            dimOverlayLayer?.isHidden = true
+        }
+    }
+
+    private func updateMarginGuideLayer(rebuildStyle: Bool) {
+        let style = document.printLayout.marginMode.printedStyle
+        if style == .off {
+            marginGuideLayer?.isHidden = true
+            return
+        }
+        let layer = existingOrMakeMarginGuideLayer()
+        if rebuildStyle {
+            PrintBorderRenderer.configureMarginGuideLayer(
+                layer,
+                style: style,
+                settings: document.printLayout,
+                viewport: document.viewport
+            )
+        } else {
+            layer.path = PrintBorderRenderer.combinedBorderPath(
+                settings: document.printLayout,
+                viewport: document.viewport
+            )
+        }
+        layer.isHidden = false
+    }
+
+    private func existingOrMakeBorderLayer() -> CAShapeLayer {
+        if let borderLayer { return borderLayer }
         let layer = PrintBorderRenderer.makeBorderLayer(
             settings: document.printLayout,
             viewport: document.viewport
         )
         overlayLayer.addSublayer(layer)
         borderLayer = layer
+        return layer
     }
 
-    private func reloadMarginGuide() {
-        marginGuideLayer?.removeFromSuperlayer()
-        marginGuideLayer = nil
-        guard let layer = PrintBorderRenderer.makeMarginGuideLayer(
-            style: document.printLayout.marginMode.printedStyle,
-            settings: document.printLayout,
-            viewport: document.viewport
-        ) else { return }
-        overlayLayer.addSublayer(layer)
-        marginGuideLayer = layer
-    }
-
-    private func reloadDimOverlay() {
-        dimOverlayLayer?.removeFromSuperlayer()
-        dimOverlayLayer = nil
-        // Red margin shading is only a cutting aid, not shown for display/print modes.
-        guard document.printLayout.activeTool == .cut else { return }
-
+    private func existingOrMakeDimOverlayLayer() -> CAShapeLayer {
+        if let dimOverlayLayer { return dimOverlayLayer }
         let layer = PrintBorderRenderer.makeDimOverlayLayer(
             settings: document.printLayout,
             viewport: document.viewport
         )
         overlayLayer.insertSublayer(layer, at: 0)
         dimOverlayLayer = layer
+        return layer
+    }
+
+    private func existingOrMakeMarginGuideLayer() -> CAShapeLayer {
+        if let marginGuideLayer { return marginGuideLayer }
+        let layer = PrintBorderRenderer.makeMarginGuideLayer(
+            style: document.printLayout.marginMode.printedStyle,
+            settings: document.printLayout,
+            viewport: document.viewport
+        ) ?? CAShapeLayer()
+        overlayLayer.addSublayer(layer)
+        marginGuideLayer = layer
+        return layer
     }
 
     // MARK: - Gestures
@@ -371,6 +531,7 @@ final class PrintLayoutCanvasUIView: UIView {
             let newScale = pinchStartScale * gesture.scale
             document.viewport.zoom(to: newScale, anchorViewPoint: pinchAnchor)
             refreshViewport()
+            delegate?.canvasDidUpdate(document: document)
         default:
             break
         }
@@ -383,6 +544,7 @@ final class PrintLayoutCanvasUIView: UIView {
             document.viewport.translation.y += translation.y
             gesture.setTranslation(.zero, in: self)
             refreshViewport()
+            delegate?.canvasDidUpdate(document: document)
         }
     }
 }

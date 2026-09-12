@@ -49,13 +49,21 @@ enum PrintBorderRenderer {
 
     static func makeBorderLayer(settings: PrintLayoutSettings, viewport: ViewportTransform) -> CAShapeLayer {
         let layer = CAShapeLayer()
+        configureBorderLayer(layer, settings: settings, viewport: viewport)
+        return layer
+    }
+
+    static func configureBorderLayer(
+        _ layer: CAShapeLayer,
+        settings: PrintLayoutSettings,
+        viewport: ViewportTransform
+    ) {
         layer.path = combinedBorderPath(settings: settings, viewport: viewport)
         layer.strokeColor = borderColor.cgColor
         layer.fillColor = UIColor.clear.cgColor
         layer.lineWidth = 1.5
         layer.lineDashPattern = [6, 4]
         layer.contentsScale = UIScreen.main.scale
-        return layer
     }
 
     // MARK: - Printable margin guide (drawn into the print/export output)
@@ -70,13 +78,22 @@ enum PrintBorderRenderer {
     ) -> CAShapeLayer? {
         guard style != .off else { return nil }
         let layer = CAShapeLayer()
+        configureMarginGuideLayer(layer, style: style, settings: settings, viewport: viewport)
+        return layer
+    }
+
+    static func configureMarginGuideLayer(
+        _ layer: CAShapeLayer,
+        style: PrintMarginGuideStyle,
+        settings: PrintLayoutSettings,
+        viewport: ViewportTransform
+    ) {
         layer.path = combinedBorderPath(settings: settings, viewport: viewport)
         layer.strokeColor = UIColor.label.cgColor
         layer.fillColor = UIColor.clear.cgColor
         layer.lineWidth = 1
-        layer.lineDashPattern = style == .dashed ? [6, 4] : nil
+        layer.lineDashPattern = style == .dashed ? [6, 4] as [NSNumber] : nil
         layer.contentsScale = UIScreen.main.scale
-        return layer
     }
 
     // MARK: - Non-printable shading (per-page margin)
@@ -96,11 +113,32 @@ enum PrintBorderRenderer {
 
     static func makeDimOverlayLayer(settings: PrintLayoutSettings, viewport: ViewportTransform) -> CAShapeLayer {
         let layer = CAShapeLayer()
+        configureDimOverlayLayer(layer, settings: settings, viewport: viewport)
+        return layer
+    }
+
+    static func configureDimOverlayLayer(
+        _ layer: CAShapeLayer,
+        settings: PrintLayoutSettings,
+        viewport: ViewportTransform
+    ) {
         layer.fillColor = UIColor.systemRed.withAlphaComponent(0.08).cgColor
         layer.fillRule = .evenOdd
         layer.path = nonPrintablePath(settings: settings, viewport: viewport)
         layer.contentsScale = UIScreen.main.scale
-        return layer
+    }
+
+    static func updateOverlayPaths(
+        border: CAShapeLayer?,
+        dim: CAShapeLayer?,
+        margin: CAShapeLayer?,
+        settings: PrintLayoutSettings,
+        viewport: ViewportTransform
+    ) {
+        let borderPath = combinedBorderPath(settings: settings, viewport: viewport)
+        border?.path = borderPath
+        margin?.path = borderPath
+        dim?.path = nonPrintablePath(settings: settings, viewport: viewport)
     }
 
     // MARK: - Stroke visibility against per-page printable bounds
