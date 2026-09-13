@@ -459,6 +459,16 @@ final class DrawingCanvasUIView: UIView {
     /// Pans and zooms via a world transform. Paths rebuild only when LOD, settings,
     /// or the visible region walk off the cached padded coverage.
     private func updateGridPresentation(forcePathRebuild: Bool = false) {
+        // Grid lines and axes honor the document's visibility toggle so thin
+        // strokes can be inspected on a clean sheet. The boundary layer and
+        // canvas sheet live outside `clipLayer`, so the sheet extent stays visible.
+        let gridHidden = !document.grid.isVisible
+        clipLayer.isHidden = gridHidden
+        if gridHidden {
+            applyWorldTransform()
+            updateSheetFrame()
+            return
+        }
         if forcePathRebuild || gridNeedsPathRebuild() {
             rebuildGridPaths()
         } else {

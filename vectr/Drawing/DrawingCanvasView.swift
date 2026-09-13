@@ -20,6 +20,7 @@ struct DrawingCanvasView: UIViewRepresentable {
     var selectedStrokeIDs: Set<UUID> = []
     var visualGridSpacing: CGFloat = 20
     var measurementUnit: MeasurementUnit = .points
+    var gridVisible: Bool = true
     var isConstructionPreview: Bool = false
     var commandPreviewClosed: Bool = false
     var allowsDragDraw: Bool = false
@@ -86,6 +87,7 @@ struct DrawingCanvasView: UIViewRepresentable {
         let gridDisplayChanged = context.coordinator.consumeGridDisplayChange(
             visualGridSpacing: visualGridSpacing,
             measurementUnit: measurementUnit,
+            gridVisible: gridVisible,
             didSwapDocument: didSwapDocument
         )
         let referenceImageChanged = context.coordinator.consumeReferenceImageChange(
@@ -191,6 +193,7 @@ struct DrawingCanvasView: UIViewRepresentable {
         private var lastViewportSnapshot: ViewportSnapshot?
         private var lastVisualGridSpacing: CGFloat?
         private var lastMeasurementUnit: MeasurementUnit?
+        private var lastGridVisible: Bool?
         private var lastReferenceImageData: Data?
         private var lastReferenceImageFrame: CGRect?
         private var viewportHandledByCanvas = false
@@ -249,15 +252,19 @@ struct DrawingCanvasView: UIViewRepresentable {
         func consumeGridDisplayChange(
             visualGridSpacing: CGFloat,
             measurementUnit: MeasurementUnit,
+            gridVisible: Bool,
             didSwapDocument: Bool
         ) -> Bool {
             defer {
                 lastVisualGridSpacing = visualGridSpacing
                 lastMeasurementUnit = measurementUnit
+                lastGridVisible = gridVisible
             }
             if didSwapDocument { return true }
-            guard let lastVisualGridSpacing, let lastMeasurementUnit else { return true }
-            return abs(lastVisualGridSpacing - visualGridSpacing) > 0.0001 || lastMeasurementUnit != measurementUnit
+            guard let lastVisualGridSpacing, let lastMeasurementUnit, let lastGridVisible else { return true }
+            return abs(lastVisualGridSpacing - visualGridSpacing) > 0.0001
+                || lastMeasurementUnit != measurementUnit
+                || lastGridVisible != gridVisible
         }
 
         func consumeReferenceImageChange(data: Data?, frame: CGRect?, didSwapDocument: Bool) -> Bool {

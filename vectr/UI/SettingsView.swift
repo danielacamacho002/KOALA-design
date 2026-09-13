@@ -55,6 +55,8 @@ struct SettingsView: View {
                 }
 
                 Section("Canvas & grid") {
+                    Toggle("Show grid", isOn: $document.grid.isVisible)
+
                     LabeledContent("Grid spacing") {
                         HStack {
                             Slider(value: $gridSpacingDisplay, in: gridRange, step: gridStep)

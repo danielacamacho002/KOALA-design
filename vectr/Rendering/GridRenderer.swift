@@ -42,28 +42,33 @@ enum GridRenderer {
 
         let inv = 1 / max(viewport.scale, .leastNonzeroMagnitude)
 
-        context.saveGState()
-        context.concatenate(viewport.affineTransform)
-        if let canvasRect = paths.canvasRect {
-            context.clip(to: canvasRect)
-        }
+        // Grid lines and axes honor the document's visibility toggle so thin
+        // strokes can be inspected on a clean sheet. The canvas boundary below
+        // stays so the sheet extent remains visible.
+        if grid.isVisible {
+            context.saveGState()
+            context.concatenate(viewport.affineTransform)
+            if let canvasRect = paths.canvasRect {
+                context.clip(to: canvasRect)
+            }
 
-        context.setLineWidth(gridLineWidth * inv)
-        for (rank, path) in paths.rankPaths.enumerated() {
-            guard !path.isEmpty else { continue }
-            context.setStrokeColor(lineColor(rank: rank).cgColor)
-            context.addPath(path)
+            context.setLineWidth(gridLineWidth * inv)
+            for (rank, path) in paths.rankPaths.enumerated() {
+                guard !path.isEmpty else { continue }
+                context.setStrokeColor(lineColor(rank: rank).cgColor)
+                context.addPath(path)
+                context.strokePath()
+            }
+
+            context.setLineWidth(axisLineWidth * inv)
+            context.setStrokeColor(axisXColor.cgColor)
+            context.addPath(paths.axisX)
             context.strokePath()
+            context.setStrokeColor(axisYColor.cgColor)
+            context.addPath(paths.axisY)
+            context.strokePath()
+            context.restoreGState()
         }
-
-        context.setLineWidth(axisLineWidth * inv)
-        context.setStrokeColor(axisXColor.cgColor)
-        context.addPath(paths.axisX)
-        context.strokePath()
-        context.setStrokeColor(axisYColor.cgColor)
-        context.addPath(paths.axisY)
-        context.strokePath()
-        context.restoreGState()
 
         if let boundary = paths.boundary {
             context.saveGState()
