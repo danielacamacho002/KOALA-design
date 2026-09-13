@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-struct ViewportTransform: Codable, Equatable {
+nonisolated struct ViewportTransform: Codable, Equatable, Sendable {
     var scale: CGFloat = 1
     var translation: CGPoint = .zero
 
@@ -73,6 +73,11 @@ struct ViewportTransform: Codable, Equatable {
         )
     }
 
+    /// Affine map from document space into view space: `p * scale + translation`.
+    var affineTransform: CGAffineTransform {
+        CGAffineTransform(a: scale, b: 0, c: 0, d: scale, tx: translation.x, ty: translation.y)
+    }
+
     func viewToDocument(distance: CGFloat) -> CGFloat {
         distance / scale
     }
@@ -81,7 +86,7 @@ struct ViewportTransform: Codable, Equatable {
         distance * scale
     }
 
-    struct ChromeInsets: Equatable {
+    nonisolated struct ChromeInsets: Equatable, Sendable {
         var left: CGFloat = 280
         var right: CGFloat = 120
         var top: CGFloat = 56

@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-struct DocumentSettings: Codable, Equatable {
+nonisolated struct DocumentSettings: Codable, Equatable, Sendable {
     /// Default canvas dimensions applied to brand-new projects (24" × 18").
     static let defaultCanvasWidth: CGFloat = UnitConversion.documentPoints(from: 24, unit: .inches)
     static let defaultCanvasHeight: CGFloat = UnitConversion.documentPoints(from: 18, unit: .inches)

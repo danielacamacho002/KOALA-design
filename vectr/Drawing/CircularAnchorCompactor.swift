@@ -15,7 +15,7 @@ extension ShapeGeometry {
     /// rewritten in place so move/edit keep showing the compact default, not every
     /// tessellation vertex. Already-compact or user-densified (5–11 sparse) shapes
     /// are left alone.
-    static func withCompactedCircularAnchors(_ stroke: VectorStroke) -> VectorStroke {
+    nonisolated static func withCompactedCircularAnchors(_ stroke: VectorStroke) -> VectorStroke {
         switch stroke.shapeType {
         case .circle:
             return compactStandaloneCircle(stroke)
@@ -39,7 +39,7 @@ extension ShapeGeometry {
     /// Default visible anchors for a circular arc of `sweep` radians starting at `start`.
     /// Closed / near-full sweeps become the four axis-aligned cardinals. Short arcs
     /// keep a midpoint so they stay circular without Bézier handles.
-    static func defaultCircularAnchors(
+    nonisolated static func defaultCircularAnchors(
         center: CGPoint,
         radius: CGFloat,
         start: CGPoint,
@@ -88,7 +88,7 @@ extension ShapeGeometry {
     }
 
     /// Cubic handles that reproduce a circular sweep through `anchors` (all on `center`/`radius`).
-    static func circularCurveHandles(
+    nonisolated static func circularCurveHandles(
         anchors: [CGPoint],
         center: CGPoint,
         radius: CGFloat,
@@ -126,7 +126,7 @@ extension ShapeGeometry {
 // MARK: - Standalone shapes
 
 private extension ShapeGeometry {
-    static func compactStandaloneCircle(_ stroke: VectorStroke) -> VectorStroke {
+    nonisolated static func compactStandaloneCircle(_ stroke: VectorStroke) -> VectorStroke {
         if stroke.points.count < 8 { return stroke }
         guard let circle = fittedCircleIfCircular(stroke.points, closed: true) else {
             if stroke.points.count >= 8, let fitted = fitCircle(from: stroke.points) {
@@ -147,14 +147,14 @@ private extension ShapeGeometry {
         )
     }
 
-    static func compactStandaloneEllipse(_ stroke: VectorStroke) -> VectorStroke {
+    nonisolated static func compactStandaloneEllipse(_ stroke: VectorStroke) -> VectorStroke {
         if stroke.points.count == 4, ellipseFromCardinalPoints(stroke.points) != nil {
             return stroke
         }
         return stroke
     }
 
-    static func compactStandaloneArc(_ stroke: VectorStroke) -> VectorStroke {
+    nonisolated static func compactStandaloneArc(_ stroke: VectorStroke) -> VectorStroke {
         // Sparse arcs are already at the default 2–4 anchors (or user-edited).
         // Re-emitting cardinals here would insert extra points while dragging.
         if stroke.points.count < 8 { return stroke }
@@ -189,7 +189,7 @@ private extension ShapeGeometry {
 
     /// Turns a Bézier that is still a circle/arc (or circular runs plus straight
     /// sides) back into parametric `.circle` / `.arc` / `.polyline` storage.
-    static func restoreParametricCircular(_ stroke: VectorStroke) -> VectorStroke? {
+    nonisolated static func restoreParametricCircular(_ stroke: VectorStroke) -> VectorStroke? {
         let points = stroke.points
         guard points.count >= 2 else { return nil }
 
@@ -227,7 +227,7 @@ private extension ShapeGeometry {
         return nil
     }
 
-    static func curveIsCircularOrStraight(
+    nonisolated static func curveIsCircularOrStraight(
         points: [CGPoint],
         handles: [CurveHandle],
         closed: Bool
@@ -259,7 +259,7 @@ private extension ShapeGeometry {
         return sawCircular
     }
 
-    static func demoteCircularCurveToPolyline(
+    nonisolated static func demoteCircularCurveToPolyline(
         _ stroke: VectorStroke,
         handles: [CurveHandle]
     ) -> VectorStroke {
@@ -335,7 +335,7 @@ private extension ShapeGeometry {
         )
     }
 
-    static func compactCircularRuns(in stroke: VectorStroke) -> VectorStroke {
+    nonisolated static func compactCircularRuns(in stroke: VectorStroke) -> VectorStroke {
         let points = stroke.points
         guard points.count >= denseSampleThreshold else { return stroke }
 
@@ -362,7 +362,7 @@ private extension ShapeGeometry {
         return rebuildStroke(stroke, replacing: runs)
     }
 
-    static func circularRuns(in points: [CGPoint], closed: Bool) -> [[Int]] {
+    nonisolated static func circularRuns(in points: [CGPoint], closed: Bool) -> [[Int]] {
         let count = points.count
         guard count >= denseSampleThreshold else { return [] }
 
@@ -385,7 +385,7 @@ private extension ShapeGeometry {
         return accepted
     }
 
-    static func growCircularRun(in points: [CGPoint], start: Int, closed: Bool) -> [Int]? {
+    nonisolated static func growCircularRun(in points: [CGPoint], start: Int, closed: Bool) -> [Int]? {
         let count = points.count
         let maxLength = closed ? count : count - start
         guard maxLength >= denseSampleThreshold else { return nil }
@@ -420,7 +420,7 @@ private extension ShapeGeometry {
         return run.count >= denseSampleThreshold ? run : nil
     }
 
-    static func rebuildStroke(_ stroke: VectorStroke, replacing runs: [[Int]]) -> VectorStroke {
+    nonisolated static func rebuildStroke(_ stroke: VectorStroke, replacing runs: [[Int]]) -> VectorStroke {
         let points = stroke.points
         let count = points.count
         let closed = stroke.isClosed
@@ -505,7 +505,7 @@ private extension ShapeGeometry {
         )
     }
 
-    static func runStart(_ run: [Int], count: Int) -> Int {
+    nonisolated static func runStart(_ run: [Int], count: Int) -> Int {
         let set = Set(run)
         if set.count == count, let first = run.first { return first }
         for index in run {
@@ -527,7 +527,7 @@ private struct CircularGeometry {
 }
 
 private extension ShapeGeometry {
-    static func circularGeometry(from points: [CGPoint], closed: Bool) -> CircularGeometry? {
+    nonisolated static func circularGeometry(from points: [CGPoint], closed: Bool) -> CircularGeometry? {
         guard let circle = fittedCircleIfCircular(points, closed: closed),
               let first = points.first, let last = points.last else { return nil }
         guard let sweep = sweepFrom(points, center: circle.center, closed: closed) else { return nil }
@@ -540,7 +540,7 @@ private extension ShapeGeometry {
         )
     }
 
-    static func fittedCircleIfCircular(
+    nonisolated static func fittedCircleIfCircular(
         _ points: [CGPoint],
         closed: Bool
     ) -> (center: CGPoint, radius: CGFloat)? {
@@ -573,11 +573,11 @@ private extension ShapeGeometry {
         return circle
     }
 
-    static func sweepFrom(_ points: [CGPoint], center: CGPoint, closed: Bool) -> CGFloat? {
+    nonisolated static func sweepFrom(_ points: [CGPoint], center: CGPoint, closed: Bool) -> CGFloat? {
         signedCircularSweep(of: points, around: center, closed: closed)
     }
 
-    static func cardinalsInteriorToSweep(startAngle: CGFloat, sweep: CGFloat) -> [CGFloat] {
+    nonisolated static func cardinalsInteriorToSweep(startAngle: CGFloat, sweep: CGFloat) -> [CGFloat] {
         let cardinals: [CGFloat] = [-.pi / 2, 0, .pi / 2, .pi]
         var hits: [(parameter: CGFloat, angle: CGFloat)] = []
         for cardinal in cardinals {
@@ -599,7 +599,7 @@ private extension ShapeGeometry {
         return hits.sorted { $0.parameter < $1.parameter }.map(\.angle)
     }
 
-    static func circularMidAngle(from start: CGPoint, to end: CGPoint, center: CGPoint, sweep: CGFloat) -> CGFloat {
+    nonisolated static func circularMidAngle(from start: CGPoint, to end: CGPoint, center: CGPoint, sweep: CGFloat) -> CGFloat {
         let startAngle = atan2(start.y - center.y, start.x - center.x)
         let endAngle = atan2(end.y - center.y, end.x - center.x)
         var segment = endAngle - startAngle
@@ -611,7 +611,7 @@ private extension ShapeGeometry {
         return startAngle + segment / 2
     }
 
-    static func circumcircle(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint) -> (center: CGPoint, radius: CGFloat)? {
+    nonisolated static func circumcircle(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint) -> (center: CGPoint, radius: CGFloat)? {
         let d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y))
         guard abs(d) > 0.001 else { return nil }
         let ux = ((a.x * a.x + a.y * a.y) * (b.y - c.y)
@@ -626,11 +626,11 @@ private extension ShapeGeometry {
         return (center, radius)
     }
 
-    static func circleTolerance(radius: CGFloat) -> CGFloat {
+    nonisolated static func circleTolerance(radius: CGFloat) -> CGFloat {
         max(0.75, radius * 0.025)
     }
 
-    static func circularStepRadians(from a: CGPoint, to b: CGPoint, center: CGPoint) -> CGFloat {
+    nonisolated static func circularStepRadians(from a: CGPoint, to b: CGPoint, center: CGPoint) -> CGFloat {
         let start = atan2(a.y - center.y, a.x - center.x)
         let end = atan2(b.y - center.y, b.x - center.x)
         var step = end - start
@@ -639,7 +639,7 @@ private extension ShapeGeometry {
         return abs(step)
     }
 
-    static func pointLiesOnCircle(
+    nonisolated static func pointLiesOnCircle(
         _ point: CGPoint,
         _ circle: (center: CGPoint, radius: CGFloat),
         tolerance: CGFloat? = nil
@@ -648,7 +648,7 @@ private extension ShapeGeometry {
         return abs(hypot(point.x - circle.center.x, point.y - circle.center.y) - circle.radius) <= allowed
     }
 
-    static func edgeHugsCircle(
+    nonisolated static func edgeHugsCircle(
         from a: CGPoint,
         to b: CGPoint,
         circle: (center: CGPoint, radius: CGFloat),
@@ -665,7 +665,7 @@ private extension ShapeGeometry {
         return sagitta <= maxSagitta * 2
     }
 
-    static func replacingPoints(
+    nonisolated static func replacingPoints(
         _ stroke: VectorStroke,
         points: [CGPoint],
         shapeType: StrokeShapeType,

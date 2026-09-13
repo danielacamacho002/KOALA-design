@@ -29,13 +29,10 @@ final class ProjectLibrary {
     init() {
         ensureDirectories()
         loadIndex()
-        if projects.isEmpty {
-            scanFilesystem()
-        }
     }
 
-    func refresh() {
-        scanFilesystem()
+    func refresh() async {
+        await scanFilesystem()
     }
 
     @discardableResult
@@ -43,7 +40,7 @@ final class ProjectLibrary {
         name: String = "Untitled Artwork",
         canvasSize: CGSize? = nil,
         units: MeasurementUnit = .inches
-    ) throws -> ProjectRecord {
+    ) async throws -> ProjectRecord {
         ensureDirectories()
         let id = UUID()
         let sanitized = sanitizedName(name)
@@ -51,25 +48,26 @@ final class ProjectLibrary {
         let fileURL = projectsDirectory.appendingPathComponent(fileName)
         let document = VectrDocument()
         document.applyNewProjectDefaults(canvasSize: canvasSize, units: units)
-        try DocumentCodec.write(document, to: fileURL)
-        let record = makeRecord(id: id, name: name, fileURL: fileURL, document: document)
-        try writeThumbnail(for: record, document: document)
+        let snapshot = document.makeSnapshot()
+        try await PersistenceWorker.shared.write(snapshot: snapshot, to: fileURL)
+        let record = makeRecord(id: id, name: name, fileURL: fileURL, snapshot: snapshot)
+        try await writeThumbnail(for: record, snapshot: snapshot)
         projects.insert(record, at: 0)
         saveIndex()
         return record
     }
 
-    func duplicateProject(id: UUID) throws -> ProjectRecord {
+    func duplicateProject(id: UUID) async throws -> ProjectRecord {
         guard let source = projects.first(where: { $0.id == id }) else {
             throw LibraryError.projectNotFound
         }
-        let document = try DocumentCodec.read(from: source.fileURL)
+        let snapshot = try await PersistenceWorker.shared.readSnapshot(from: source.fileURL)
         let copyName = uniqueCopyName(for: source.name)
         let fileName = uniqueFileName(base: sanitizedName(copyName), extension: DocumentCodec.fileExtension)
         let fileURL = projectsDirectory.appendingPathComponent(fileName)
-        try DocumentCodec.write(document, to: fileURL)
-        let record = makeRecord(id: UUID(), name: copyName, fileURL: fileURL, document: document)
-        try writeThumbnail(for: record, document: document)
+        try await PersistenceWorker.shared.write(snapshot: snapshot, to: fileURL)
+        let record = makeRecord(id: UUID(), name: copyName, fileURL: fileURL, snapshot: snapshot)
+        try await writeThumbnail(for: record, snapshot: snapshot)
         projects.insert(record, at: 0)
         saveIndex()
         return record
@@ -120,19 +118,24 @@ final class ProjectLibrary {
     }
 
     func updateAfterSave(document: VectrDocument, fileURL: URL, name: String) throws {
+        updateMetadataAfterSave(fileURL: fileURL, name: name, snapshot: document.makeSnapshot())
+        if let index = indexOfProject(at: fileURL.standardizedFileURL) {
+            try writeThumbnail(for: projects[index], document: document)
+        }
+    }
+
+    func updateMetadataAfterSave(fileURL: URL, name: String, snapshot: DocumentSnapshot) {
         let normalizedURL = fileURL.standardizedFileURL
         let modifiedAt = Date()
         if let index = indexOfProject(at: normalizedURL) {
             var record = projects[index]
             record.name = name
             record.modifiedAt = modifiedAt
-            record.canvasWidth = document.settings.canvasWidth
-            record.canvasHeight = document.settings.canvasHeight
-            try writeThumbnail(for: record, document: document)
+            record.canvasWidth = snapshot.settings.canvasWidth
+            record.canvasHeight = snapshot.settings.canvasHeight
             projects[index] = record
         } else {
-            let record = makeRecord(id: UUID(), name: name, fileURL: fileURL, document: document, modifiedAt: modifiedAt)
-            try writeThumbnail(for: record, document: document)
+            let record = makeRecord(id: UUID(), name: name, fileURL: fileURL, snapshot: snapshot, modifiedAt: modifiedAt)
             projects.insert(record, at: 0)
         }
         saveIndex()
@@ -158,7 +161,8 @@ final class ProjectLibrary {
     // MARK: - Internal helpers
 
     func registerImportedProject(name: String, fileURL: URL, document: VectrDocument) throws -> ProjectRecord {
-        let record = makeRecord(id: UUID(), name: name, fileURL: fileURL, document: document)
+        let snapshot = document.makeSnapshot()
+        let record = makeRecord(id: UUID(), name: name, fileURL: fileURL, snapshot: snapshot)
         try writeThumbnail(for: record, document: document)
         projects.insert(record, at: 0)
         saveIndex()
@@ -199,7 +203,7 @@ final class ProjectLibrary {
         try? data.write(to: indexURL, options: .atomic)
     }
 
-    private func scanFilesystem() {
+    private func scanFilesystem() async {
         ensureDirectories()
         guard let files = try? fileManager.contentsOfDirectory(
             at: projectsDirectory,
@@ -208,23 +212,32 @@ final class ProjectLibrary {
         ) else { return }
 
         var scanned: [ProjectRecord] = []
+        var unknownURLs: [URL] = []
         for url in files where url.pathExtension == DocumentCodec.fileExtension {
             let modDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
             if let existing = projects.first(where: { $0.fileURL == url }) {
                 var record = existing
                 record.modifiedAt = modDate
                 scanned.append(record)
-            } else if let document = try? DocumentCodec.read(from: url) {
-                let record = makeRecord(
+            } else {
+                unknownURLs.append(url)
+            }
+        }
+
+        for url in unknownURLs {
+            let modDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
+            guard let snapshot = try? await PersistenceWorker.shared.readSnapshot(from: url) else { continue }
+            scanned.append(
+                makeRecord(
                     id: UUID(),
                     name: url.deletingPathExtension().lastPathComponent,
                     fileURL: url,
-                    document: document,
+                    snapshot: snapshot,
                     modifiedAt: modDate
                 )
-                scanned.append(record)
-            }
+            )
         }
+
         projects = scanned.sorted { $0.modifiedAt > $1.modifiedAt }
         saveIndex()
     }
@@ -236,14 +249,24 @@ final class ProjectLibrary {
         document: VectrDocument,
         modifiedAt: Date = Date()
     ) -> ProjectRecord {
+        makeRecord(id: id, name: name, fileURL: fileURL, snapshot: document.makeSnapshot(), modifiedAt: modifiedAt)
+    }
+
+    private func makeRecord(
+        id: UUID,
+        name: String,
+        fileURL: URL,
+        snapshot: DocumentSnapshot,
+        modifiedAt: Date = Date()
+    ) -> ProjectRecord {
         ProjectRecord(
             id: id,
             name: name,
             fileURL: fileURL,
             thumbnailURL: thumbnailURL(for: id),
             modifiedAt: modifiedAt,
-            canvasWidth: document.settings.canvasWidth,
-            canvasHeight: document.settings.canvasHeight
+            canvasWidth: snapshot.settings.canvasWidth,
+            canvasHeight: snapshot.settings.canvasHeight
         )
     }
 
@@ -253,7 +276,12 @@ final class ProjectLibrary {
 
     private func writeThumbnail(for record: ProjectRecord, document: VectrDocument) throws {
         guard let url = record.thumbnailURL else { return }
-        try ThumbnailRenderer.writeThumbnail(for: document, to: url)
+        try ThumbnailRenderer.writeThumbnail(for: document.makeSnapshot(), to: url)
+    }
+
+    private func writeThumbnail(for record: ProjectRecord, snapshot: DocumentSnapshot) async throws {
+        guard let url = record.thumbnailURL else { return }
+        try await PersistenceWorker.shared.writeThumbnail(snapshot: snapshot, to: url)
     }
 
     private func sanitizedName(_ name: String) -> String {

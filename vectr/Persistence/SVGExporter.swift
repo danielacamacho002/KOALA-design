@@ -8,7 +8,11 @@ import Foundation
 
 enum SVGExporter {
     static func export(document: VectrDocument) -> String {
-        let bounds = DocumentRenderer.boundingRect(for: document)
+        export(snapshot: document.makeSnapshot())
+    }
+
+    nonisolated static func export(snapshot: DocumentSnapshot) -> String {
+        let bounds = DocumentRenderer.boundingRect(for: snapshot)
         let width = max(bounds.width, 1)
         let height = max(bounds.height, 1)
         var svg = """
@@ -17,18 +21,18 @@ enum SVGExporter {
 
         """
 
-        let strokesByLayer = Dictionary(grouping: document.visibleStrokes(), by: \.layerID)
-        let textByLayer = Dictionary(grouping: document.visibleTextElements(), by: \.layerID)
+        let strokesByLayer = Dictionary(grouping: snapshot.visibleStrokes(), by: \.layerID)
+        let textByLayer = Dictionary(grouping: snapshot.visibleTextElements(), by: \.layerID)
 
         func hasContent(_ layerID: UUID) -> Bool {
             !(strokesByLayer[layerID] ?? []).isEmpty || !(textByLayer[layerID] ?? []).isEmpty
         }
 
         var index = 0
-        let layers = document.layers
+        let layers = snapshot.layers
         while index < layers.count {
             let layer = layers[index]
-            if let groupID = layer.groupID, let folder = document.layerGroup(with: groupID) {
+            if let groupID = layer.groupID, let folder = snapshot.layerGroup(with: groupID) {
                 var members: [Layer] = []
                 while index < layers.count, layers[index].groupID == groupID {
                     members.append(layers[index])
@@ -64,7 +68,7 @@ enum SVGExporter {
     }
 
     /// Serializes an arbitrary CGPath (including glyph outlines with curves) to SVG path data.
-    private static func pathData(from path: CGPath) -> String {
+    private nonisolated static func pathData(from path: CGPath) -> String {
         var data = ""
         path.applyWithBlock { elementPointer in
             let element = elementPointer.pointee
@@ -88,13 +92,17 @@ enum SVGExporter {
     }
 
     static func write(document: VectrDocument, to url: URL) throws {
-        let svg = export(document: document)
+        try write(snapshot: document.makeSnapshot(), to: url)
+    }
+
+    nonisolated static func write(snapshot: DocumentSnapshot, to url: URL) throws {
+        let svg = export(snapshot: snapshot)
         try svg.write(to: url, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Layer groups
 
-    private static func layerMarkup(
+    private nonisolated static func layerMarkup(
         _ layer: Layer,
         strokes: [VectorStroke],
         text: [TextElement],
@@ -118,7 +126,7 @@ enum SVGExporter {
         return markup
     }
 
-    private static func groupOpen(
+    private nonisolated static func groupOpen(
         id: UUID,
         prefix: String,
         name: String,
@@ -130,15 +138,15 @@ enum SVGExporter {
         return "\(pad(indent))<g id=\"\(prefix)-\(id.uuidString)\" data-name=\"\(escaped)\" inkscape:groupmode=\"layer\" inkscape:label=\"\(escaped)\"\(opacityAttr)>\n"
     }
 
-    private static func groupClose(indent: Int) -> String {
+    private nonisolated static func groupClose(indent: Int) -> String {
         "\(pad(indent))</g>\n"
     }
 
-    private static func pad(_ indent: Int) -> String {
+    private nonisolated static func pad(_ indent: Int) -> String {
         String(repeating: "  ", count: indent)
     }
 
-    private static func escapeXML(_ string: String) -> String {
+    private nonisolated static func escapeXML(_ string: String) -> String {
         string
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
@@ -149,7 +157,7 @@ enum SVGExporter {
 
     // MARK: - Geometry
 
-    private static func strokeMarkup(_ stroke: VectorStroke, indent: Int) -> String {
+    private nonisolated static func strokeMarkup(_ stroke: VectorStroke, indent: Int) -> String {
         let color = stroke.strokeColor
         let paintHex = hexRGB(from: color)
         let strokeOpacity = formatSVG(clampedUnit(color.alpha))
@@ -187,7 +195,7 @@ enum SVGExporter {
         return "\(prefix)<path d=\"\(displayData)\" \(strokePaint) fill=\"none\"/>\n"
     }
 
-    private static func textMarkup(_ element: TextElement, indent: Int) -> String {
+    private nonisolated static func textMarkup(_ element: TextElement, indent: Int) -> String {
         let outline = TextOutline.path(for: element)
         let data = pathData(from: outline)
         guard !data.isEmpty else { return "" }
@@ -201,7 +209,7 @@ enum SVGExporter {
     }
 
     /// Outer contour plus subtracted holes, matching on-canvas even-odd fills.
-    private static func fillPath(for stroke: VectorStroke) -> CGPath {
+    private nonisolated static func fillPath(for stroke: VectorStroke) -> CGPath {
         let path = CGMutablePath()
         path.addPath(stroke.displayPath())
         for cutout in stroke.cutoutPoints {
@@ -218,23 +226,23 @@ enum SVGExporter {
     }
 
     /// Closed-plane fill, matching the gray used on canvas / PDF / JPEG.
-    private static let planeFillHex = "#CCCCCC"
+    private nonisolated static let planeFillHex = "#CCCCCC"
 
     /// sRGB hex. Components are clamped so Display P3 values cannot emit
     /// invalid `#` paints that viewers drop (taking stroke width with them).
-    private static func hexRGB(from color: CodableColor) -> String {
+    private nonisolated static func hexRGB(from color: CodableColor) -> String {
         let r = Int((clampedUnit(color.red) * 255).rounded())
         let g = Int((clampedUnit(color.green) * 255).rounded())
         let b = Int((clampedUnit(color.blue) * 255).rounded())
         return String(format: "#%02X%02X%02X", r, g, b)
     }
 
-    private static func clampedUnit(_ value: CGFloat) -> CGFloat {
+    private nonisolated static func clampedUnit(_ value: CGFloat) -> CGFloat {
         min(1, max(0, value.isFinite ? value : 0))
     }
 
     /// Locale-invariant decimal so `stroke-width` / opacity stay valid SVG.
-    private static func formatSVG(_ value: CGFloat) -> String {
+    private nonisolated static func formatSVG(_ value: CGFloat) -> String {
         let number = value.isFinite ? Double(value) : 0
         var text = String(format: "%.4f", locale: Locale(identifier: "en_US_POSIX"), number)
         while text.contains(".") && (text.hasSuffix("0") || text.hasSuffix(".")) {
@@ -243,7 +251,7 @@ enum SVGExporter {
         return text.isEmpty ? "0" : text
     }
 
-    private static func pathData(from points: [CGPoint], closed: Bool) -> String {
+    private nonisolated static func pathData(from points: [CGPoint], closed: Bool) -> String {
         guard let first = points.first else { return "" }
         var data = "M \(first.x) \(first.y)"
         for point in points.dropFirst() {
@@ -255,7 +263,7 @@ enum SVGExporter {
 
     /// Open subpaths tracing only the non-cut edges of a closed contour, so cut edges
     /// (`cutEdges` = start indices of edge `points[i] → points[i+1]`) are not stroked.
-    private static func strokePathData(from points: [CGPoint], cutEdges: Set<Int>) -> String {
+    private nonisolated static func strokePathData(from points: [CGPoint], cutEdges: Set<Int>) -> String {
         let count = points.count
         guard count >= 2, let firstCut = (0..<count).first(where: { cutEdges.contains($0) }) else {
             return pathData(from: points, closed: true)

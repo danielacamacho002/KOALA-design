@@ -49,6 +49,10 @@ struct EditorView: View {
     @State private var lastSavedSnapshot: DocumentSnapshot?
     @State private var patternSettings = PatternSettings()
     @State private var patternPreviewStrokes: [VectorStroke] = []
+    @State private var persistTask: Task<Void, Never>?
+    @State private var isLoadingProject = false
+    @State private var isExporting = false
+    @State private var didStartLoad = false
     @State private var designCanvasHandle = CanvasViewportHandle()
     @State private var printCanvasHandle = CanvasViewportHandle()
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
@@ -86,6 +90,22 @@ struct EditorView: View {
             }
         }
         .navigationBarBackButtonHidden(true)
+        .overlay {
+            if isLoadingProject || isExporting {
+                ZStack {
+                    Color.black.opacity(0.28)
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text(isExporting ? "Exporting…" : "Loading…")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .padding(24)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                }
+                .ignoresSafeArea()
+                .allowsHitTesting(true)
+            }
+        }
         .sheet(isPresented: $showSettings) {
             SettingsView(
                 document: store.document,
@@ -110,11 +130,11 @@ struct EditorView: View {
             }
         }
         .onAppear {
-            store.persistDocument = { saveDocument() }
+            store.persistDocument = { Task { await persistDocument() } }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background || phase == .inactive {
-                store.flushAutoSave()
+                flushAutoSaveInBackground()
             }
         }
         .alert("Unsaved Changes", isPresented: $showUnsavedAlert) {
@@ -380,17 +400,16 @@ struct EditorView: View {
                 .padding(.bottom, 16)
             }
             .overlay(alignment: .bottom) {
-                if let statusMessage {
-                    Text(statusMessage)
+                if statusMessage != nil {
+                    Text(statusMessage ?? "")
                         .font(.caption)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(.ultraThinMaterial, in: Capsule())
                         .padding(.bottom, 12)
-                        .onAppear {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                self.statusMessage = nil
-                            }
+                        .task(id: statusMessage) {
+                            try? await Task.sleep(for: .seconds(2))
+                            statusMessage = nil
                         }
                 }
             }
@@ -521,14 +540,18 @@ struct EditorView: View {
     }
 
     private func preparePrintExport() {
+        Task { await exportPrintLayout() }
+    }
+
+    private func exportPrintLayout() async {
+        isExporting = true
+        defer { isExporting = false }
+        let snapshot = store.document.makeSnapshot()
         do {
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(store.fileName)-tiled.pdf")
-            if FileManager.default.fileExists(atPath: tempURL.path) {
-                try FileManager.default.removeItem(at: tempURL)
-            }
-            try TiledPDFExporter.write(document: store.document, to: tempURL)
-            presentShare(url: tempURL)
+            try await PersistenceWorker.shared.writeTiledPDF(snapshot: snapshot, to: tempURL)
+            await presentShare(url: tempURL)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -737,22 +760,33 @@ struct EditorView: View {
     }
 
     private func loadProjectIfNeeded() {
-        guard store.fileURL == nil else { return }
+        guard store.fileURL == nil, !didStartLoad else { return }
+        didStartLoad = true
+        Task { await loadProject() }
+    }
+
+    private func loadProject() async {
+        isLoadingProject = true
+        defer { isLoadingProject = false }
         if let projectURL {
             do {
-                try store.load(from: projectURL)
+                let snapshot = try await PersistenceWorker.shared.readSnapshot(from: projectURL)
+                store.applyLoadedSnapshot(snapshot, from: projectURL)
                 syncDisplayName(for: projectURL)
-                lastSavedSnapshot = snapshotFromStore()
+                lastSavedSnapshot = snapshot
+                applyInitialViewportLayoutIfNeeded()
             } catch {
                 errorMessage = error.localizedDescription
             }
         } else if let library = projectLibrary {
             do {
-                let record = try library.createProject(name: store.fileName)
-                try store.load(from: record.fileURL)
+                let record = try await library.createProject(name: store.fileName)
+                let snapshot = try await PersistenceWorker.shared.readSnapshot(from: record.fileURL)
+                store.applyLoadedSnapshot(snapshot, from: record.fileURL)
                 store.fileName = record.name
                 store.needsInitialViewportLayout = true
-                lastSavedSnapshot = snapshotFromStore()
+                lastSavedSnapshot = snapshot
+                applyInitialViewportLayoutIfNeeded()
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -831,20 +865,43 @@ struct EditorView: View {
     }
 
     private func handleBack() {
-        store.flushAutoSave()
-        if store.hasUnsavedChanges {
-            showUnsavedAlert = true
-        } else {
-            dismiss()
+        Task { @MainActor in
+            await flushAutoSave()
+            if store.hasUnsavedChanges {
+                showUnsavedAlert = true
+            } else {
+                dismiss()
+            }
+        }
+    }
+
+    private func flushAutoSave() async {
+        store.cancelAutoSave()
+        if let persistTask {
+            await persistTask.value
+        }
+        guard store.hasUnsavedChanges else { return }
+        await persistDocument()
+    }
+
+    private func flushAutoSaveInBackground() {
+        Task { @MainActor in
+            let taskID = UIApplication.shared.beginBackgroundTask(withName: "vectr.autosave") {}
+            defer {
+                if taskID != .invalid {
+                    UIApplication.shared.endBackgroundTask(taskID)
+                }
+            }
+            await flushAutoSave()
         }
     }
 
     private func saveDocumentNow() {
         store.cancelAutoSave()
-        saveDocument()
+        Task { await persistDocument() }
     }
 
-    private func presentShare(url: URL, image: UIImage? = nil) {
+    private func presentShare(url: URL, image: UIImage? = nil) async {
         if let image {
             shareItems = [JPEGShareItem(image: image, fileURL: url)]
         } else {
@@ -853,28 +910,34 @@ struct EditorView: View {
         // Reset first so a second export can present again. Delay past any
         // just-dismissed format sheet so UIActivityViewController can present.
         showShareSheet = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            showShareSheet = true
-        }
+        try? await Task.sleep(for: .milliseconds(200))
+        showShareSheet = true
     }
 
     private func presentDesignShare() {
+        Task { await exportDesignShare() }
+    }
+
+    private func exportDesignShare() async {
+        isExporting = true
+        defer { isExporting = false }
+        let snapshot = store.document.makeSnapshot()
         do {
             if exportFormat == .jpeg {
-                let prepared = try JPEGExporter.prepareForSharing(
-                    document: store.document,
+                let prepared = try await PersistenceWorker.shared.prepareJPEGForSharing(
+                    snapshot: snapshot,
                     named: store.fileName,
                     quality: exportQuality
                 )
-                presentShare(url: prepared.fileURL, image: prepared.image)
+                await presentShare(url: prepared.fileURL, image: UIImage(data: prepared.jpegData))
             } else {
-                let tempURL = try ExportRouter.temporaryExportURL(
-                    document: store.document,
+                let tempURL = try await PersistenceWorker.shared.temporaryExportURL(
+                    snapshot: snapshot,
                     name: store.fileName,
                     format: exportFormat,
                     quality: exportQuality
                 )
-                presentShare(url: tempURL)
+                await presentShare(url: tempURL)
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -884,6 +947,8 @@ struct EditorView: View {
     private func discardChangesAndDismiss() {
         pendingDismiss = false
         store.cancelAutoSave()
+        persistTask?.cancel()
+        persistTask = nil
         if let lastSavedSnapshot {
             store.document = VectrDocument(snapshot: lastSavedSnapshot)
             store.hasUnsavedChanges = false
@@ -893,7 +958,7 @@ struct EditorView: View {
             do {
                 try store.load(from: url)
                 syncDisplayName(for: url)
-                lastSavedSnapshot = snapshotFromStore()
+                lastSavedSnapshot = store.document.makeSnapshot()
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -1641,30 +1706,25 @@ struct EditorView: View {
     }
 
     private func snapshotFromStore() -> DocumentSnapshot {
-        DocumentSnapshot(
-            layers: store.document.layers,
-            strokes: store.document.strokes,
-            layerGroups: store.document.layerGroups,
-            activeLayerID: store.document.activeLayerID,
-            viewport: store.document.viewport,
-            grid: store.document.grid,
-            settings: store.document.settings,
-            strokeWidth: store.document.strokeWidth,
-            strokeColor: store.document.strokeColor,
-            selectedStrokeID: store.document.selectedStrokeID,
-            referenceImageData: store.document.referenceImageData,
-            referenceImageFrame: store.document.referenceImageFrame,
-            printLayout: store.document.printLayout,
-            printStrokeTransforms: store.document.printStrokeTransforms,
-            printPieces: store.document.printPieces,
-            printHiddenStrokeIDs: store.document.printHiddenStrokeIDs
-        )
+        store.document.makeSnapshot()
     }
 
-    private func saveDocument() {
+    private func persistDocument() async {
+        if let persistTask {
+            await persistTask.value
+        }
+        guard store.hasUnsavedChanges else { return }
+        let task = Task { await performPersist() }
+        persistTask = task
+        await task.value
+        persistTask = nil
+    }
+
+    private func performPersist() async {
+        guard store.hasUnsavedChanges else { return }
         do {
             if store.fileURL == nil, let library = projectLibrary {
-                let record = try library.createProject(name: store.fileName)
+                let record = try await library.createProject(name: store.fileName)
                 store.fileURL = record.fileURL
                 store.fileName = record.name
             }
@@ -1673,12 +1733,22 @@ struct EditorView: View {
                 store.fileURL = renamedURL
                 syncDisplayName(for: renamedURL)
             }
-            try store.save()
-            if let url = store.fileURL, let library = projectLibrary {
-                try library.updateAfterSave(document: store.document, fileURL: url, name: store.fileName)
+            guard let url = store.fileURL else { return }
+            let snapshot = store.document.makeSnapshot()
+            let revision = store.contentRevision
+            let name = store.fileName
+            let thumbnailURL = projectLibrary?.projects.first(where: {
+                $0.fileURL.standardizedFileURL.path == url.standardizedFileURL.path
+            })?.thumbnailURL
+
+            try await PersistenceWorker.shared.write(snapshot: snapshot, to: url)
+            if let thumbnailURL {
+                try await PersistenceWorker.shared.writeThumbnail(snapshot: snapshot, to: thumbnailURL)
             }
-            lastSavedSnapshot = snapshotFromStore()
-            if pendingDismiss {
+            lastSavedSnapshot = snapshot
+            store.markSaved(forRevision: revision)
+            projectLibrary?.updateMetadataAfterSave(fileURL: url, name: name, snapshot: snapshot)
+            if pendingDismiss, !store.hasUnsavedChanges {
                 pendingDismiss = false
                 dismiss()
             }
@@ -1686,11 +1756,10 @@ struct EditorView: View {
             errorMessage = error.localizedDescription
         }
     }
-
 }
 
 extension UTType {
-    static var vectrDocument: UTType {
+    nonisolated static var vectrDocument: UTType {
         UTType(exportedAs: "earthwrm.vectr.document", conformingTo: .json)
     }
 }

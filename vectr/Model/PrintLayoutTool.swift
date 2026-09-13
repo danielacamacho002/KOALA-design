@@ -5,7 +5,7 @@
 
 import Foundation
 
-enum PrintLayoutTool: String, CaseIterable, Codable {
+nonisolated enum PrintLayoutTool: String, CaseIterable, Codable, Sendable {
     case select
     case cut
 

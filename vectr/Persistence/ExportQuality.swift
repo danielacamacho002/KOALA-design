@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-enum ExportQuality: String, CaseIterable, Identifiable {
+nonisolated enum ExportQuality: String, CaseIterable, Identifiable, Sendable {
     case low
     case medium
     case high

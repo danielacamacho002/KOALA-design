@@ -5,7 +5,7 @@
 
 import Foundation
 
-struct ProjectRecord: Identifiable, Codable, Equatable {
+nonisolated struct ProjectRecord: Identifiable, Codable, Equatable, Sendable {
     var id: UUID
     var name: String
     var fileURL: URL
