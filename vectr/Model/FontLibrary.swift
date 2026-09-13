@@ -32,6 +32,21 @@ final class FontLibrary {
     let builtInFonts: [BuiltInFont] = FontCatalog.builtIn
     private(set) var importedFonts: [ImportedFont] = []
 
+    /// Scans Documents/Fonts and registers each file once for this process.
+    /// Call from `vectrApp.init` so imported faces resolve before any document opens.
+    static func prepareAtLaunch() {
+        _ = shared
+    }
+
+    /// Font files in `directory` with an allowed vector-font extension.
+    static func fontFiles(in directory: URL) -> [URL] {
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ) else { return [] }
+        return items.filter { allowedExtensions.contains($0.pathExtension.lowercased()) }
+    }
+
     init() {
         loadImportedFonts()
     }
@@ -44,16 +59,6 @@ final class FontLibrary {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         return directory
-    }
-
-    /// Registers all imported fonts for the current process. Safe to call more
-    /// than once; already-registered fonts are ignored.
-    func registerAllImportedFonts() {
-        for font in importedFonts {
-            let url = fontsDirectory.appendingPathComponent(font.fileName)
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
-            register(url: url)
-        }
     }
 
     /// Imports a font file, copying it into the Fonts directory and registering it.
@@ -97,14 +102,8 @@ final class FontLibrary {
     // MARK: - Private
 
     private func loadImportedFonts() {
-        let fileManager = FileManager.default
-        guard let items = try? fileManager.contentsOfDirectory(
-            at: fontsDirectory,
-            includingPropertiesForKeys: nil
-        ) else { return }
-
         var fonts: [ImportedFont] = []
-        for url in items where Self.allowedExtensions.contains(url.pathExtension.lowercased()) {
+        for url in Self.fontFiles(in: fontsDirectory) {
             register(url: url)
             if let names = fontNames(at: url) {
                 fonts.append(
@@ -163,7 +162,7 @@ final class FontLibrary {
     }
 }
 
-enum FontImportError: LocalizedError {
+enum FontImportError: LocalizedError, Equatable {
     case unsupportedFormat
     case unreadableFont
     case registrationFailed

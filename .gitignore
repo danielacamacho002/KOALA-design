@@ -1,8 +1,12 @@
 # macOS
 .DS_Store
 
-# Cursor / IDE local state
-.cursor/
+# Cursor local state (keep shared rules/skills)
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
+!.cursor/skills/
+!.cursor/skills/**
 
 # Xcode user-specific files
 xcuserdata/
