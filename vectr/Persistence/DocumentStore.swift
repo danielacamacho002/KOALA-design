@@ -60,7 +60,11 @@ final class DocumentStore {
 
     func load(from url: URL) throws {
         cancelAutoSave()
-        document = try DocumentCodec.read(from: url)
+        applyLoadedSnapshot(try DocumentCodec.readSnapshot(from: url), from: url)
+    }
+
+    func applyLoadedSnapshot(_ snapshot: DocumentSnapshot, from url: URL) {
+        document = VectrDocument(snapshot: snapshot)
         fileURL = url
         fileName = url.deletingPathExtension().lastPathComponent
         hasUnsavedChanges = false
@@ -72,8 +76,17 @@ final class DocumentStore {
         cancelAutoSave()
         let destination = url ?? fileURL
         guard let destination else { return }
-        try DocumentCodec.write(document, to: destination)
+        try DocumentCodec.write(document.makeSnapshot(), to: destination)
         fileURL = destination
+        hasUnsavedChanges = false
+    }
+
+    /// Clears dirty only when no edits landed after `revision` was snapshotted.
+    func markSaved(forRevision revision: Int) {
+        guard SaveRevisionPolicy.shouldClearDirty(
+            savedRevision: revision,
+            currentRevision: contentRevision
+        ) else { return }
         hasUnsavedChanges = false
     }
 
@@ -89,5 +102,11 @@ final class DocumentStore {
             guard hasUnsavedChanges else { return }
             persistDocument?()
         }
+    }
+}
+
+enum SaveRevisionPolicy {
+    static func shouldClearDirty(savedRevision: Int, currentRevision: Int) -> Bool {
+        savedRevision == currentRevision
     }
 }

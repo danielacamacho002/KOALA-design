@@ -5,7 +5,7 @@
 
 import Foundation
 
-enum ToolCategory: String, CaseIterable, Codable {
+nonisolated enum ToolCategory: String, CaseIterable, Codable, Sendable {
     case line
     case circle
     case rectangle
@@ -75,7 +75,7 @@ enum ToolCategory: String, CaseIterable, Codable {
     }
 }
 
-enum LineVariant: String, CaseIterable, Codable {
+nonisolated enum LineVariant: String, CaseIterable, Codable, Sendable {
     case line
     case arc
     case constructionLine
@@ -89,7 +89,7 @@ enum LineVariant: String, CaseIterable, Codable {
     }
 }
 
-enum CircleVariant: String, CaseIterable, Codable {
+nonisolated enum CircleVariant: String, CaseIterable, Codable, Sendable {
     case center
     case edge
     case ellipse
@@ -103,7 +103,7 @@ enum CircleVariant: String, CaseIterable, Codable {
     }
 }
 
-enum RectangleVariant: String, CaseIterable, Codable {
+nonisolated enum RectangleVariant: String, CaseIterable, Codable, Sendable {
     case center
     case edge
 

@@ -5,7 +5,7 @@
 
 import Foundation
 
-enum StrokeShapeType: String, Codable, Equatable {
+nonisolated enum StrokeShapeType: String, Codable, Equatable, Sendable {
     case polyline
     case circle
     case rectangle

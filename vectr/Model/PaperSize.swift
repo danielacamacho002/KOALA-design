@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-enum PaperSize: String, Codable, CaseIterable, Identifiable {
+nonisolated enum PaperSize: String, Codable, CaseIterable, Identifiable, Sendable {
     case letter
     case a4
     case legal

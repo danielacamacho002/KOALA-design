@@ -9,7 +9,7 @@ import Foundation
 /// and text elements as a single unit. Members remain independent entities in the
 /// document's `strokes`/`textElements` arrays; the group only stores their IDs so
 /// grouping never modifies underlying vector coordinates or path commands.
-struct ObjectGroup: Identifiable, Codable, Equatable {
+nonisolated struct ObjectGroup: Identifiable, Codable, Equatable, Sendable {
     var id: UUID = UUID()
     var strokeIDs: [UUID]
     var textIDs: [UUID]

@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-struct ViewportTransform: Codable, Equatable {
+nonisolated struct ViewportTransform: Codable, Equatable, Sendable {
     var scale: CGFloat = 1
     var translation: CGPoint = .zero
 
@@ -81,7 +81,7 @@ struct ViewportTransform: Codable, Equatable {
         distance * scale
     }
 
-    struct ChromeInsets: Equatable {
+    nonisolated struct ChromeInsets: Equatable, Sendable {
         var left: CGFloat = 280
         var right: CGFloat = 120
         var top: CGFloat = 56
