@@ -11,48 +11,60 @@ enum JPEGExporter {
         to url: URL,
         quality: ExportQuality = .medium
     ) throws {
-        let image = try renderImage(document: document, quality: quality)
-        try write(image: image, to: url, quality: quality)
+        try write(snapshot: document.makeSnapshot(), to: url, quality: quality)
     }
 
-    /// Renders and writes a shareable JPEG into Caches, returning both the image
-    /// (for Save Image) and the file URL (for AirDrop / Files).
+    /// Renders and writes a shareable JPEG into Caches, returning JPEG bytes
+    /// (rebuild `UIImage` on the MainActor for Save Image) and the file URL.
     static func prepareForSharing(
         document: VectrDocument,
         named name: String,
         quality: ExportQuality = .medium
-    ) throws -> (image: UIImage, fileURL: URL) {
-        let image = try renderImage(document: document, quality: quality)
-        let fileURL = cacheURL(named: name)
-        try write(image: image, to: fileURL, quality: quality)
-        return (image, fileURL)
+    ) throws -> (jpegData: Data, fileURL: URL) {
+        try prepareForSharing(snapshot: document.makeSnapshot(), named: name, quality: quality)
     }
 
-    static func renderImage(
-        document: VectrDocument,
+    nonisolated static func write(
+        snapshot: DocumentSnapshot,
+        to url: URL,
         quality: ExportQuality = .medium
-    ) throws -> UIImage {
-        let size = renderSize(for: document, quality: quality)
-        guard let image = DocumentRenderer.renderImage(
-            document: document,
-            options: DocumentRenderer.Options(size: size, drawGrid: false)
-        ) else {
-            throw ExportError.renderFailed
-        }
-        return image
-    }
-
-    private static func write(image: UIImage, to url: URL, quality: ExportQuality) throws {
+    ) throws {
+        let jpegData = try jpegData(snapshot: snapshot, quality: quality)
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
-        guard let data = image.jpegData(compressionQuality: quality.jpegCompression) else {
-            throw ExportError.renderFailed
-        }
-        try data.write(to: url, options: .atomic)
+        try jpegData.write(to: url, options: .atomic)
     }
 
-    private static func cacheURL(named name: String) -> URL {
+    nonisolated static func prepareForSharing(
+        snapshot: DocumentSnapshot,
+        named name: String,
+        quality: ExportQuality = .medium
+    ) throws -> (jpegData: Data, fileURL: URL) {
+        let jpegData = try jpegData(snapshot: snapshot, quality: quality)
+        let fileURL = cacheURL(named: name)
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            try FileManager.default.removeItem(at: fileURL)
+        }
+        try jpegData.write(to: fileURL, options: .atomic)
+        return (jpegData, fileURL)
+    }
+
+    private nonisolated static func jpegData(
+        snapshot: DocumentSnapshot,
+        quality: ExportQuality
+    ) throws -> Data {
+        let size = renderSize(for: snapshot, quality: quality)
+        guard let image = DocumentRenderer.renderImage(
+            snapshot: snapshot,
+            options: DocumentRenderer.Options(size: size, drawGrid: false)
+        ), let data = image.jpegData(compressionQuality: quality.jpegCompression) else {
+            throw ExportError.renderFailed
+        }
+        return data
+    }
+
+    private nonisolated static func cacheURL(named name: String) -> URL {
         let safeName = name
             .replacingOccurrences(of: "/", with: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -62,8 +74,8 @@ enum JPEGExporter {
         return directory.appendingPathComponent(fileName)
     }
 
-    private static func renderSize(for document: VectrDocument, quality: ExportQuality) -> CGSize {
-        let bounds = DocumentRenderer.boundingRect(for: document)
+    private nonisolated static func renderSize(for snapshot: DocumentSnapshot, quality: ExportQuality) -> CGSize {
+        let bounds = DocumentRenderer.boundingRect(for: snapshot)
         let width = max(bounds.width, 1)
         let height = max(bounds.height, 1)
         let longEdge = quality.longEdgePixels

@@ -267,8 +267,8 @@ enum TrimEngine {
     // MARK: - Circle / ellipse parametric trim
 
     /// Builds an open circular arc from `startCut` to `endCut` along the kept (non-tapped) sweep.
-    /// Samples are taken from the original contour and snapped to the true circle so the
-    /// shape cannot translate when a quadrant is removed.
+    /// Anchors are emitted from the original center and sweep so the leftover stays circular
+    /// and does not pick up a closing chord.
     private static func trimmedCircleArc(
         _ target: VectorStroke,
         renderPoints: [CGPoint],
@@ -286,31 +286,19 @@ enum TrimEngine {
         let sweep = (keptLength / totalLength) * 2 * .pi
         guard sweep > 0.05, sweep < 2 * .pi - 0.05 else { return nil }
 
-        // Prefer the original tessellation (same coordinates as the pre-trim circle).
-        var points = extractSpan(
-            from: startCut.distance,
-            to: endCut.distance,
-            points: renderPoints,
-            closed: true,
-            startPoint: start,
-            endPoint: end
+        // Build the leftover from the known center/sweep. Going through the 64-sample
+        // tessellation and re-compacting can leave sparse anchors that render as a
+        // straight chord across the opening.
+        let anchors = ShapeGeometry.defaultCircularAnchors(
+            center: circle.center,
+            radius: circle.radius,
+            start: start,
+            end: end,
+            sweep: sweep,
+            closed: false
         )
-        points = snapPointsToCircle(points, center: circle.center, radius: circle.radius)
-
-        // If extraction was too sparse (degenerate seam), rebuild in place about the same center.
-        if points.count < 3 {
-            points = ShapeGeometry.arcPoints(
-                center: circle.center,
-                start: start,
-                end: end,
-                sweep: sweep
-            )
-        }
-
-        guard points.count >= 2 else { return nil }
-        return ShapeGeometry.withCompactedCircularAnchors(
-            openStroke(from: target, points: points, shapeType: .arc)
-        )
+        guard anchors.count >= 2 else { return nil }
+        return openStroke(from: target, points: anchors, shapeType: .arc)
     }
 
     private static func snapPointsToCircle(

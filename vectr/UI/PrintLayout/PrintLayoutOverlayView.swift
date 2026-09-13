@@ -179,7 +179,6 @@ struct PrintLayoutOverlayView: View {
                     y: moveDragOriginTransform.translation.y + delta.y
                 )
                 document.setPrintTransform(transform, for: elementID, recordUndo: false)
-                onChanged()
             }
             .onEnded { _ in
                 moveDragOriginTransform = .identity
@@ -203,11 +202,11 @@ struct PrintLayoutOverlayView: View {
                 var transform = document.printTransform(for: elementID)
                 transform.rotation = rotateDragOriginRotation + (angle - rotateDragOriginAngle)
                 document.setPrintTransform(transform, for: elementID, recordUndo: false)
-                onChanged()
             }
             .onEnded { _ in
                 rotateDragOriginAngle = 0
                 rotateDragOriginRotation = 0
+                onChanged()
             }
     }
 

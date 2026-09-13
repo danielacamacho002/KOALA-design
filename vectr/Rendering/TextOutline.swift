@@ -10,7 +10,7 @@ import UIKit
 /// Converts a `TextElement` into vector glyph outlines (a `CGPath`) in document
 /// space. This is the single source of truth for exporting text as true vectors
 /// (SVG/PDF/image), so exports never depend on the viewer having the font.
-enum TextOutline {
+nonisolated enum TextOutline: Sendable {
     static func path(for element: TextElement) -> CGPath {
         let result = CGMutablePath()
         guard !element.text.isEmpty else { return result }

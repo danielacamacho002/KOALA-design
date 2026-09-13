@@ -138,6 +138,12 @@ enum ClosedShapeDetector {
                 tolerance: tolerance
             ) else { continue }
 
+            // Arc + the straight chord between its endpoints is a pie. Merging that
+            // loop bakes the chord into the stroke — a line sitting inside the arc.
+            if isArcClosedByChord(loop: loop, candidates: candidates, tolerance: tolerance) {
+                continue
+            }
+
             let template = candidates[loop[0].candidateSlot]
             let mergedStroke = VectorStroke(
                 layerID: layerID,
@@ -297,5 +303,55 @@ enum ClosedShapeDetector {
 
     private static func pointsConnect(_ a: CGPoint, _ b: CGPoint, tolerance: CGFloat) -> Bool {
         hypot(a.x - b.x, a.y - b.y) <= tolerance
+    }
+
+    /// True when the loop is an open arc whose only other members form the straight
+    /// chord between its endpoints. Auto-merging that produces a pie with a line
+    /// across the interior.
+    private static func isArcClosedByChord(
+        loop: [LoopStep],
+        candidates: [VectorStroke],
+        tolerance: CGFloat
+    ) -> Bool {
+        let strokes = loop.map { candidates[$0.candidateSlot] }
+        guard let arc = strokes.first(where: { $0.shapeType == .arc }) else { return false }
+        let others = strokes.filter { $0.id != arc.id }
+        guard !others.isEmpty else { return false }
+
+        let arcPoints = ShapeGeometry.renderPoints(for: arc)
+        guard let start = arcPoints.first, let end = arcPoints.last else { return false }
+
+        var otherPoints: [CGPoint] = []
+        for stroke in others {
+            let points = ShapeGeometry.renderPoints(for: stroke)
+            if otherPoints.isEmpty {
+                otherPoints.append(contentsOf: points)
+            } else if let last = otherPoints.last, let first = points.first,
+                      pointsConnect(last, first, tolerance: tolerance) {
+                otherPoints.append(contentsOf: points.dropFirst())
+            } else if let last = otherPoints.last, let lastOther = points.last,
+                      pointsConnect(last, lastOther, tolerance: tolerance) {
+                otherPoints.append(contentsOf: points.dropLast().reversed())
+            } else {
+                return false
+            }
+        }
+        guard otherPoints.count >= 2,
+              let chordStart = otherPoints.first,
+              let chordEnd = otherPoints.last else { return false }
+
+        let matchesForward = pointsConnect(chordStart, start, tolerance: tolerance)
+            && pointsConnect(chordEnd, end, tolerance: tolerance)
+        let matchesReversed = pointsConnect(chordStart, end, tolerance: tolerance)
+            && pointsConnect(chordEnd, start, tolerance: tolerance)
+        guard matchesForward || matchesReversed else { return false }
+
+        if otherPoints.count == 2 { return true }
+        for point in otherPoints.dropFirst().dropLast() {
+            if !PolygonBoolean.isCollinearVertex(prev: chordStart, point: point, next: chordEnd) {
+                return false
+            }
+        }
+        return true
     }
 }

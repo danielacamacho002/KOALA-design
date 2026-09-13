@@ -15,9 +15,12 @@ struct DrawingCanvasView: UIViewRepresentable {
     var commandRevision: Int = 0
     var strokeCount: Int = 0
     var geometryRevision: Int = 0
-    var contentRevision: Int = 0
+    var selectedStrokeID: UUID?
+    var selectedTextID: UUID?
+    var selectedStrokeIDs: Set<UUID> = []
     var visualGridSpacing: CGFloat = 20
     var measurementUnit: MeasurementUnit = .points
+    var gridVisible: Bool = true
     var isConstructionPreview: Bool = false
     var commandPreviewClosed: Bool = false
     var allowsDragDraw: Bool = false
@@ -34,6 +37,7 @@ struct DrawingCanvasView: UIViewRepresentable {
     var curveDraft: CurveDraftSession?
     var onCurveCommitted: (([CGPoint]) -> Void)?
     var onLayoutMetrics: ((CGSize, UIEdgeInsets) -> Void)?
+    var viewportHandle: CanvasViewportHandle?
 
     func makeUIView(context: Context) -> DrawingCanvasUIView {
         let view = DrawingCanvasUIView(document: document)
@@ -41,6 +45,7 @@ struct DrawingCanvasView: UIViewRepresentable {
         view.delegate = context.coordinator
         configure(view)
         context.coordinator.canvasView = view
+        viewportHandle?.attach(view)
         return view
     }
 
@@ -51,6 +56,7 @@ struct DrawingCanvasView: UIViewRepresentable {
     func updateUIView(_ uiView: DrawingCanvasUIView, context: Context) {
         context.coordinator.document = document
         context.coordinator.onStrokeSelected = onStrokeSelected
+        viewportHandle?.attach(uiView)
 
         let didSwapDocument = uiView.document !== document
         if didSwapDocument {
@@ -69,7 +75,9 @@ struct DrawingCanvasView: UIViewRepresentable {
             didSwapDocument: didSwapDocument
         )
         let selectionChanged = context.coordinator.consumeSelectionChange(
-            selectedStrokeID: document.selectedStrokeID,
+            selectedStrokeID: selectedStrokeID,
+            selectedTextID: selectedTextID,
+            selectedStrokeIDs: selectedStrokeIDs,
             didSwapDocument: didSwapDocument
         )
         let viewportChanged = context.coordinator.consumeViewportChange(
@@ -79,6 +87,7 @@ struct DrawingCanvasView: UIViewRepresentable {
         let gridDisplayChanged = context.coordinator.consumeGridDisplayChange(
             visualGridSpacing: visualGridSpacing,
             measurementUnit: measurementUnit,
+            gridVisible: gridVisible,
             didSwapDocument: didSwapDocument
         )
         let referenceImageChanged = context.coordinator.consumeReferenceImageChange(
@@ -109,8 +118,6 @@ struct DrawingCanvasView: UIViewRepresentable {
         if selectionChanged && !didRefreshViewport && !geometryChanged {
             uiView.refreshStrokeHighlight()
         }
-
-        _ = contentRevision
     }
 
     private func configure(_ uiView: DrawingCanvasUIView) {
@@ -181,9 +188,12 @@ struct DrawingCanvasView: UIViewRepresentable {
         private var lastGeometryRevision: Int?
         private var lastCommandRevision: Int?
         private var lastSelectedStrokeID: UUID?
+        private var lastSelectedTextID: UUID?
+        private var lastSelectedStrokeIDs: Set<UUID> = []
         private var lastViewportSnapshot: ViewportSnapshot?
         private var lastVisualGridSpacing: CGFloat?
         private var lastMeasurementUnit: MeasurementUnit?
+        private var lastGridVisible: Bool?
         private var lastReferenceImageData: Data?
         private var lastReferenceImageFrame: CGRect?
         private var viewportHandledByCanvas = false
@@ -210,10 +220,21 @@ struct DrawingCanvasView: UIViewRepresentable {
             return lastCommandRevision != commandRevision
         }
 
-        func consumeSelectionChange(selectedStrokeID: UUID?, didSwapDocument: Bool) -> Bool {
-            defer { lastSelectedStrokeID = selectedStrokeID }
+        func consumeSelectionChange(
+            selectedStrokeID: UUID?,
+            selectedTextID: UUID?,
+            selectedStrokeIDs: Set<UUID>,
+            didSwapDocument: Bool
+        ) -> Bool {
+            defer {
+                lastSelectedStrokeID = selectedStrokeID
+                lastSelectedTextID = selectedTextID
+                lastSelectedStrokeIDs = selectedStrokeIDs
+            }
             if didSwapDocument { return true }
             return lastSelectedStrokeID != selectedStrokeID
+                || lastSelectedTextID != selectedTextID
+                || lastSelectedStrokeIDs != selectedStrokeIDs
         }
 
         func consumeViewportChange(viewport: ViewportTransform, didSwapDocument: Bool) -> Bool {
@@ -231,15 +252,19 @@ struct DrawingCanvasView: UIViewRepresentable {
         func consumeGridDisplayChange(
             visualGridSpacing: CGFloat,
             measurementUnit: MeasurementUnit,
+            gridVisible: Bool,
             didSwapDocument: Bool
         ) -> Bool {
             defer {
                 lastVisualGridSpacing = visualGridSpacing
                 lastMeasurementUnit = measurementUnit
+                lastGridVisible = gridVisible
             }
             if didSwapDocument { return true }
-            guard let lastVisualGridSpacing, let lastMeasurementUnit else { return true }
-            return abs(lastVisualGridSpacing - visualGridSpacing) > 0.0001 || lastMeasurementUnit != measurementUnit
+            guard let lastVisualGridSpacing, let lastMeasurementUnit, let lastGridVisible else { return true }
+            return abs(lastVisualGridSpacing - visualGridSpacing) > 0.0001
+                || lastMeasurementUnit != measurementUnit
+                || lastGridVisible != gridVisible
         }
 
         func consumeReferenceImageChange(data: Data?, frame: CGRect?, didSwapDocument: Bool) -> Bool {

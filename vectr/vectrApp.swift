@@ -10,7 +10,7 @@ import SwiftUI
 @main
 struct vectrApp: App {
     init() {
-        FontLibrary.shared.registerAllImportedFonts()
+        FontLibrary.prepareAtLaunch()
     }
 
     var body: some Scene {

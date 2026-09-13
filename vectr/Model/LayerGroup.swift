@@ -9,7 +9,7 @@ import Foundation
 /// collapsed flag); membership lives on each `Layer` via `groupID`, and
 /// visibility/lock/opacity cascade directly onto the member layers' own flags
 /// so the flat draw order (and everything that depends on it) stays untouched.
-struct LayerGroup: Identifiable, Codable, Equatable {
+nonisolated struct LayerGroup: Identifiable, Codable, Equatable, Sendable {
     var id: UUID = UUID()
     var name: String
     var isCollapsed: Bool = false

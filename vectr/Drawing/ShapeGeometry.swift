@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-enum ShapeGeometry {
+nonisolated enum ShapeGeometry: Sendable {
     static func requiredControlPoints(
         category: ToolCategory,
         lineVariant: LineVariant,
@@ -557,7 +557,7 @@ enum ShapeGeometry {
                let sweep = signedCircularSweep(
                     of: stroke.points,
                     around: circle.center,
-                    closed: stroke.isClosed
+                    closed: false
                ),
                abs(sweep) > 0.0001 {
                 return arcPoints(
@@ -565,6 +565,16 @@ enum ShapeGeometry {
                     start: first,
                     end: last,
                     sweep: sweep
+                )
+            }
+            // Never stroke raw 3–4 rim anchors — those chords cut across the interior.
+            if stroke.points.count >= 3,
+               let first = stroke.points.first,
+               let last = stroke.points.last {
+                return arcPointsThrough(
+                    start: first,
+                    end: last,
+                    through: stroke.points[stroke.points.count / 2]
                 )
             }
             return stroke.points
@@ -585,8 +595,10 @@ enum ShapeGeometry {
         }
     }
 
-    /// Expands baked fillet corners (single midpoint anchors) into smooth circular arcs so the
+    /// Expands baked fillet / circular-run midpoints into smooth circular arcs so the
     /// rendered/exported contour looks curved, while the stored anchor set stays minimal.
+    /// Consecutive interiors (a 270° leftover after a circle quadrant trim) are one
+    /// sweep — expanding each midpoint alone jumps backward and draws a chord.
     static func smoothedContourPoints(
         points: [CGPoint],
         closed: Bool,
@@ -602,17 +614,29 @@ enum ShapeGeometry {
             result.append(point)
         }
 
-        for index in 0..<count {
-            let isEndpoint = !closed && (index == 0 || index == count - 1)
-            if smoothMiddles.contains(index), !isEndpoint {
-                let prev = points[(index - 1 + count) % count]
-                let next = points[(index + 1) % count]
-                for point in arcPointsThrough(start: prev, end: next, through: points[index], segments: segmentsPerArc) {
+        let runs = consecutiveSmoothRuns(count: count, smooth: smoothMiddles, closed: closed)
+        var consumed = Set<Int>()
+        var index = 0
+        while index < count {
+            if consumed.contains(index) {
+                index += 1
+                continue
+            }
+            if let run = runs.first(where: { $0.contains(index) }) {
+                for point in expandedSmoothRunPoints(
+                    points: points,
+                    run: run,
+                    closed: closed,
+                    segmentsPerArc: segmentsPerArc
+                ) {
                     append(point)
                 }
-            } else {
-                append(points[index])
+                consumed.formUnion(run)
+                index += 1
+                continue
             }
+            append(points[index])
+            index += 1
         }
 
         if closed,
@@ -623,6 +647,90 @@ enum ShapeGeometry {
             result.removeLast()
         }
         return result
+    }
+
+    /// Groups consecutive smooth midpoints, merging a run that wraps the closed seam.
+    static func consecutiveSmoothRuns(
+        count: Int,
+        smooth: Set<Int>,
+        closed: Bool
+    ) -> [[Int]] {
+        guard count >= 3, !smooth.isEmpty else { return [] }
+
+        func isSmooth(_ index: Int) -> Bool {
+            if !closed, index == 0 || index == count - 1 { return false }
+            return smooth.contains(index)
+        }
+
+        var runs: [[Int]] = []
+        var current: [Int] = []
+        for index in 0..<count {
+            if isSmooth(index) {
+                current.append(index)
+            } else if !current.isEmpty {
+                runs.append(current)
+                current = []
+            }
+        }
+        if !current.isEmpty {
+            runs.append(current)
+        }
+
+        if closed,
+           runs.count >= 2,
+           let first = runs.first,
+           let last = runs.last,
+           first.first == 0,
+           last.last == count - 1 {
+            runs[0] = last + first
+            runs.removeLast()
+        }
+        return runs
+    }
+
+    /// Samples the circular sweep from the vertex before `run` to the vertex after it.
+    static func expandedSmoothRunPoints(
+        points: [CGPoint],
+        run: [Int],
+        closed: Bool,
+        segmentsPerArc: Int
+    ) -> [CGPoint] {
+        let count = points.count
+        guard let first = run.first, let last = run.last, count >= 3 else {
+            return run.map { points[$0] }
+        }
+
+        if closed, run.count == count {
+            if let circle = fitCircle(from: points)
+                ?? arcCenter(start: points[0], end: points[count / 3], through: points[(2 * count) / 3]) {
+                return circlePoints(center: circle.center, radius: circle.radius, segments: 64)
+            }
+            return points
+        }
+
+        let prevIndex = (first - 1 + count) % count
+        let nextIndex = (last + 1) % count
+        var chain = [points[prevIndex]]
+        chain.append(contentsOf: run.map { points[$0] })
+        chain.append(points[nextIndex])
+
+        if let circle = arcCenter(start: chain[0], end: chain[chain.count - 1], through: chain[chain.count / 2]),
+           let sweep = signedCircularSweep(of: chain, around: circle.center, closed: false),
+           abs(sweep) > 0.0001 {
+            return arcPoints(
+                center: circle.center,
+                start: chain[0],
+                end: chain[chain.count - 1],
+                sweep: sweep,
+                segments: max(segmentsPerArc, 16)
+            )
+        }
+        return arcPointsThrough(
+            start: chain[0],
+            end: chain[chain.count - 1],
+            through: chain[chain.count / 2],
+            segments: segmentsPerArc
+        )
     }
 
     static func circleFromCardinalPoints(_ points: [CGPoint]) -> (center: CGPoint, radius: CGFloat)? {
