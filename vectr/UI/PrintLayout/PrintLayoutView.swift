@@ -40,6 +40,8 @@ struct PrintLayoutView: View {
                     document: document,
                     printLayoutRevision: document.printLayoutRevision,
                     geometryRevision: document.geometryRevision,
+                    printSelectedStrokeID: document.printSelectedStrokeID,
+                    printSelectedTextID: document.printSelectedTextID,
                     viewportHandle: viewportHandle,
                     onCanvasTap: handleCanvasTap,
                     onTwoFingerTap: onUndo

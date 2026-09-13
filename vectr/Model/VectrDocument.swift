@@ -2845,7 +2845,6 @@ final class VectrDocument {
     func clearPrintSelection() {
         printSelectedStrokeID = nil
         printSelectedTextID = nil
-        printLayoutRevision += 1
     }
 
     func effectivePrintTransform(for strokeID: UUID) -> PrintStrokeTransform {
