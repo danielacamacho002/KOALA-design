@@ -19,8 +19,8 @@ final class DrawingCanvasUIView: UIView {
             performWithoutLayerAnimation {
                 reloadStrokes()
                 reloadReferenceImage()
+                updateGridPresentation(forcePathRebuild: true)
             }
-            setNeedsDisplay()
         }
     }
 
@@ -93,6 +93,17 @@ final class DrawingCanvasUIView: UIView {
     private var curvePreviewLayer: CAShapeLayer?
     private var curveAnchorLayers: [CAShapeLayer] = []
     private let gridLayer = CALayer()
+    private let sheetLayer = CALayer()
+    private let worldLayer = CALayer()
+    private let clipLayer = CALayer()
+    private var rankLayers: [CAShapeLayer] = []
+    private let axisXLayer = CAShapeLayer()
+    private let axisYLayer = CAShapeLayer()
+    private let boundaryLayer = CAShapeLayer()
+    private var cachedGridCoverage: CGRect = .null
+    private var cachedGridSubdiv: Int = -1
+    private var cachedGridMajor: CGFloat = -1
+    private var cachedCanvasSize: CGSize = .zero
     private var referenceImageLayer: CALayer?
     private var cachedReferenceImageData: Data?
     private var cachedReferenceImage: UIImage?
@@ -100,6 +111,7 @@ final class DrawingCanvasUIView: UIView {
     private var lastEmittedLayoutSize: CGSize = .zero
     private var lastEmittedSafeAreaInsets: UIEdgeInsets = .zero
     private var layoutMetricsWorkItem: DispatchWorkItem?
+    private var viewportAnimationTask: Task<Void, Never>?
 
     // Object snapping (endpoints/midpoints). Decoupled engine + per-gesture lock session +
     // visual/haptic feedback. Toggle globally via `document.isSnappingEnabled`.
@@ -113,7 +125,7 @@ final class DrawingCanvasUIView: UIView {
     var canvasFillColor: UIColor = UIColor(Color(hex: AppearanceSettings.defaultCanvasHex)) {
         didSet {
             guard canvasFillColor != oldValue else { return }
-            setNeedsDisplay()
+            sheetLayer.backgroundColor = canvasFillColor.resolvedColor(with: traitCollection).cgColor
         }
     }
 
@@ -123,6 +135,7 @@ final class DrawingCanvasUIView: UIView {
         backgroundColor = UIColor(Color(hex: AppearanceSettings.pasteboardHex))
         isMultipleTouchEnabled = true
         layer.addSublayer(gridLayer)
+        setupGridLayers()
         setupGestures()
     }
 
@@ -151,7 +164,7 @@ final class DrawingCanvasUIView: UIView {
                     reloadStrokes()
                     reloadReferenceImage()
                     refreshCommandPreview()
-                    setNeedsDisplay()
+                    updateGridPresentation(forcePathRebuild: true)
                 } else {
                     refreshViewportContents()
                 }
@@ -164,37 +177,13 @@ final class DrawingCanvasUIView: UIView {
         scheduleLayoutMetricsNotification(immediate: lastEmittedLayoutSize == .zero)
     }
 
-    override func draw(_ rect: CGRect) {
-        guard let context = UIGraphicsGetCurrentContext() else { return }
-        drawCanvasSheet(in: context)
-        GridRenderer.drawGrid(
-            in: context,
-            bounds: bounds,
-            viewport: document.viewport,
-            grid: document.grid,
-            documentSettings: document.settings,
-            canvasSize: document.settings.canvasSize
-        )
-    }
-
-    /// Fills the canvas rectangle with the sheet color on top of the pasteboard background.
-    private func drawCanvasSheet(in context: CGContext) {
-        let size = document.settings.canvasSize
-        guard size.width > 0, size.height > 0 else { return }
-        let halfWidth = size.width / 2
-        let halfHeight = size.height / 2
-        let topLeft = document.viewport.documentToView(CGPoint(x: -halfWidth, y: -halfHeight))
-        let bottomRight = document.viewport.documentToView(CGPoint(x: halfWidth, y: halfHeight))
-        let rect = CGRect(
-            x: topLeft.x,
-            y: topLeft.y,
-            width: bottomRight.x - topLeft.x,
-            height: bottomRight.y - topLeft.y
-        )
-        context.saveGState()
-        context.setFillColor(canvasFillColor.cgColor)
-        context.fill(rect)
-        context.restoreGState()
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        guard traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) else { return }
+        performWithoutLayerAnimation {
+            applyGridColors()
+            sheetLayer.backgroundColor = canvasFillColor.resolvedColor(with: traitCollection).cgColor
+        }
     }
 
     // MARK: - Touch navigation
@@ -370,6 +359,37 @@ final class DrawingCanvasUIView: UIView {
         }
     }
 
+    func cancelViewportAnimation() {
+        viewportAnimationTask?.cancel()
+        viewportAnimationTask = nil
+    }
+
+    func animateViewport(to target: ViewportTransform) {
+        cancelViewportAnimation()
+        let start = document.viewport
+        let translationDelta = hypot(
+            target.translation.x - start.translation.x,
+            target.translation.y - start.translation.y
+        )
+        guard translationDelta > 0.5 || abs(target.scale - start.scale) > 0.0001 else { return }
+
+        viewportAnimationTask = Task { @MainActor [weak self] in
+            let steps = 24
+            for step in 1...steps {
+                if Task.isCancelled { return }
+                guard let self else { return }
+                let t = ViewportTransform.easeInOut(CGFloat(step) / CGFloat(steps))
+                self.document.viewport = start.interpolated(toward: target, t: t)
+                self.refreshViewport()
+                try? await Task.sleep(nanoseconds: 12_000_000)
+            }
+            if Task.isCancelled { return }
+            guard let self else { return }
+            self.document.viewport = target
+            self.refreshViewport()
+        }
+    }
+
     private func refreshViewportContents() {
         for (id, layer) in strokeLayers {
             if let stroke = document.stroke(with: id) {
@@ -396,7 +416,197 @@ final class DrawingCanvasUIView: UIView {
         updateCommandPreviewLayer()
         updateDragPreviewLayer()
         updateCurvePreview()
-        setNeedsDisplay()
+        updateGridPresentation()
+    }
+
+    // MARK: - Layer-backed grid
+
+    private func setupGridLayers() {
+        gridLayer.masksToBounds = true
+        gridLayer.addSublayer(sheetLayer)
+        gridLayer.addSublayer(worldLayer)
+
+        worldLayer.anchorPoint = .zero
+        worldLayer.position = .zero
+        worldLayer.masksToBounds = false
+
+        clipLayer.anchorPoint = .zero
+        clipLayer.masksToBounds = true
+        worldLayer.addSublayer(clipLayer)
+
+        configureGridShapeLayer(axisXLayer, color: GridRenderer.axisXColor, width: GridRenderer.axisLineWidth)
+        configureGridShapeLayer(axisYLayer, color: GridRenderer.axisYColor, width: GridRenderer.axisLineWidth)
+        configureGridShapeLayer(boundaryLayer, color: GridRenderer.boundaryColor, width: GridRenderer.boundaryLineWidth)
+        boundaryLayer.lineDashPattern = GridRenderer.boundaryDash as [NSNumber]
+
+        clipLayer.addSublayer(axisXLayer)
+        clipLayer.addSublayer(axisYLayer)
+        worldLayer.addSublayer(boundaryLayer)
+        sheetLayer.backgroundColor = canvasFillColor.resolvedColor(with: traitCollection).cgColor
+    }
+
+    private func configureGridShapeLayer(_ layer: CAShapeLayer, color: UIColor, width: CGFloat) {
+        layer.fillColor = nil
+        layer.strokeColor = color.resolvedColor(with: traitCollection).cgColor
+        layer.lineWidth = width
+        layer.lineCap = .butt
+        layer.lineJoin = .miter
+        layer.anchorPoint = .zero
+        layer.position = .zero
+        layer.contentsScale = traitCollection.displayScale
+    }
+
+    /// Pans and zooms via a world transform. Paths rebuild only when LOD, settings,
+    /// or the visible region walk off the cached padded coverage.
+    private func updateGridPresentation(forcePathRebuild: Bool = false) {
+        // Grid lines and axes honor the document's visibility toggle so thin
+        // strokes can be inspected on a clean sheet. The boundary layer and
+        // canvas sheet live outside `clipLayer`, so the sheet extent stays visible.
+        let gridHidden = !document.grid.isVisible
+        clipLayer.isHidden = gridHidden
+        if gridHidden {
+            applyWorldTransform()
+            updateSheetFrame()
+            return
+        }
+        if forcePathRebuild || gridNeedsPathRebuild() {
+            rebuildGridPaths()
+        } else {
+            applyWorldTransform()
+        }
+        updateSheetFrame()
+    }
+
+    private func gridNeedsPathRebuild() -> Bool {
+        let viewport = document.viewport
+        let grid = document.grid
+        let settings = document.settings
+        let canvasSize = settings.canvasSize
+        let subdiv = grid.visibleSubdivisions(for: settings, scale: viewport.scale)
+        let major = grid.visualSpacing(for: settings)
+
+        if cachedGridSubdiv != subdiv { return true }
+        if cachedGridMajor != major { return true }
+        if cachedCanvasSize != canvasSize { return true }
+        if cachedGridSubdiv < 0 { return true }
+
+        let visible = GridRenderer.documentRect(fromViewBounds: bounds, viewport: viewport)
+        let clipped: CGRect
+        if let canvas = GridRenderer.canvasRect(size: canvasSize) {
+            clipped = visible.intersection(canvas)
+        } else {
+            clipped = visible
+        }
+        if clipped.isNull || clipped.isEmpty {
+            return false
+        }
+        if cachedGridCoverage.isNull || cachedGridCoverage.isEmpty {
+            return true
+        }
+        return !cachedGridCoverage.contains(clipped)
+    }
+
+    private func rebuildGridPaths() {
+        let viewport = document.viewport
+        let grid = document.grid
+        let settings = document.settings
+        let canvasSize = settings.canvasSize
+        let paths = GridRenderer.makeLayerPaths(
+            viewBounds: bounds,
+            viewport: viewport,
+            grid: grid,
+            documentSettings: settings,
+            canvasSize: canvasSize,
+            padScreens: 1
+        )
+
+        cachedGridCoverage = paths.coverage
+        cachedGridSubdiv = grid.visibleSubdivisions(for: settings, scale: viewport.scale)
+        cachedGridMajor = grid.visualSpacing(for: settings)
+        cachedCanvasSize = canvasSize
+
+        updateClipLayer(canvasRect: paths.canvasRect)
+
+        ensureRankLayerCount(paths.rankPaths.count)
+        for (index, path) in paths.rankPaths.enumerated() {
+            rankLayers[index].path = path
+            rankLayers[index].isHidden = path.isEmpty
+        }
+        for index in paths.rankPaths.count..<rankLayers.count {
+            rankLayers[index].isHidden = true
+            rankLayers[index].path = nil
+        }
+
+        axisXLayer.path = paths.axisX
+        axisYLayer.path = paths.axisY
+        boundaryLayer.path = paths.boundary
+        boundaryLayer.isHidden = paths.boundary == nil
+
+        applyGridColors()
+        applyWorldTransform()
+    }
+
+    private func ensureRankLayerCount(_ count: Int) {
+        while rankLayers.count < count {
+            let layer = CAShapeLayer()
+            configureGridShapeLayer(layer, color: GridRenderer.lineColor(rank: rankLayers.count), width: GridRenderer.gridLineWidth)
+            clipLayer.insertSublayer(layer, below: axisXLayer)
+            rankLayers.append(layer)
+        }
+    }
+
+    private func updateClipLayer(canvasRect: CGRect?) {
+        if let canvasRect, !canvasRect.isNull, !canvasRect.isEmpty {
+            clipLayer.masksToBounds = true
+            clipLayer.anchorPoint = .zero
+            clipLayer.bounds = canvasRect
+            clipLayer.position = CGPoint(x: canvasRect.minX, y: canvasRect.minY)
+        } else {
+            clipLayer.masksToBounds = false
+            clipLayer.anchorPoint = .zero
+            clipLayer.position = .zero
+            clipLayer.bounds = .zero
+        }
+    }
+
+    private func applyWorldTransform() {
+        let viewport = document.viewport
+        worldLayer.setAffineTransform(viewport.affineTransform)
+        let inv = 1 / max(viewport.scale, .leastNonzeroMagnitude)
+        let gridWidth = GridRenderer.gridLineWidth * inv
+        for layer in rankLayers {
+            layer.lineWidth = gridWidth
+        }
+        axisXLayer.lineWidth = GridRenderer.axisLineWidth * inv
+        axisYLayer.lineWidth = GridRenderer.axisLineWidth * inv
+        boundaryLayer.lineWidth = GridRenderer.boundaryLineWidth * inv
+        boundaryLayer.lineDashPattern = GridRenderer.boundaryDash.map { $0 * inv as NSNumber }
+    }
+
+    private func updateSheetFrame() {
+        let canvasSize = document.settings.canvasSize
+        guard canvasSize.width > 0, canvasSize.height > 0, bounds.width > 0, bounds.height > 0 else {
+            sheetLayer.isHidden = true
+            return
+        }
+        let canvasView = GridRenderer.canvasRectInView(viewport: document.viewport, canvasSize: canvasSize)
+        let visible = canvasView.intersection(bounds)
+        guard !visible.isNull, !visible.isEmpty else {
+            sheetLayer.isHidden = true
+            return
+        }
+        sheetLayer.isHidden = false
+        sheetLayer.frame = visible
+        sheetLayer.backgroundColor = canvasFillColor.resolvedColor(with: traitCollection).cgColor
+    }
+
+    private func applyGridColors() {
+        for (index, layer) in rankLayers.enumerated() {
+            layer.strokeColor = GridRenderer.lineColor(rank: index).resolvedColor(with: traitCollection).cgColor
+        }
+        axisXLayer.strokeColor = GridRenderer.axisXColor.resolvedColor(with: traitCollection).cgColor
+        axisYLayer.strokeColor = GridRenderer.axisYColor.resolvedColor(with: traitCollection).cgColor
+        boundaryLayer.strokeColor = GridRenderer.boundaryColor.resolvedColor(with: traitCollection).cgColor
     }
 
     private func performWithoutLayerAnimation(_ updates: () -> Void) {
@@ -487,6 +697,7 @@ final class DrawingCanvasUIView: UIView {
     @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
         switch gesture.state {
         case .began:
+            cancelViewportAnimation()
             pinchStartScale = document.viewport.scale
             pinchAnchor = gesture.location(in: self)
         case .changed:
@@ -504,6 +715,7 @@ final class DrawingCanvasUIView: UIView {
         let translation = gesture.translation(in: self)
         switch gesture.state {
         case .began:
+            cancelViewportAnimation()
             lastPanLocation = translation
         case .changed:
             let delta = CGPoint(
@@ -1081,6 +1293,7 @@ final class DrawingCanvasUIView: UIView {
     private func handleNavigationBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         if let event, event.allTouches?.count ?? 0 >= 2 {
             isPanning = true
+            cancelViewportAnimation()
             if let touch = touches.first {
                 lastPanLocation = touch.location(in: self)
             }

@@ -187,17 +187,7 @@ final class VectrDocument {
     /// Strokes on visible layers, ordered back-to-front by layer (index 0 = backmost layer),
     /// stable within a layer by insertion order.
     func visibleStrokes() -> [VectorStroke] {
-        let order = layerIndexByID()
-        let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
-        return strokes
-            .enumerated()
-            .filter { visibleLayerIDs.contains($0.element.layerID) && !$0.element.isHiddenFromCanvas }
-            .sorted { lhs, rhs in
-                let l = order[lhs.element.layerID] ?? 0
-                let r = order[rhs.element.layerID] ?? 0
-                return l == r ? lhs.offset < rhs.offset : l < r
-            }
-            .map(\.element)
+        DocumentQueries.visibleStrokes(layers: layers, strokes: strokes)
     }
 
     /// Visible strokes on the active layer that isn't locked, for hit-testing/selection.
@@ -253,10 +243,12 @@ final class VectrDocument {
     /// visible design strokes that have not been cut, followed by print-layout pieces
     /// (filtered to visible layers). Design mode never uses this.
     func printLayoutStrokes() -> [VectorStroke] {
-        let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
-        var result = visibleStrokes().filter { !printHiddenStrokeIDs.contains($0.id) }
-        result.append(contentsOf: printPieces.filter { visibleLayerIDs.contains($0.layerID) })
-        return result
+        DocumentQueries.printLayoutStrokes(
+            layers: layers,
+            strokes: strokes,
+            printPieces: printPieces,
+            printHiddenStrokeIDs: printHiddenStrokeIDs
+        )
     }
 
     /// Resolves a print-layout stroke id, preferring pieces over design strokes.
@@ -268,7 +260,7 @@ final class VectrDocument {
     // MARK: - Layers
 
     private func layerIndexByID() -> [UUID: Int] {
-        Dictionary(uniqueKeysWithValues: layers.enumerated().map { ($1.id, $0) })
+        DocumentQueries.layerIndexByID(layers)
     }
 
     @discardableResult
@@ -335,7 +327,7 @@ final class VectrDocument {
 
     /// Resolved 0...1 opacity for a layer; missing layers are treated as fully opaque.
     func opacity(forLayerID id: UUID) -> CGFloat {
-        layers.first { $0.id == id }?.resolvedOpacity ?? 1
+        DocumentQueries.opacity(layers: layers, forLayerID: id)
     }
 
     func setLayerOpacity(id: UUID, opacity: CGFloat, recordUndo: Bool = true) {
@@ -581,17 +573,7 @@ final class VectrDocument {
 
     /// Text elements on visible layers, ordered back-to-front by layer like `visibleStrokes()`.
     func visibleTextElements() -> [TextElement] {
-        let order = layerIndexByID()
-        let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
-        return textElements
-            .enumerated()
-            .filter { visibleLayerIDs.contains($0.element.layerID) && !$0.element.isHidden }
-            .sorted { lhs, rhs in
-                let l = order[lhs.element.layerID] ?? 0
-                let r = order[rhs.element.layerID] ?? 0
-                return l == r ? lhs.offset < rhs.offset : l < r
-            }
-            .map(\.element)
+        DocumentQueries.visibleTextElements(layers: layers, textElements: textElements)
     }
 
     /// Visible text elements on the active layer that isn't locked, for hit-testing/selection.
@@ -2849,12 +2831,11 @@ final class VectrDocument {
     }
 
     func effectivePrintTransform(for strokeID: UUID) -> PrintStrokeTransform {
-        var transform = printTransform(for: strokeID)
-        transform.translation = CGPoint(
-            x: transform.translation.x + printLayout.contentOffset.x,
-            y: transform.translation.y + printLayout.contentOffset.y
+        DocumentQueries.effectivePrintTransform(
+            printStrokeTransforms: printStrokeTransforms,
+            contentOffset: printLayout.contentOffset,
+            for: strokeID
         )
-        return transform
     }
 
     func transformedPrintStroke(_ stroke: VectorStroke) -> VectorStroke {
@@ -3096,8 +3077,8 @@ final class VectrDocument {
         }
     }
 
-    /// Undo/redo snapshot. Omits `referenceImageData`; codec and last-saved still include it.
-    private func currentSnapshot() -> DocumentSnapshot {
+    /// Full snapshot including `referenceImageData`; used by the codec, exporters, and last-saved tracking.
+    func makeSnapshot() -> DocumentSnapshot {
         DocumentSnapshot(
             layers: layers,
             strokes: strokes,
@@ -3111,7 +3092,7 @@ final class VectrDocument {
             strokeWidth: strokeWidth,
             strokeColor: strokeColor,
             selectedStrokeID: selectedStrokeID,
-            referenceImageData: nil,
+            referenceImageData: referenceImageData,
             referenceImageFrame: referenceImageFrame,
             printLayout: printLayout,
             printStrokeTransforms: printStrokeTransforms,
@@ -3120,6 +3101,13 @@ final class VectrDocument {
             dimensionOffsets: dimensionOffsets,
             dimensionLocks: dimensionLocks
         )
+    }
+
+    /// Undo/redo snapshot. Omits `referenceImageData`; codec and last-saved still include it.
+    private func currentSnapshot() -> DocumentSnapshot {
+        var snapshot = makeSnapshot()
+        snapshot.referenceImageData = nil
+        return snapshot
     }
 
     private func apply(_ snapshot: DocumentSnapshot) {
@@ -3153,7 +3141,7 @@ final class VectrDocument {
     }
 }
 
-struct DocumentSnapshot: Codable {
+nonisolated struct DocumentSnapshot: Codable, Sendable {
     var layers: [Layer]
     var strokes: [VectorStroke]
     var textElements: [TextElement] = []

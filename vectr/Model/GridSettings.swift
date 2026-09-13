@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-struct GridSettings: Codable, Equatable {
+nonisolated struct GridSettings: Codable, Equatable, Sendable {
     var isVisible: Bool = true
     var spacing: CGFloat = 20
     // Kept for backward compatibility with old documents.

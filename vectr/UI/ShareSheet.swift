@@ -33,19 +33,12 @@ struct ShareSheetPresenter: UIViewControllerRepresentable {
             let items = self.items
             let onComplete = self.onComplete
 
-            DispatchQueue.main.async {
-                let presenter = Self.presentationAnchor(from: uiViewController)
-                // Wait out any just-dismissed sheet before presenting.
+            context.coordinator.presentTask?.cancel()
+            context.coordinator.presentTask = Task { @MainActor in
+                var presenter = Self.presentationAnchor(from: uiViewController)
                 if presenter.presentedViewController != nil {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        self.presentActivity(
-                            from: Self.presentationAnchor(from: uiViewController),
-                            items: items,
-                            context: context,
-                            onComplete: onComplete
-                        )
-                    }
-                    return
+                    try? await Task.sleep(for: .milliseconds(200))
+                    presenter = Self.presentationAnchor(from: uiViewController)
                 }
                 self.presentActivity(
                     from: presenter,
@@ -55,6 +48,7 @@ struct ShareSheetPresenter: UIViewControllerRepresentable {
                 )
             }
         } else {
+            context.coordinator.presentTask?.cancel()
             context.coordinator.isPresenting = false
         }
     }
@@ -122,6 +116,7 @@ struct ShareSheetPresenter: UIViewControllerRepresentable {
 
     final class Coordinator {
         var isPresenting = false
+        var presentTask: Task<Void, Never>?
     }
 }
 

@@ -14,7 +14,7 @@ import UIKit
 /// Reference to a font used by a `TextElement`. Built-in fonts store their
 /// display name; imported fonts store the PostScript name (for resolution once
 /// registered) plus the on-disk file name (so they survive save/reload).
-enum FontRef: Codable, Equatable {
+nonisolated enum FontRef: Codable, Equatable, Sendable {
     case builtin(String)
     case imported(postScriptName: String, fileName: String)
 
@@ -35,7 +35,7 @@ enum FontRef: Codable, Equatable {
 /// An editable text object placed on the canvas. Stays editable (content, font,
 /// size, color, rotation) and is converted to vector glyph outlines only at
 /// export time.
-struct TextElement: Identifiable, Codable, Equatable {
+nonisolated struct TextElement: Identifiable, Codable, Equatable, Sendable {
     /// Default stroke weight (document units) for a text element's outline.
     static let defaultStrokeWidth: CGFloat = 1.5
 
@@ -124,7 +124,7 @@ struct TextElement: Identifiable, Codable, Equatable {
 
 #if canImport(UIKit)
 extension FontRef {
-    func uiFont(size: CGFloat) -> UIFont {
+    nonisolated func uiFont(size: CGFloat) -> UIFont {
         switch self {
         case .builtin(let name):
             if let builtIn = FontCatalog.builtIn(named: name) {
@@ -138,12 +138,12 @@ extension FontRef {
 }
 
 extension TextElement {
-    func resolvedUIFont() -> UIFont {
+    nonisolated func resolvedUIFont() -> UIFont {
         fontRef.uiFont(size: fontSize)
     }
 
     /// Unrotated size of the laid-out text block, in document units.
-    func textSize() -> CGSize {
+    nonisolated func textSize() -> CGSize {
         let font = resolvedUIFont()
         let measured = text.isEmpty ? " " : text
         let attributed = NSAttributedString(string: measured, attributes: [.font: font])
@@ -156,17 +156,17 @@ extension TextElement {
     }
 
     /// Axis-aligned bounding rect ignoring rotation (top-left anchored at `position`).
-    var frame: CGRect {
+    nonisolated var frame: CGRect {
         CGRect(origin: position, size: textSize())
     }
 
-    var center: CGPoint {
+    nonisolated var center: CGPoint {
         let f = frame
         return CGPoint(x: f.midX, y: f.midY)
     }
 
     /// The four corners of the (possibly rotated) text block, in document space.
-    func corners() -> [CGPoint] {
+    nonisolated func corners() -> [CGPoint] {
         let f = frame
         let base = [
             CGPoint(x: f.minX, y: f.minY),
@@ -186,7 +186,7 @@ extension TextElement {
         return f.contains(local)
     }
 
-    func boundingBox() -> CGRect {
+    nonisolated func boundingBox() -> CGRect {
         guard rotation != 0 else { return frame }
         let pts = corners()
         var rect = CGRect.null
@@ -194,7 +194,7 @@ extension TextElement {
         return rect
     }
 
-    private func rotatePoint(_ point: CGPoint, around pivot: CGPoint, by radians: CGFloat) -> CGPoint {
+    private nonisolated func rotatePoint(_ point: CGPoint, around pivot: CGPoint, by radians: CGFloat) -> CGPoint {
         let cosA = cos(radians)
         let sinA = sin(radians)
         let dx = point.x - pivot.x

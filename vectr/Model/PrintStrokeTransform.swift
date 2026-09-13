@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-struct PrintStrokeTransform: Codable, Equatable {
+nonisolated struct PrintStrokeTransform: Codable, Equatable, Sendable {
     var translation: CGPoint = .zero
     var rotation: CGFloat = 0
     var flipHorizontal: Bool = false
