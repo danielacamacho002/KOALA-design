@@ -163,6 +163,7 @@ struct EditorView: View {
                         unit: store.document.settings.units
                     ),
                     measurementUnit: store.document.settings.units,
+                    gridVisible: store.document.grid.isVisible,
                     isConstructionPreview: store.document.activeCategory == .line
                         && store.document.lineVariant == .constructionLine,
                     commandPreviewClosed: commandSession.canFinish

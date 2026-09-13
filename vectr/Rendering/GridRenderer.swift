@@ -21,13 +21,18 @@ enum GridRenderer {
             return canvasRectInView(viewport: viewport, canvasSize: size)
         }
 
-        context.saveGState()
-        if let canvasViewRect {
-            context.clip(to: canvasViewRect)
+        // Grid lines and axes honor the document's visibility toggle so thin
+        // strokes can be inspected on a clean sheet. The canvas boundary below
+        // stays so the sheet extent remains visible.
+        if grid.isVisible {
+            context.saveGState()
+            if let canvasViewRect {
+                context.clip(to: canvasViewRect)
+            }
+            drawGridLines(in: context, bounds: bounds, viewport: viewport, grid: grid, documentSettings: documentSettings)
+            drawAxes(in: context, bounds: bounds, viewport: viewport)
+            context.restoreGState()
         }
-        drawGridLines(in: context, bounds: bounds, viewport: viewport, grid: grid, documentSettings: documentSettings)
-        drawAxes(in: context, bounds: bounds, viewport: viewport)
-        context.restoreGState()
 
         if let canvasSize, canvasSize.width > 0, canvasSize.height > 0 {
             drawCanvasBoundary(in: context, viewport: viewport, canvasSize: canvasSize)
