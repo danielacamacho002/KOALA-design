@@ -1230,7 +1230,7 @@ struct CanvasOverlayView: View {
             ForEach(patternPreviewStrokes) { stroke in
                 patternPreviewPath(for: stroke)
                     .stroke(
-                        Color.accentColor.opacity(0.45),
+                        Color.accentColor.opacity(0.65),
                         style: StrokeStyle(
                             lineWidth: max(stroke.strokeWidth * document.viewport.scale, 1),
                             dash: [6, 4]
