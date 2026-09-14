@@ -222,14 +222,13 @@ struct ToolCommandPanelView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Line color")
-                .sheet(isPresented: $showColorPicker) {
-                    SystemColorPickerSheet(
-                        color: Binding(
-                            get: { document.strokeColor.color },
-                            set: { document.strokeColor = CodableColor($0) }
-                        )
+                .systemColorPicker(
+                    isPresented: $showColorPicker,
+                    color: Binding(
+                        get: { document.strokeColor.color },
+                        set: { document.strokeColor = CodableColor($0) }
                     )
-                }
+                )
             }
         }
     }

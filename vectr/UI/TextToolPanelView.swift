@@ -62,18 +62,14 @@ struct TextToolPanelView: View {
                 swatch: currentFillColor,
                 accessibility: "Fill color"
             ) { showFillPicker = true }
-            .sheet(isPresented: $showFillPicker) {
-                TextColorPickerSheet(color: fillColorBinding)
-            }
+            .systemColorPicker(isPresented: $showFillPicker, color: fillColorBinding)
 
             colorRow(
                 label: "Stroke",
                 swatch: currentStrokeColor,
                 accessibility: "Stroke color"
             ) { showStrokePicker = true }
-            .sheet(isPresented: $showStrokePicker) {
-                TextColorPickerSheet(color: strokeColorBinding)
-            }
+            .systemColorPicker(isPresented: $showStrokePicker, color: strokeColorBinding)
 
             strokeWeightRow
         }
@@ -243,40 +239,5 @@ struct TextToolPanelView: View {
         element.text = newValue
         document.updateTextElement(element, recordUndo: false)
         onChanged()
-    }
-}
-
-/// Full system color picker (wheel, sliders, eyedropper) presented as a sheet.
-private struct TextColorPickerSheet: UIViewControllerRepresentable {
-    @Binding var color: Color
-
-    func makeUIViewController(context: Context) -> UIColorPickerViewController {
-        let picker = UIColorPickerViewController()
-        picker.delegate = context.coordinator
-        picker.selectedColor = UIColor(color)
-        picker.supportsAlpha = false
-        return picker
-    }
-
-    func updateUIViewController(_ picker: UIColorPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(color: $color)
-    }
-
-    final class Coordinator: NSObject, UIColorPickerViewControllerDelegate {
-        @Binding var color: Color
-
-        init(color: Binding<Color>) {
-            _color = color
-        }
-
-        func colorPickerViewController(
-            _ viewController: UIColorPickerViewController,
-            didSelect selectedColor: UIColor,
-            continuously: Bool
-        ) {
-            color = Color(selectedColor)
-        }
     }
 }

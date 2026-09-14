@@ -131,18 +131,14 @@ struct MoveRotatePanelView: View {
             swatch: currentTextFillColor,
             accessibility: "Fill color"
         ) { showTextFillPicker = true }
-        .sheet(isPresented: $showTextFillPicker) {
-            TextStyleColorPickerSheet(color: textFillColorBinding)
-        }
+        .systemColorPicker(isPresented: $showTextFillPicker, color: textFillColorBinding)
 
         textColorRow(
             label: "Stroke",
             swatch: currentTextStrokeColor,
             accessibility: "Stroke color"
         ) { showTextStrokePicker = true }
-        .sheet(isPresented: $showTextStrokePicker) {
-            TextStyleColorPickerSheet(color: textStrokeColorBinding)
-        }
+        .systemColorPicker(isPresented: $showTextStrokePicker, color: textStrokeColorBinding)
 
         textStepperRow(
             label: "Size",
@@ -359,12 +355,11 @@ struct MoveRotatePanelView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Line and border color")
-            .sheet(isPresented: $showColorPicker) {
-                SystemColorPickerSheet(
-                    color: strokeColorBinding,
-                    onBeginEditing: { document.beginInteractiveEdit() }
-                )
-            }
+            .systemColorPicker(
+                isPresented: $showColorPicker,
+                color: strokeColorBinding,
+                onBeginEditing: { document.beginInteractiveEdit() }
+            )
 
             if isStrokeColorMixed {
                 Text("Mixed")
@@ -735,41 +730,5 @@ struct MoveRotatePanelView: View {
         document.reconcileIntersectionAnchors(around: [strokeID])
         syncDegreesField()
         onApply()
-    }
-}
-
-/// Full system color picker (wheel, sliders, eyedropper) presented as a sheet
-/// for editing a selected text element's fill or stroke color.
-private struct TextStyleColorPickerSheet: UIViewControllerRepresentable {
-    @Binding var color: Color
-
-    func makeUIViewController(context: Context) -> UIColorPickerViewController {
-        let picker = UIColorPickerViewController()
-        picker.delegate = context.coordinator
-        picker.selectedColor = UIColor(color)
-        picker.supportsAlpha = false
-        return picker
-    }
-
-    func updateUIViewController(_ picker: UIColorPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(color: $color)
-    }
-
-    final class Coordinator: NSObject, UIColorPickerViewControllerDelegate {
-        @Binding var color: Color
-
-        init(color: Binding<Color>) {
-            _color = color
-        }
-
-        func colorPickerViewController(
-            _ viewController: UIColorPickerViewController,
-            didSelect selectedColor: UIColor,
-            continuously: Bool
-        ) {
-            color = Color(selectedColor)
-        }
     }
 }
