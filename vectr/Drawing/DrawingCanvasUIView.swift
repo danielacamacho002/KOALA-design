@@ -100,10 +100,8 @@ final class DrawingCanvasUIView: UIView {
     private let axisXLayer = CAShapeLayer()
     private let axisYLayer = CAShapeLayer()
     private let boundaryLayer = CAShapeLayer()
-    private var cachedGridCoverage: CGRect = .null
-    private var cachedGridSubdiv: Int = -1
-    private var cachedGridMajor: CGFloat = -1
-    private var cachedCanvasSize: CGSize = .zero
+    private var gridPathCache: GridRenderer.PathCache?
+    private var appliedGridScale: CGFloat = -1
     private var referenceImageLayer: CALayer?
     private var cachedReferenceImageData: Data?
     private var cachedReferenceImage: UIImage?
@@ -457,7 +455,8 @@ final class DrawingCanvasUIView: UIView {
     }
 
     /// Pans and zooms via a world transform. Paths rebuild only when LOD, settings,
-    /// or the visible region walk off the cached padded coverage.
+    /// or the visible region walk off the cached coverage. Hairline widths update
+    /// on zoom; pan only sets the affine so CAShapeLayers are not re-rasterized.
     private func updateGridPresentation(forcePathRebuild: Bool = false) {
         // Grid lines and axes honor the document's visibility toggle so thin
         // strokes can be inspected on a clean sheet. The boundary layer and
@@ -469,41 +468,18 @@ final class DrawingCanvasUIView: UIView {
             updateSheetFrame()
             return
         }
-        if forcePathRebuild || gridNeedsPathRebuild() {
+        if forcePathRebuild || GridRenderer.needsPathRebuild(
+            cache: gridPathCache,
+            viewBounds: bounds,
+            viewport: document.viewport,
+            grid: document.grid,
+            documentSettings: document.settings
+        ) {
             rebuildGridPaths()
         } else {
             applyWorldTransform()
         }
         updateSheetFrame()
-    }
-
-    private func gridNeedsPathRebuild() -> Bool {
-        let viewport = document.viewport
-        let grid = document.grid
-        let settings = document.settings
-        let canvasSize = settings.canvasSize
-        let subdiv = grid.visibleSubdivisions(for: settings, scale: viewport.scale)
-        let major = grid.visualSpacing(for: settings)
-
-        if cachedGridSubdiv != subdiv { return true }
-        if cachedGridMajor != major { return true }
-        if cachedCanvasSize != canvasSize { return true }
-        if cachedGridSubdiv < 0 { return true }
-
-        let visible = GridRenderer.documentRect(fromViewBounds: bounds, viewport: viewport)
-        let clipped: CGRect
-        if let canvas = GridRenderer.canvasRect(size: canvasSize) {
-            clipped = visible.intersection(canvas)
-        } else {
-            clipped = visible
-        }
-        if clipped.isNull || clipped.isEmpty {
-            return false
-        }
-        if cachedGridCoverage.isNull || cachedGridCoverage.isEmpty {
-            return true
-        }
-        return !cachedGridCoverage.contains(clipped)
     }
 
     private func rebuildGridPaths() {
@@ -520,10 +496,13 @@ final class DrawingCanvasUIView: UIView {
             padScreens: 1
         )
 
-        cachedGridCoverage = paths.coverage
-        cachedGridSubdiv = grid.visibleSubdivisions(for: settings, scale: viewport.scale)
-        cachedGridMajor = grid.visualSpacing(for: settings)
-        cachedCanvasSize = canvasSize
+        gridPathCache = GridRenderer.PathCache(
+            coverage: paths.coverage,
+            subdiv: grid.visibleSubdivisions(for: settings, scale: viewport.scale),
+            major: grid.visualSpacing(for: settings),
+            canvasSize: canvasSize
+        )
+        appliedGridScale = -1
 
         updateClipLayer(canvasRect: paths.canvasRect)
 
@@ -572,7 +551,10 @@ final class DrawingCanvasUIView: UIView {
     private func applyWorldTransform() {
         let viewport = document.viewport
         worldLayer.setAffineTransform(viewport.affineTransform)
-        let inv = 1 / max(viewport.scale, .leastNonzeroMagnitude)
+        let scale = viewport.scale
+        guard abs(scale - appliedGridScale) > 0.0001 else { return }
+        appliedGridScale = scale
+        let inv = 1 / max(scale, .leastNonzeroMagnitude)
         let gridWidth = GridRenderer.gridLineWidth * inv
         for layer in rankLayers {
             layer.lineWidth = gridWidth
@@ -596,8 +578,13 @@ final class DrawingCanvasUIView: UIView {
             return
         }
         sheetLayer.isHidden = false
-        sheetLayer.frame = visible
-        sheetLayer.backgroundColor = canvasFillColor.resolvedColor(with: traitCollection).cgColor
+        if !sheetLayer.frame.equalTo(visible) {
+            sheetLayer.frame = visible
+        }
+        let fill = canvasFillColor.resolvedColor(with: traitCollection).cgColor
+        if sheetLayer.backgroundColor != fill {
+            sheetLayer.backgroundColor = fill
+        }
     }
 
     private func applyGridColors() {

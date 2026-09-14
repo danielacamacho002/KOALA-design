@@ -19,7 +19,7 @@ iPad vector editor: design on a canvas, then arrange artwork for tiled print. iP
 
 `vectrApp` → `ContentView` → iPad `ProjectGalleryView` → `EditorView` (`DocumentStore` + `VectrDocument`).
 
-- **Design:** `DrawingCanvasView` → `DrawingCanvasUIView` (CAShapeLayer strokes + CG grid)
+- **Design:** `DrawingCanvasView` → `DrawingCanvasUIView` (CAShapeLayer strokes + layer-backed grid; pan/zoom transforms the grid, rebuilds paths only on LOD/settings)
 - **Print:** `PrintLayoutView` → `PrintLayoutCanvasView` → `PrintLayoutCanvasUIView`
 - **Save/export:** `DocumentCodec` / `ExportRouter` (PDF, tiled PDF, SVG, JPEG)
 
@@ -50,7 +50,7 @@ These counters mean different things. Mixing them is the usual bug.
 
 ## Canvas updates
 
-**Design** (`DrawingCanvasView.Coordinator`): diff viewport vs geometry vs selection vs command preview. Pan/zoom should transform existing layers, not rebuild every stroke.
+**Design** (`DrawingCanvasView.Coordinator`): diff viewport vs geometry vs selection vs command preview. Pan/zoom should transform existing layers, not rebuild every stroke. The grid lives in document space on a world layer: pan is an affine; path rebuilds only when zoom LOD, spacing, canvas size, or coverage miss.
 
 **Print** (`PrintLayoutCanvasView.updateUIView`): today calls `reloadAll()` on almost every SwiftUI update; `printLayoutRevision` / `geometryRevision` are passed in and ignored. Match design-canvas diffing when touching this path.
 

@@ -23,6 +23,18 @@ enum GridRenderer {
         var canvasRect: CGRect?
     }
 
+    /// Last live-canvas path build. Pan/zoom can reuse it while the visible
+    /// document rect stays inside `coverage` and LOD/settings are unchanged.
+    struct PathCache: Equatable {
+        var coverage: CGRect
+        var subdiv: Int
+        var major: CGFloat
+        var canvasSize: CGSize
+    }
+
+    /// Skip generating the whole huge sheet when a windowed patch is cheaper.
+    static let maxCachedLineCount = 6_000
+
     static func drawGrid(
         in context: CGContext,
         bounds: CGRect,
@@ -92,15 +104,14 @@ enum GridRenderer {
         padScreens: CGFloat = 1
     ) -> LayerPaths {
         let canvas = canvasSize.flatMap { canvasRect(size: $0) }
-        var coverage = documentRect(fromViewBounds: viewBounds, viewport: viewport)
-        if padScreens > 0, viewport.scale > 0 {
-            let padX = viewBounds.width / viewport.scale * padScreens
-            let padY = viewBounds.height / viewport.scale * padScreens
-            coverage = coverage.insetBy(dx: -padX, dy: -padY)
-        }
-        if let canvas {
-            coverage = coverage.intersection(canvas)
-        }
+        let coverage = coverageRect(
+            viewBounds: viewBounds,
+            viewport: viewport,
+            grid: grid,
+            documentSettings: documentSettings,
+            canvas: canvas,
+            padScreens: padScreens
+        )
 
         let rankPaths: [CGPath]
         if coverage.isNull || coverage.isEmpty {
@@ -132,6 +143,87 @@ enum GridRenderer {
             boundary: canvas.map { CGPath(rect: $0, transform: nil) },
             canvasRect: canvas
         )
+    }
+
+    /// Whether live canvas layers must rebuild grid paths, versus translating
+    /// the existing document-space geometry with the viewport affine.
+    static func needsPathRebuild(
+        cache: PathCache?,
+        viewBounds: CGRect,
+        viewport: ViewportTransform,
+        grid: GridSettings,
+        documentSettings: DocumentSettings
+    ) -> Bool {
+        let subdiv = grid.visibleSubdivisions(for: documentSettings, scale: viewport.scale)
+        let major = grid.visualSpacing(for: documentSettings)
+        let canvasSize = documentSettings.canvasSize
+
+        guard let cache else { return true }
+        if cache.subdiv != subdiv { return true }
+        if cache.major != major { return true }
+        if cache.canvasSize != canvasSize { return true }
+
+        let visible = documentRect(fromViewBounds: viewBounds, viewport: viewport)
+        let clipped: CGRect
+        if let canvas = canvasRect(size: canvasSize) {
+            clipped = visible.intersection(canvas)
+        } else {
+            clipped = visible
+        }
+        if clipped.isNull || clipped.isEmpty {
+            return false
+        }
+        if cache.coverage.isNull || cache.coverage.isEmpty {
+            return true
+        }
+        return !cache.coverage.contains(clipped)
+    }
+
+    /// Line count for a coverage rect at the given minor spacing (vertical + horizontal).
+    static func estimatedLineCount(coverage: CGRect, minor: CGFloat) -> Int {
+        guard minor > 0, !coverage.isNull, !coverage.isEmpty else { return 0 }
+        let xCount = Int(ceil(coverage.maxX / minor) - floor(coverage.minX / minor)) + 1
+        let yCount = Int(ceil(coverage.maxY / minor) - floor(coverage.minY / minor)) + 1
+        return max(0, xCount) + max(0, yCount)
+    }
+
+    /// Document region to tessellate. Live canvas (`padScreens > 0`) prefers the
+    /// full sheet when it stays under `maxCachedLineCount`, so ordinary pan/zoom
+    /// only transforms layers. Export uses `padScreens: 0` (visible only).
+    static func coverageRect(
+        viewBounds: CGRect,
+        viewport: ViewportTransform,
+        grid: GridSettings,
+        documentSettings: DocumentSettings,
+        canvas: CGRect?,
+        padScreens: CGFloat
+    ) -> CGRect {
+        let visible = documentRect(fromViewBounds: viewBounds, viewport: viewport)
+        if padScreens <= 0 {
+            if let canvas {
+                return visible.intersection(canvas)
+            }
+            return visible
+        }
+
+        let major = grid.visualSpacing(for: documentSettings)
+        let subdiv = grid.visibleSubdivisions(for: documentSettings, scale: viewport.scale)
+        let minor = major / CGFloat(max(1, subdiv))
+        if let canvas, !canvas.isNull, !canvas.isEmpty,
+           estimatedLineCount(coverage: canvas, minor: minor) <= maxCachedLineCount {
+            return canvas
+        }
+
+        var coverage = visible
+        if viewport.scale > 0 {
+            let padX = viewBounds.width / viewport.scale * padScreens
+            let padY = viewBounds.height / viewport.scale * padScreens
+            coverage = coverage.insetBy(dx: -padX, dy: -padY)
+        }
+        if let canvas {
+            coverage = coverage.intersection(canvas)
+        }
+        return coverage
     }
 
     /// Visible document rectangle corresponding to `viewBounds` (no padding).
