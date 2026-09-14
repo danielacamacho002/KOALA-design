@@ -152,6 +152,14 @@ enum DocumentRenderer {
         for element in snapshot.visibleTextElements() {
             points.append(contentsOf: element.corners())
         }
+        if let frame = snapshot.referenceImageFrame, snapshot.referenceImageData != nil {
+            points.append(contentsOf: [
+                frame.origin,
+                CGPoint(x: frame.maxX, y: frame.minY),
+                CGPoint(x: frame.maxX, y: frame.maxY),
+                CGPoint(x: frame.minX, y: frame.maxY)
+            ])
+        }
         return points
     }
 

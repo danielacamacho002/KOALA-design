@@ -107,7 +107,11 @@ struct DrawingCanvasView: UIViewRepresentable {
         }
 
         if needsViewportRefresh {
-            uiView.refreshViewport()
+            if referenceImageChanged && !didSwapDocument && !viewportChanged && !gridDisplayChanged {
+                uiView.refreshReferenceImage()
+            } else {
+                uiView.refreshViewport()
+            }
             didRefreshViewport = true
         }
 

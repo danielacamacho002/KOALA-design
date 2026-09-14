@@ -292,7 +292,7 @@ struct EditorView: View {
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .move,
-                          !store.document.selectionIsEmpty {
+                          store.document.hasCanvasSelection {
                     MoveRotatePanelView(
                         document: store.document,
                         units: store.document.settings.units
@@ -835,7 +835,10 @@ struct EditorView: View {
         let visibleRect = visibleRectInCanvasSpace
         guard store.needsInitialViewportLayout, visibleRect.width > 0, visibleRect.height > 0 else { return }
         guard canvasViewSize.width > 0 else { return }
-        let contentPoints = store.document.visibleStrokes().flatMap { ShapeGeometry.renderPoints(for: $0) }
+        var contentPoints = store.document.visibleStrokes().flatMap { ShapeGeometry.renderPoints(for: $0) }
+        if let imageCorners = store.document.referenceImageCorners() {
+            contentPoints.append(contentsOf: imageCorners)
+        }
         if contentPoints.isEmpty {
             store.document.viewport.frameCanvasInDrawableArea(
                 canvasSize: store.document.settings.canvasSize,
@@ -1000,11 +1003,11 @@ struct EditorView: View {
             store.document.selectedStrokeID = nil
             statusMessage = "Tap to place or edit text; drag to move, corners to scale"
         case .delete:
-            if !store.document.selectionIsEmpty {
+            if store.document.hasCanvasSelection {
                 store.document.deleteSelectedElements()
                 store.markDirty()
             } else {
-                statusMessage = "Select a shape or text to delete"
+                statusMessage = "Select a shape, text, or image to delete"
             }
             commandSession.cancel()
         case .trim:
@@ -1081,6 +1084,7 @@ struct EditorView: View {
                 // when returning to the move tool from another tool. Expand to
                 // the parent group when that stroke is a group member.
                 if store.document.selectionIsEmpty,
+                   !store.document.isReferenceImageSelected,
                    let lastID = store.document.lastSelectedStrokeID,
                    store.document.stroke(with: lastID)?.layerID == store.document.activeLayerID {
                     store.document.selectStrokeConsideringGroups(lastID)
@@ -1089,6 +1093,8 @@ struct EditorView: View {
                 }
                 if store.document.usesGroupTransform {
                     statusMessage = "Drag to move the group, or use the handle to rotate; tap to add or remove"
+                } else if store.document.isReferenceImageSelected {
+                    statusMessage = "Drag to move the image; use Scale to resize"
                 } else if store.document.selectedTextID != nil {
                     statusMessage = "Drag to move the text, or use the handle to rotate"
                 } else if store.document.selectedStrokeID == nil {
@@ -1442,8 +1448,15 @@ struct EditorView: View {
                 store.markDirty()
                 return
             }
-            // 5. Fall back to the current selection.
-            if !store.document.selectionIsEmpty {
+            // 5. Imported JPEG/PDF sitting behind the vectors.
+            if store.document.referenceImageContains(documentPoint) {
+                store.document.selectReferenceImage()
+                store.document.deleteSelectedElements()
+                store.markDirty()
+                return
+            }
+            // 6. Fall back to the current selection.
+            if store.document.hasCanvasSelection {
                 store.document.deleteSelectedElements()
                 store.markDirty()
             }
@@ -1470,6 +1483,8 @@ struct EditorView: View {
             store.document.selectStrokeConsideringGroups(id)
         case .text(let id):
             store.document.selectTextConsideringGroups(id)
+        case .referenceImage:
+            store.document.selectReferenceImage()
         case .none:
             if let groupHit {
                 store.document.selectGroup(groupHit)

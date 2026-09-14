@@ -216,7 +216,7 @@ final class DrawingCanvasUIView: UIView {
         switch selection {
         case .stroke(let id):
             delegate?.canvasDidSelectStroke(document.stroke(with: id))
-        case .text, .none:
+        case .text, .referenceImage, .none:
             delegate?.canvasDidSelectStroke(nil)
         }
         reloadStrokesHighlight()
@@ -327,8 +327,15 @@ final class DrawingCanvasUIView: UIView {
         }
 
         layer.contents = image.cgImage
+        layer.contentsGravity = .resize
         layer.frame = CGRect(origin: viewOrigin, size: viewSize)
         layer.opacity = 0.85
+    }
+
+    func refreshReferenceImage() {
+        performWithoutLayerAnimation {
+            reloadReferenceImage()
+        }
     }
 
     private func addStrokeLayer(_ stroke: VectorStroke) {

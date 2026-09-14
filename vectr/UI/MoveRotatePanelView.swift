@@ -56,34 +56,38 @@ struct MoveRotatePanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            rotateSection
+            if document.isReferenceImageSelected {
+                referenceImageSection
+            } else {
+                rotateSection
 
-            if !document.selectedTextIDs.isEmpty {
+                if !document.selectedTextIDs.isEmpty {
+                    Divider()
+                    textStyleSection
+                }
+
+                if !document.selectedStrokeIDs.isEmpty {
+                    Divider()
+                    thicknessSection
+
+                    Divider()
+                    colorSection
+                }
+
+                if document.hasClosedFillableSelection {
+                    Divider()
+                    fillOpacitySection
+                }
+
+                if document.usesGroupTransform {
+                    Divider()
+                    multiSelectionSection
+                }
+
                 Divider()
-                textStyleSection
+
+                arrangeSection
             }
-
-            if !document.selectedStrokeIDs.isEmpty {
-                Divider()
-                thicknessSection
-
-                Divider()
-                colorSection
-            }
-
-            if document.hasClosedFillableSelection {
-                Divider()
-                fillOpacitySection
-            }
-
-            if document.usesGroupTransform {
-                Divider()
-                multiSelectionSection
-            }
-
-            Divider()
-
-            arrangeSection
         }
         .toolPanelChrome(width: 172)
         .onChange(of: document.selectedStrokeID) { _, _ in
@@ -106,6 +110,21 @@ struct MoveRotatePanelView: View {
             syncDegreesField()
             syncThicknessText()
             syncFillOpacity()
+        }
+    }
+
+    @ViewBuilder
+    private var referenceImageSection: some View {
+        ToolPanelHeader("Image")
+
+        Text("Drag to move. Switch to Scale to resize.")
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+        ToolPanelLabelButton(title: "Delete", fullWidth: true) {
+            document.deleteSelectedElements()
+            onApply()
         }
     }
 

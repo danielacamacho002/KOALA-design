@@ -210,6 +210,7 @@ extension VectrDocument {
     enum ElementHit: Equatable {
         case text(UUID)
         case stroke(UUID)
+        case referenceImage
         case none
     }
 
@@ -254,6 +255,10 @@ extension VectrDocument {
         if let stroke = strokeHit(near: documentPoint, threshold: threshold) {
             selectStrokeConsideringGroups(stroke.id)
             return .stroke(stroke.id)
+        }
+        if referenceImageContains(documentPoint) {
+            selectReferenceImage()
+            return .referenceImage
         }
         clearElementSelection()
         return .none

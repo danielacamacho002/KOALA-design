@@ -36,6 +36,7 @@ final class VectrDocument {
                 selectedStrokeIDs = [id]
                 selectedTextID = nil
                 selectedTextIDs = []
+                isReferenceImageSelected = false
             } else {
                 selectedStrokeIDs = []
             }
@@ -100,6 +101,7 @@ final class VectrDocument {
                 selectedTextIDs = [id]
                 selectedStrokeID = nil
                 selectedStrokeIDs = []
+                isReferenceImageSelected = false
             } else {
                 selectedTextIDs = []
             }
@@ -109,6 +111,8 @@ final class VectrDocument {
     var activeFontSize: CGFloat = 24
     var referenceImageData: Data?
     var referenceImageFrame: CGRect?
+    /// Session-only: the imported JPEG/PDF raster is selected for move/scale.
+    var isReferenceImageSelected = false
 
     var printLayout: PrintLayoutSettings = PrintLayoutSettings()
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
@@ -1440,6 +1444,7 @@ final class VectrDocument {
             selectedTextID = nil
         }
         isSyncingSelection = false
+        isReferenceImageSelected = false
         clearAnchorSelection()
         compactCircularAnchors(for: strokeIDs)
     }
@@ -1518,7 +1523,10 @@ final class VectrDocument {
         case .stroke(let id):
             guard let stroke = stroke(with: id), isSelectableStroke(stroke) else { return .none }
             return .stroke(id)
-        case .none:
+        case .referenceImage, .none:
+            if referenceImageContains(documentPoint) {
+                return .referenceImage
+            }
             return .none
         }
     }
@@ -1545,6 +1553,8 @@ final class VectrDocument {
             return stroke(with: id).map { !isSelectableStroke($0) } ?? false
         case .text(let id):
             return textElement(with: id).map { !isSelectableText($0) } ?? false
+        case .referenceImage:
+            return false
         }
     }
 
@@ -1560,6 +1570,9 @@ final class VectrDocument {
             if let text = textElement(with: id), text.contains(point) {
                 return true
             }
+        }
+        if isReferenceImageSelected, referenceImageContains(point) {
+            return true
         }
         return false
     }
@@ -1579,6 +1592,13 @@ final class VectrDocument {
             }
         }
         let expanded = expandedSelectionForGroups(strokeIDs: strokeIDs, textIDs: textIDs)
+        if expanded.strokeIDs.isEmpty,
+           expanded.textIDs.isEmpty,
+           let frame = resolvedReferenceImageFrame(),
+           Self.rectsOverlap(frame, rect) {
+            selectReferenceImage()
+            return
+        }
         setElementSelection(strokeIDs: expanded.strokeIDs, textIDs: expanded.textIDs)
     }
 
@@ -1595,6 +1615,9 @@ final class VectrDocument {
                 let bbox = text.boundingBox()
                 rect = rect.map { $0.union(bbox) } ?? bbox
             }
+        }
+        if isReferenceImageSelected, let frame = resolvedReferenceImageFrame() {
+            rect = rect.map { $0.union(frame) } ?? frame
         }
         return rect
     }
@@ -1753,6 +1776,10 @@ final class VectrDocument {
 
     /// Deletes every selected stroke and text element in one undoable step.
     func deleteSelectedElements() {
+        if isReferenceImageSelected, hasReferenceImage, selectionIsEmpty {
+            removeReferenceImage()
+            return
+        }
         expandSelectionToGroupsIfNeeded()
         guard !selectionIsEmpty else { return }
         pushUndo()
@@ -3124,6 +3151,89 @@ final class VectrDocument {
         dimensionLocks = snapshot.dimensionLocks ?? []
         syncGridFromSettings()
         printLayoutRevision += 1
+        if referenceImageData == nil {
+            isReferenceImageSelected = false
+        }
+    }
+
+    // MARK: - Reference image
+
+    var hasReferenceImage: Bool {
+        referenceImageData != nil
+    }
+
+    /// True when strokes, text, or the imported image is selected.
+    var hasCanvasSelection: Bool {
+        !selectionIsEmpty || isReferenceImageSelected
+    }
+
+    func resolvedReferenceImageFrame() -> CGRect? {
+        guard hasReferenceImage else { return nil }
+        return referenceImageFrame
+    }
+
+    func referenceImageContains(_ point: CGPoint) -> Bool {
+        resolvedReferenceImageFrame()?.contains(point) == true
+    }
+
+    func referenceImageCorners() -> [CGPoint]? {
+        guard let frame = resolvedReferenceImageFrame() else { return nil }
+        return [
+            CGPoint(x: frame.minX, y: frame.minY),
+            CGPoint(x: frame.maxX, y: frame.minY),
+            CGPoint(x: frame.maxX, y: frame.maxY),
+            CGPoint(x: frame.minX, y: frame.maxY)
+        ]
+    }
+
+    func selectReferenceImage() {
+        guard hasReferenceImage else { return }
+        setElementSelection(strokeIDs: [], textIDs: [])
+        isReferenceImageSelected = true
+    }
+
+    func setReferenceImageFrame(_ frame: CGRect, recordUndo: Bool = true) {
+        guard hasReferenceImage else { return }
+        if recordUndo { pushUndo() }
+        referenceImageFrame = CGRect(
+            x: frame.origin.x,
+            y: frame.origin.y,
+            width: max(frame.width, 1),
+            height: max(frame.height, 1)
+        )
+    }
+
+    func translateReferenceImage(by delta: CGPoint, recordUndo: Bool = false) {
+        guard var frame = resolvedReferenceImageFrame() else { return }
+        frame.origin.x += delta.x
+        frame.origin.y += delta.y
+        setReferenceImageFrame(frame, recordUndo: recordUndo)
+    }
+
+    func scaleReferenceImage(
+        sx: CGFloat,
+        sy: CGFloat,
+        about center: CGPoint,
+        recordUndo: Bool = false
+    ) {
+        guard let origin = resolvedReferenceImageFrame() else { return }
+        let width = max(origin.width * abs(sx), 1)
+        let height = max(origin.height * abs(sy), 1)
+        let scaled = CGRect(
+            x: center.x + (origin.minX - center.x) * sx,
+            y: center.y + (origin.minY - center.y) * sy,
+            width: width,
+            height: height
+        )
+        setReferenceImageFrame(scaled, recordUndo: recordUndo)
+    }
+
+    func removeReferenceImage(recordUndo: Bool = true) {
+        guard hasReferenceImage else { return }
+        if recordUndo { pushUndo() }
+        referenceImageData = nil
+        referenceImageFrame = nil
+        isReferenceImageSelected = false
     }
 }
 

@@ -46,6 +46,11 @@ struct CanvasOverlayView: View {
     @State private var textRotatePivot: CGPoint = .zero
     @State private var textRotatePreviousAngle: CGFloat = 0
     @State private var textRotateAccumulated: CGFloat = 0
+    @State private var imageMoveOriginFrame: CGRect?
+    @State private var imageScaleOriginFrame: CGRect?
+    @State private var imageScaleOriginCenter: CGPoint = .zero
+    @State private var imageScaleOriginCorner: CGPoint = .zero
+    @State private var imageScaleOriginCornerDist: CGFloat = 1
 
     // Object snapping (endpoints/midpoints) for the Move tool. Shares the same decoupled
     // engine as the drawing canvas; the lock session + haptics + indicator are per-overlay.
@@ -92,7 +97,9 @@ struct CanvasOverlayView: View {
                     moveToolOverlay
                 } else if document.activeCategory == .scale {
                     emptyToolDismissOverlay
-                    if document.selectedTextID != nil {
+                    if document.isReferenceImageSelected {
+                        imageScaleOverlay
+                    } else if document.selectedTextID != nil {
                         textScaleOverlay
                     } else {
                         scaleHandles
@@ -370,6 +377,8 @@ struct CanvasOverlayView: View {
         ZStack {
             if document.usesGroupTransform {
                 multiSelectionMoveOverlay
+            } else if document.isReferenceImageSelected {
+                imageMoveOverlay
             } else if document.selectedTextID != nil {
                 textMoveOverlay
             } else if document.selectedStrokeID != nil {
@@ -703,7 +712,7 @@ struct CanvasOverlayView: View {
                 if dragIsMarquee {
                     if let rect = marqueeDocRect(start: value.startLocation, current: value.location) {
                         document.selectElements(in: rect)
-                        if !document.selectionIsEmpty {
+                        if document.hasCanvasSelection {
                             document.isMoveToolHighlighted = true
                         }
                     }
@@ -746,6 +755,10 @@ struct CanvasOverlayView: View {
             } else {
                 document.toggleTextSelection(id)
             }
+        case .referenceImage:
+            if !document.isReferenceImageSelected {
+                document.selectReferenceImage()
+            }
         case .none:
             if let group = document.group(at: documentPoint) {
                 document.selectGroup(group)
@@ -753,7 +766,7 @@ struct CanvasOverlayView: View {
                 document.clearElementSelection()
             }
         }
-        document.isMoveToolHighlighted = !document.selectionIsEmpty
+        document.isMoveToolHighlighted = document.hasCanvasSelection
         onChanged()
     }
 
@@ -1519,6 +1532,119 @@ struct CanvasOverlayView: View {
     }
 
     // MARK: - Text (move / rotate via Move tool, scale via Scale tool)
+
+    // MARK: - Imported image (move / scale)
+
+    @ViewBuilder
+    private var imageMoveOverlay: some View {
+        if let corners = document.referenceImageCorners() {
+            let viewCorners = corners.map { document.viewport.documentToView($0) }
+
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(
+                    backgroundDrag(
+                        canMove: { document.referenceImageContains($0) },
+                        onMoveBegan: {
+                            imageMoveOriginFrame = document.resolvedReferenceImageFrame()
+                            document.beginInteractiveEdit()
+                        },
+                        onMoveChanged: { value in
+                            guard let origin = imageMoveOriginFrame else { return }
+                            let delta = documentDelta(from: value.translation)
+                            document.setReferenceImageFrame(
+                                origin.offsetBy(dx: delta.x, dy: delta.y),
+                                recordUndo: false
+                            )
+                            onChanged()
+                        },
+                        onMoveEnded: {
+                            imageMoveOriginFrame = nil
+                            onChanged()
+                        }
+                    )
+                )
+                .simultaneousGesture(
+                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
+                        .onEnded { value in handleMoveTap(at: value.location) }
+                )
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder
+    private var imageScaleOverlay: some View {
+        if let corners = document.referenceImageCorners() {
+            let viewCorners = corners.map { document.viewport.documentToView($0) }
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .allowsHitTesting(false)
+
+            ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
+                handleView(style: .edit)
+                    .position(corner)
+                    .highPriorityGesture(imageScaleDrag(cornerIndex: index))
+            }
+        }
+    }
+
+    private func imageScaleDrag(cornerIndex: Int) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if imageScaleOriginFrame == nil {
+                    guard let frame = document.resolvedReferenceImageFrame() else { return }
+                    imageScaleOriginFrame = frame
+                    imageScaleOriginCenter = CGPoint(x: frame.midX, y: frame.midY)
+                    let corners = [
+                        CGPoint(x: frame.minX, y: frame.minY),
+                        CGPoint(x: frame.maxX, y: frame.minY),
+                        CGPoint(x: frame.maxX, y: frame.maxY),
+                        CGPoint(x: frame.minX, y: frame.maxY)
+                    ]
+                    let corner = corners[cornerIndex]
+                    imageScaleOriginCorner = corner
+                    imageScaleOriginCornerDist = max(
+                        hypot(corner.x - imageScaleOriginCenter.x, corner.y - imageScaleOriginCenter.y),
+                        0.001
+                    )
+                    document.beginInteractiveEdit()
+                }
+                guard let origin = imageScaleOriginFrame else { return }
+                let center = imageScaleOriginCenter
+                let dragPoint = document.viewport.viewToDocument(value.location)
+                let sx: CGFloat
+                let sy: CGFloat
+                if document.scaleUniform {
+                    let newDist = hypot(dragPoint.x - center.x, dragPoint.y - center.y)
+                    let factor = newDist / imageScaleOriginCornerDist
+                    sx = factor
+                    sy = factor
+                } else {
+                    sx = abs(imageScaleOriginCorner.x - center.x) > 0.001
+                        ? (dragPoint.x - center.x) / (imageScaleOriginCorner.x - center.x)
+                        : 1
+                    sy = abs(imageScaleOriginCorner.y - center.y) > 0.001
+                        ? (dragPoint.y - center.y) / (imageScaleOriginCorner.y - center.y)
+                        : 1
+                }
+                let scaled = CGRect(
+                    x: center.x + (origin.minX - center.x) * sx,
+                    y: center.y + (origin.minY - center.y) * sy,
+                    width: max(origin.width * abs(sx), 1),
+                    height: max(origin.height * abs(sy), 1)
+                )
+                document.setReferenceImageFrame(scaled, recordUndo: false)
+                onChanged()
+            }
+            .onEnded { _ in
+                imageScaleOriginFrame = nil
+                onChanged()
+            }
+    }
 
     /// Type tool overlay for a selected text element: tap the box to edit,
     /// drag it to move, and use corner handles to scale. No rotation here —
