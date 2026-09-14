@@ -18,6 +18,7 @@ struct EditorView: View {
     @State private var curveDraft = CurveDraftSession()
     private let objectSnapEngine = PathSnapEngine.makeDefault()
     @State private var showExportSheet = false
+    @State private var showImportPicker = false
     @State private var pendingShareAfterDismiss = false
     @State private var exportFormat: ExportFormat = .vectr
     @State private var exportQuality: ExportQuality = .medium
@@ -112,6 +113,13 @@ struct EditorView: View {
                 fileName: $store.fileName,
                 onFileNameChanged: handleFileNameChanged
             )
+        }
+        .fileImporter(
+            isPresented: $showImportPicker,
+            allowedContentTypes: ImportRouter.supportedTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            handleImport(result)
         }
         .sheet(isPresented: $showExportSheet, onDismiss: {
             guard pendingShareAfterDismiss else { return }
@@ -439,6 +447,7 @@ struct EditorView: View {
                 onRedo: handleDesignRedo,
                 onSettings: { showSettings = true },
                 onShare: { showExportSheet = true },
+                onImport: { showImportPicker = true },
                 onSave: { saveDocumentNow() },
                 onToolSelected: handleToolSelected,
                 onSwitchToPrintLayout: { switchToPrintLayoutMode() },
@@ -1703,6 +1712,40 @@ struct EditorView: View {
     private func performUndo() {
         store.document.undo()
         store.markDirty()
+    }
+
+    private func handleImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let content = try ImportRouter.loadContent(
+                    from: url,
+                    layerID: store.document.activeLayerID
+                )
+                let count = try store.document.importContent(content, offset: importPlacementOffset)
+                store.markDirty()
+                if count > 0 {
+                    let noun = count == 1 ? "item" : "items"
+                    statusMessage = "Imported \(count) \(noun)"
+                } else {
+                    statusMessage = "Imported reference image"
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Places imported artwork at the visible canvas center so it is on-screen.
+    private var importPlacementOffset: CGPoint {
+        let rect = visibleRectInCanvasSpace
+        guard rect.width > 0, rect.height > 0 else { return .zero }
+        return store.document.viewport.viewToDocument(CGPoint(x: rect.midX, y: rect.midY))
     }
 
     private func snapshotFromStore() -> DocumentSnapshot {

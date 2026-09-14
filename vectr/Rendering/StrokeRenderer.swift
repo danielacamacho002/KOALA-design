@@ -54,7 +54,7 @@ enum StrokeRenderer {
                 points: cutout,
                 strokeWidth: renderStroke.strokeWidth,
                 isClosed: true,
-                shapeType: .circle
+                shapeType: .polyline
             )
             appendContour(
                 to: path,
@@ -106,7 +106,7 @@ enum StrokeRenderer {
         layer.lineCap = .round
         layer.lineJoin = .round
         layer.contentsScale = UIScreen.main.scale
-        layer.fillRule = usesEvenOddFill(stroke) ? .evenOdd : .nonZero
+        layer.fillRule = stroke.resolvedCGFillRule == .evenOdd ? .evenOdd : .nonZero
         layer.opacity = Float(opacity)
 
         if hasCutEdges(stroke) {
@@ -216,7 +216,7 @@ enum StrokeRenderer {
                 points: cutout,
                 strokeWidth: renderStroke.strokeWidth,
                 isClosed: true,
-                shapeType: .circle
+                shapeType: .polyline
             )
             appendContour(
                 to: path,
@@ -304,10 +304,6 @@ enum StrokeRenderer {
         }
     }
 
-    private static func usesEvenOddFill(_ stroke: VectorStroke) -> Bool {
-        stroke.isClosed && !stroke.cutoutPoints.isEmpty
-    }
-
     private nonisolated static func constructionPath(for stroke: VectorStroke, viewport: ViewportTransform) -> UIBezierPath {
         let path = UIBezierPath()
         guard let first = stroke.points.first, let last = stroke.points.last else { return path }
@@ -325,10 +321,7 @@ enum StrokeRenderer {
     }
 
     private static func fillColor(for stroke: VectorStroke) -> CGColor {
-        if stroke.isClosed, !stroke.isConstruction {
-            return UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor
-        }
-        return UIColor.clear.cgColor
+        stroke.resolvedFillCGColor
     }
 
     private nonisolated static func transformDocumentPath(_ documentPath: CGPath, viewport: ViewportTransform) -> UIBezierPath {

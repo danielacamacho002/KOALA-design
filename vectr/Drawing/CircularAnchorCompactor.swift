@@ -15,7 +15,16 @@ extension ShapeGeometry {
     /// rewritten in place so move/edit keep showing the compact default, not every
     /// tessellation vertex. Already-compact or user-densified (5–11 sparse) shapes
     /// are left alone.
-    nonisolated static func withCompactedCircularAnchors(_ stroke: VectorStroke) -> VectorStroke {
+    ///
+    /// `rewritingPartialRuns` is for join/boolean leftovers (a circular bite in a
+    /// polyline). Leave it off for move / thickness / selection so imported letters
+    /// and ovals are not mistaken for circles.
+    nonisolated static func withCompactedCircularAnchors(
+        _ stroke: VectorStroke,
+        rewritingPartialRuns: Bool = true
+    ) -> VectorStroke {
+        // Compound SVG paths (letters, overlapping ovals) must keep every contour.
+        if !stroke.cutoutPoints.isEmpty { return stroke }
         switch stroke.shapeType {
         case .circle:
             return compactStandaloneCircle(stroke)
@@ -28,9 +37,9 @@ extension ShapeGeometry {
                 return restored
             }
             if stroke.points.count < 8 { return stroke }
-            return compactCircularRuns(in: stroke)
+            return compactCircularRuns(in: stroke, rewritingPartialRuns: rewritingPartialRuns)
         case .polyline, .rectangle:
-            return compactCircularRuns(in: stroke)
+            return compactCircularRuns(in: stroke, rewritingPartialRuns: rewritingPartialRuns)
         default:
             return stroke
         }
@@ -193,8 +202,16 @@ private extension ShapeGeometry {
         let points = stroke.points
         guard points.count >= 2 else { return nil }
 
-        if stroke.isClosed, points.count == 4, circleFromCardinalPoints(points) != nil {
-            return replacingPoints(stroke, points: points, shapeType: .circle, closed: true)
+        // Four closed anchors are often an ellipse (or a cubic oval). Only promote
+        // when every vertex actually sits on one circle.
+        if stroke.isClosed, points.count == 4,
+           let circle = fittedCircleIfCircular(points, closed: true) {
+            return replacingPoints(
+                stroke,
+                points: circleCardinalPoints(center: circle.center, radius: circle.radius),
+                shapeType: .circle,
+                closed: true
+            )
         }
         if stroke.isClosed, points.count >= 8,
            let circle = fittedCircleIfCircular(points, closed: true) {
@@ -335,7 +352,10 @@ private extension ShapeGeometry {
         )
     }
 
-    nonisolated static func compactCircularRuns(in stroke: VectorStroke) -> VectorStroke {
+    nonisolated static func compactCircularRuns(
+        in stroke: VectorStroke,
+        rewritingPartialRuns: Bool = true
+    ) -> VectorStroke {
         let points = stroke.points
         guard points.count >= denseSampleThreshold else { return stroke }
 
@@ -359,6 +379,7 @@ private extension ShapeGeometry {
             return compactStandaloneArc(draft)
         }
 
+        guard rewritingPartialRuns else { return stroke }
         return rebuildStroke(stroke, replacing: runs)
     }
 
