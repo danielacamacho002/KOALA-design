@@ -155,4 +155,25 @@ struct PrintSliceEngineTests {
         )
         #expect(PrintSliceEngine.slice(stroke, axis: .vertical, coordinate: 18) == nil)
     }
+
+    @Test func crossesAgreesWithSliceWithoutBuildingFragments() {
+        let crossing = VectorStroke(
+            layerID: UUID(),
+            points: [CGPoint(x: 0, y: 0), CGPoint(x: 80, y: 0)],
+            strokeWidth: 1.5,
+            isClosed: false,
+            shapeType: .polyline
+        )
+        let clear = VectorStroke(
+            layerID: UUID(),
+            points: [CGPoint(x: 40, y: 0), CGPoint(x: 80, y: 0)],
+            strokeWidth: 1.5,
+            isClosed: false,
+            shapeType: .polyline
+        )
+
+        #expect(PrintSliceEngine.crosses(crossing, axis: .vertical, coordinate: 18))
+        #expect(!PrintSliceEngine.crosses(clear, axis: .vertical, coordinate: 18))
+        #expect(!PrintSliceEngine.crosses(crossing, axis: .horizontal, coordinate: 18))
+    }
 }

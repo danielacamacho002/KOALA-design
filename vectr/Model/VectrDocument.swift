@@ -3042,21 +3042,6 @@ final class VectrDocument {
         }
     }
 
-    /// Unified print-layout selection: prefers a hit text element, otherwise
-    /// falls back to stroke hit testing. Replaces the current selection.
-    @discardableResult
-    func selectPrintElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
-        let hit = hitPrintElement(near: documentPoint, threshold: threshold)
-        switch hit {
-        case .text(let id):
-            setPrintSelection(strokeIDs: [], textIDs: [id])
-        case .stroke(let id):
-            setPrintSelection(strokeIDs: [id], textIDs: [])
-        case .none:
-            clearPrintSelection()
-        }
-        return hit
-    }
     #endif
 
     func printStrokeHit(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
@@ -3078,16 +3063,6 @@ final class VectrDocument {
             }
         }
         return best
-    }
-
-    func selectPrintStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
-        let hit = printStrokeHit(near: documentPoint, threshold: threshold)
-        if let hit {
-            setPrintSelection(strokeIDs: [hit.id], textIDs: [])
-        } else {
-            clearPrintSelection()
-        }
-        return hit
     }
 
     func selectPrintElements(in rect: CGRect) {
@@ -3228,14 +3203,12 @@ final class VectrDocument {
         }
         printPieceSourceIDs = printPieceSourceIDs.filter { !strokeIDs.contains($0.value) }
 
+        // Selection settles last, and its own revision bump covers the pruning above.
         let retired = strokeIDs.union(textIDs).union(pieceIDsToRemove)
-        if !retired.isEmpty || droppedLayerID != nil {
-            setPrintSelection(
-                strokeIDs: printSelectedStrokeIDs.subtracting(retired),
-                textIDs: printSelectedTextIDs.subtracting(retired)
-            )
-        }
-        printLayoutRevision += 1
+        setPrintSelection(
+            strokeIDs: printSelectedStrokeIDs.subtracting(retired),
+            textIDs: printSelectedTextIDs.subtracting(retired)
+        )
     }
 
     private func sharedPrintTransform(for ids: Set<UUID>) -> PrintStrokeTransform? {
@@ -3287,7 +3260,7 @@ final class VectrDocument {
         var bestStrokeDistance = threshold
         for stroke in printLayoutStrokes() {
             let strokeInP = transformedPrintStroke(stroke)
-            guard PrintSliceEngine.slice(strokeInP, axis: axis, coordinate: coordinate) != nil else {
+            guard PrintSliceEngine.crosses(strokeInP, axis: axis, coordinate: coordinate) else {
                 continue
             }
             let distance = strokeInP.contains(point) ? 0 : strokeInP.distance(to: point)

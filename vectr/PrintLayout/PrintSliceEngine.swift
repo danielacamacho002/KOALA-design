@@ -33,18 +33,8 @@ enum PrintSliceEngine {
         nearestCrossingTo tap: CGPoint?
     ) -> [VectorStroke]? {
         let pts = ShapeGeometry.renderPoints(for: strokeInP)
-        guard pts.count >= 2 else { return nil }
-
-        let epsilon: CGFloat = 0.0001
-        var hasNegative = false
-        var hasPositive = false
-        for point in pts {
-            let value = signedValue(point, axis: axis, coordinate: coordinate)
-            if value < -epsilon { hasNegative = true }
-            if value > epsilon { hasPositive = true }
-        }
         // Only slice when the rendered points straddle the line.
-        guard hasNegative, hasPositive else { return nil }
+        guard straddles(pts, axis: axis, coordinate: coordinate) else { return nil }
 
         if strokeInP.isClosed {
             return sliceClosed(strokeInP, pts: pts, axis: axis, coordinate: coordinate)
@@ -53,6 +43,26 @@ enum PrintSliceEngine {
             return sliceOpenNearestCrossing(strokeInP, pts: pts, axis: axis, coordinate: coordinate, tap: tap)
         }
         return sliceOpen(strokeInP, pts: pts, axis: axis, coordinate: coordinate)
+    }
+
+    /// Whether the stroke would slice at all, without building any fragments. Lets a
+    /// caller pick its target among many strokes before paying for the real cut.
+    static func crosses(_ strokeInP: VectorStroke, axis: Axis, coordinate: CGFloat) -> Bool {
+        straddles(ShapeGeometry.renderPoints(for: strokeInP), axis: axis, coordinate: coordinate)
+    }
+
+    private static func straddles(_ pts: [CGPoint], axis: Axis, coordinate: CGFloat) -> Bool {
+        guard pts.count >= 2 else { return false }
+        let epsilon: CGFloat = 0.0001
+        var hasNegative = false
+        var hasPositive = false
+        for point in pts {
+            let value = signedValue(point, axis: axis, coordinate: coordinate)
+            if value < -epsilon { hasNegative = true }
+            if value > epsilon { hasPositive = true }
+            if hasNegative, hasPositive { return true }
+        }
+        return false
     }
 
     // MARK: - Open polylines
