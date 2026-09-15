@@ -27,7 +27,7 @@ struct PrintLayoutView: View {
     @State private var printAxisLockEnabled = false
 
     private var hasPrintSelection: Bool {
-        document.printSelectedStrokeID != nil || document.printSelectedTextID != nil
+        !document.printSelectionIsEmpty
     }
 
     var body: some View {
@@ -51,7 +51,11 @@ struct PrintLayoutView: View {
                     document: document,
                     rotateModeActive: printRotateMode,
                     axisLockEnabled: printAxisLockEnabled,
-                    onChanged: onChanged
+                    onChanged: onChanged,
+                    onSelectTap: {
+                        showPaperPanel = false
+                        showMarginPanel = false
+                    }
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(document.printLayout.activeTool == .select)
@@ -93,6 +97,7 @@ struct PrintLayoutView: View {
             .animation(.easeInOut(duration: 0.15), value: hasPrintSelection)
             .onChange(of: document.printSelectedStrokeID) { _, _ in printRotateMode = false }
             .onChange(of: document.printSelectedTextID) { _, _ in printRotateMode = false }
+            .onChange(of: document.printSelectionCount) { _, _ in printRotateMode = false }
             .overlay(alignment: .bottomTrailing) {
                 RecenterCanvasButton {
                     onFitToGrid(geometry.frame(in: .global))
@@ -145,8 +150,7 @@ struct PrintLayoutView: View {
         if showMarginPanel { showMarginPanel = false }
         switch document.printLayout.activeTool {
         case .select:
-            let threshold = document.viewport.viewToDocument(distance: 16)
-            _ = document.selectPrintElement(near: documentPoint, threshold: threshold)
+            break
         case .cut:
             let threshold = document.viewport.viewToDocument(distance: 20)
             _ = document.cutAlongNearestPrintBorder(near: documentPoint, threshold: threshold)

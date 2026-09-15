@@ -20,6 +20,18 @@ enum PrintSliceEngine {
     /// Returns fragment strokes (in the same space as `strokeInP`) or `nil` when the
     /// stroke does not actually cross the line, so callers can leave it untouched.
     static func slice(_ strokeInP: VectorStroke, axis: Axis, coordinate: CGFloat) -> [VectorStroke]? {
+        slice(strokeInP, axis: axis, coordinate: coordinate, nearestCrossingTo: nil)
+    }
+
+    /// Like `slice`, but for open paths only splits at the crossing nearest `tap`
+    /// instead of every intersection with the infinite line. Closed shapes still
+    /// bisect into two half-planes so each sheet can hold a complete piece.
+    static func slice(
+        _ strokeInP: VectorStroke,
+        axis: Axis,
+        coordinate: CGFloat,
+        nearestCrossingTo tap: CGPoint?
+    ) -> [VectorStroke]? {
         let pts = ShapeGeometry.renderPoints(for: strokeInP)
         guard pts.count >= 2 else { return nil }
 
@@ -36,6 +48,9 @@ enum PrintSliceEngine {
 
         if strokeInP.isClosed {
             return sliceClosed(strokeInP, pts: pts, axis: axis, coordinate: coordinate)
+        }
+        if let tap {
+            return sliceOpenNearestCrossing(strokeInP, pts: pts, axis: axis, coordinate: coordinate, tap: tap)
         }
         return sliceOpen(strokeInP, pts: pts, axis: axis, coordinate: coordinate)
     }
@@ -72,6 +87,46 @@ enum PrintSliceEngine {
         pieces.append(current)
 
         let result = pieces.compactMap { makePiece($0, from: source, closed: false) }
+        return result.count >= 2 ? result : nil
+    }
+
+    /// Splits an open polyline at the single cut closest to `tap`.
+    private static func sliceOpenNearestCrossing(
+        _ source: VectorStroke,
+        pts: [CGPoint],
+        axis: Axis,
+        coordinate: CGFloat,
+        tap: CGPoint
+    ) -> [VectorStroke]? {
+        let epsilon: CGFloat = 0.0001
+        var bestIndex: Int?
+        var bestCut: CGPoint?
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+
+        for index in 1..<pts.count {
+            let a = pts[index - 1]
+            let b = pts[index]
+            let va = signedValue(a, axis: axis, coordinate: coordinate)
+            let vb = signedValue(b, axis: axis, coordinate: coordinate)
+            let crosses = (va < -epsilon && vb > epsilon) || (va > epsilon && vb < -epsilon)
+            guard crosses else { continue }
+            let t = va / (va - vb)
+            let cut = CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+            let distance = hypot(cut.x - tap.x, cut.y - tap.y)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestIndex = index
+                bestCut = cut
+            }
+        }
+        guard let splitIndex = bestIndex, let cut = bestCut else { return nil }
+
+        var before = Array(pts[0..<splitIndex])
+        before.append(cut)
+        var after = [cut]
+        after.append(contentsOf: pts[splitIndex...])
+
+        let result = [before, after].compactMap { makePiece($0, from: source, closed: false) }
         return result.count >= 2 ? result : nil
     }
 
