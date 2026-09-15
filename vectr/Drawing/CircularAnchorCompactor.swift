@@ -437,9 +437,21 @@ private extension ShapeGeometry {
         var anyCircular = false
         var index = 0
 
-        func appendStraight(_ point: CGPoint) {
+        // An already-compacted arc arrives as a handful of sparse anchors whose curvature
+        // lives only in `smoothCornerIndices` — far too few points to be re-detected as a
+        // dense circular run. Rebuilding the smooth set from scratch therefore silently
+        // straightens it, and since this runs on every drag start the shape loses one more
+        // arc each time the user grabs it.
+        let inheritedSmooth = stroke.smoothCornerIndices ?? []
+
+        func appendStraight(_ oldIndex: Int) {
+            let point = points[oldIndex]
             if let last = newPoints.last, hypot(last.x - point.x, last.y - point.y) <= 0.0005 {
                 return
+            }
+            if inheritedSmooth.contains(oldIndex) {
+                smooth.insert(newPoints.count)
+                anyCircular = true
             }
             newPoints.append(point)
         }
@@ -482,7 +494,7 @@ private extension ShapeGeometry {
                 repeat { index += 1 } while index < count && runSet.contains(index)
                 continue
             }
-            appendStraight(points[index])
+            appendStraight(index)
             index += 1
         }
 
