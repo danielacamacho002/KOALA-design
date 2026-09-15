@@ -2927,14 +2927,35 @@ final class VectrDocument {
         setPrintTransforms(updates, recordUndo: recordUndo)
     }
 
+    /// Mirrors the print selection. A lone element flips in place; a multi-selection
+    /// mirrors about its group bounding box so the arrangement mirrors too, matching
+    /// how `rotatePrintSelection` pivots.
     func flipPrintSelection(horizontal: Bool) {
+        let ids = printSelectedIDs
+        guard !ids.isEmpty else { return }
+        let pivot: CGPoint? = ids.count > 1
+            ? printSelectionBoundingBox().map { CGPoint(x: $0.midX, y: $0.midY) }
+            : nil
+
         var updates: [UUID: PrintStrokeTransform] = [:]
-        for id in printSelectedIDs {
+        for id in ids {
             var transform = printTransform(for: id)
+            let before = printBounds(for: id)
             if horizontal {
                 transform.flipHorizontal.toggle()
             } else {
                 transform.flipVertical.toggle()
+            }
+            if let pivot, !before.isNull {
+                let after = printBounds(for: id, storedTransform: transform)
+                if !after.isNull {
+                    let target = CGPoint(
+                        x: horizontal ? 2 * pivot.x - before.midX : before.midX,
+                        y: horizontal ? before.midY : 2 * pivot.y - before.midY
+                    )
+                    transform.translation.x += target.x - after.midX
+                    transform.translation.y += target.y - after.midY
+                }
             }
             updates[id] = transform
         }
@@ -3093,15 +3114,24 @@ final class VectrDocument {
     }
 
     func printBounds(for id: UUID) -> CGRect {
+        printBounds(for: id, storedTransform: printTransform(for: id))
+    }
+
+    /// Bounds under an arbitrary stored transform, so a candidate placement can be
+    /// measured before it is committed.
+    func printBounds(for id: UUID, storedTransform: PrintStrokeTransform) -> CGRect {
+        var effective = storedTransform
+        effective.translation = CGPoint(
+            x: effective.translation.x + printLayout.contentOffset.x,
+            y: effective.translation.y + printLayout.contentOffset.y
+        )
         if let stroke = printLayoutStroke(with: id) {
-            let points = ShapeGeometry.renderPoints(for: transformedPrintStroke(stroke))
+            let transformed = PrintLayoutCoordinateSpace.transformedStroke(stroke, transform: effective)
+            let points = ShapeGeometry.renderPoints(for: transformed)
             return PrintLayoutCoordinateSpace.boundingRect(for: points)
         }
         if let element = textElement(with: id) {
-            let corners = PrintLayoutCoordinateSpace.transformedTextCorners(
-                element,
-                transform: effectivePrintTransform(for: id)
-            )
+            let corners = PrintLayoutCoordinateSpace.transformedTextCorners(element, transform: effective)
             return PrintLayoutCoordinateSpace.boundingRect(for: corners)
         }
         return .null
@@ -3117,19 +3147,33 @@ final class VectrDocument {
         return rect
     }
 
+    /// True when `point` lands on the print selection, so a drag there moves it
+    /// instead of starting a marquee. Tested per element: the union bounding box of
+    /// a multi-selection would swallow the empty gaps between the shapes.
     func printSelectionContains(point: CGPoint, threshold: CGFloat) -> Bool {
-        if let bbox = printSelectionBoundingBox(), bbox.insetBy(dx: -threshold, dy: -threshold).contains(point) {
-            return true
+        for id in printSelectedStrokeIDs {
+            guard let stroke = printLayoutStroke(with: id) else { continue }
+            let transformed = transformedPrintStroke(stroke)
+            if transformed.contains(point) || transformed.distance(to: point) <= threshold {
+                return true
+            }
         }
-        #if canImport(UIKit)
-        switch hitPrintElement(near: point, threshold: threshold) {
-        case .stroke(let id): return printSelectedStrokeIDs.contains(id)
-        case .text(let id): return printSelectedTextIDs.contains(id)
-        case .none: return false
+        for id in printSelectedTextIDs {
+            guard let element = textElement(with: id) else { continue }
+            let affine = PrintLayoutCoordinateSpace.textPrintTransform(
+                for: element,
+                transform: effectivePrintTransform(for: id)
+            )
+            if element.contains(point.applying(affine.inverted())) {
+                return true
+            }
         }
-        #else
+        // A lone selection keeps its whole bounding box draggable, so hollow and
+        // thin shapes stay easy to grab.
+        if printSelectionCount == 1, let bbox = printSelectionBoundingBox() {
+            return bbox.insetBy(dx: -threshold, dy: -threshold).contains(point)
+        }
         return false
-        #endif
     }
 
     func updatePrintLayout(_ settings: PrintLayoutSettings, recordUndo: Bool = true) {

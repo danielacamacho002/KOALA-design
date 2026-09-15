@@ -26,8 +26,11 @@ struct PrintLayoutView: View {
     @State private var printRotateMode = false
     @State private var printAxisLockEnabled = false
 
+    /// Drives the move/rotate panel. The Cut tool leaves its fresh pieces selected,
+    /// but the overlay handles are only live for Select, so the panel stays hidden
+    /// until the tool can actually use it.
     private var hasPrintSelection: Bool {
-        !document.printSelectionIsEmpty
+        document.printLayout.activeTool == .select && !document.printSelectionIsEmpty
     }
 
     var body: some View {
