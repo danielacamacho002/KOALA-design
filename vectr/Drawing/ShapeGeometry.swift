@@ -315,34 +315,92 @@ nonisolated enum ShapeGeometry: Sendable {
         at index: Int,
         to point: CGPoint
     ) -> VectorStroke {
-        guard stroke.points.indices.contains(index) else { return stroke }
+        applyingMovedAnchors(stroke, moves: [index: point])
+    }
+
+    /// Moves several anchors as one edit.
+    ///
+    /// Arcs must be resolved in a single pass: an `.arc` re-derives its whole anchor set
+    /// from the circle it fits, so feeding anchors in one at a time would apply the second
+    /// index to an already-rewritten list. Dragging every anchor of an arc by the same
+    /// delta has to come out as a plain translation, and only a single refit gives that.
+    static func applyingMovedAnchors(
+        _ stroke: VectorStroke,
+        moves: [Int: CGPoint]
+    ) -> VectorStroke {
+        guard !moves.isEmpty else { return stroke }
+        // Displacing *every* anchor by one delta is a translation, not a reshape. Rewriting
+        // the anchors point-by-point would zero the `curveHandles` below (flattening a
+        // Bézier to straight chords) and refit parametric shapes from scratch, so offset
+        // the whole stroke instead and keep its curvature intact.
+        if let offset = uniformAnchorTranslation(of: stroke, moves: moves) {
+            return stroke.offsettingGeometry(by: offset)
+        }
         switch stroke.shapeType {
         case .circle:
             var updated = stroke
-            updated.points = updateCircleHandle(at: index, to: point, stroke: stroke)
+            for (index, point) in moves.sorted(by: { $0.key < $1.key })
+            where updated.points.indices.contains(index) {
+                updated.points = updateCircleHandle(at: index, to: point, stroke: updated)
+            }
             return updated
         case .ellipse:
             var updated = stroke
-            updated.points = updateEllipseHandle(at: index, to: point, stroke: stroke)
+            for (index, point) in moves.sorted(by: { $0.key < $1.key })
+            where updated.points.indices.contains(index) {
+                updated.points = updateEllipseHandle(at: index, to: point, stroke: updated)
+            }
             return updated
+        case .arc:
+            // Arcs stay parametric like circles/ellipses. Writing raw points would leave
+            // anchors off the circle, and an `.arc` renders from the circle through
+            // (first, middle, last) plus an anchor-walk sweep — so off-circle anchors
+            // render as unrelated geometry instead of the shape under the finger.
+            return updateArcHandles(stroke, moves: moves) ?? stroke
         default:
             break
         }
+
         var updated = stroke
-        updated.points[index] = point
+        for (index, point) in moves where updated.points.indices.contains(index) {
+            updated.points[index] = point
+        }
         guard var handles = updated.curveHandles, handles.count == updated.points.count else {
             return updated
         }
         let count = updated.points.count
-        handles[index] = CurveHandle()
-        if updated.isClosed || index > 0 {
-            handles[(index - 1 + count) % count].outOffset = .zero
-        }
-        if updated.isClosed || index < count - 1 {
-            handles[(index + 1) % count].inOffset = .zero
+        for index in moves.keys where handles.indices.contains(index) {
+            handles[index] = CurveHandle()
+            if updated.isClosed || index > 0 {
+                handles[(index - 1 + count) % count].outOffset = .zero
+            }
+            if updated.isClosed || index < count - 1 {
+                handles[(index + 1) % count].inOffset = .zero
+            }
         }
         updated.curveHandles = handles
         return updated
+    }
+
+    /// The single delta shared by `moves` when they cover every anchor, else nil.
+    private static func uniformAnchorTranslation(
+        of stroke: VectorStroke,
+        moves: [Int: CGPoint]
+    ) -> CGPoint? {
+        guard moves.count == stroke.points.count else { return nil }
+        var offset: CGPoint?
+        for (index, target) in moves {
+            guard stroke.points.indices.contains(index) else { return nil }
+            let anchor = stroke.points[index]
+            let delta = CGPoint(x: target.x - anchor.x, y: target.y - anchor.y)
+            guard let current = offset else {
+                offset = delta
+                continue
+            }
+            guard abs(delta.x - current.x) <= 0.0001,
+                  abs(delta.y - current.y) <= 0.0001 else { return nil }
+        }
+        return offset
     }
 
     static func filletCornerIndices(for stroke: VectorStroke) -> [Int] {
@@ -784,6 +842,51 @@ nonisolated enum ShapeGeometry: Sendable {
             radius = max(0.001, hypot(point.x - center.x, point.y - center.y))
         }
         return circleCardinalPoints(center: center, radius: radius)
+    }
+
+    /// Reshapes an arc around the moved anchors, keeping it a true circular arc.
+    ///
+    /// A circular arc is fixed by three points, so the drag resolves to the circle through
+    /// the arc's two endpoints and one interior point: a moved interior anchor when there is
+    /// one, so the handle follows the finger, otherwise the existing middle anchor. Anchors
+    /// are then re-emitted from that circle so the stored set stays co-circular and ordered.
+    ///
+    /// Returns nil when the three points are collinear (no circle), leaving the arc alone
+    /// rather than storing anchors the renderer cannot interpret.
+    static func updateArcHandles(_ stroke: VectorStroke, moves: [Int: CGPoint]) -> VectorStroke? {
+        var anchors = stroke.points
+        guard anchors.count >= 3, !moves.isEmpty else { return nil }
+        for (index, point) in moves where anchors.indices.contains(index) {
+            anchors[index] = point
+        }
+
+        let lastIndex = anchors.count - 1
+        let movedInterior = moves.keys.filter { $0 > 0 && $0 < lastIndex }.min()
+        let throughIndex = movedInterior ?? anchors.count / 2
+        guard throughIndex > 0, throughIndex < lastIndex else { return nil }
+
+        let start = anchors[0]
+        let through = anchors[throughIndex]
+        let end = anchors[lastIndex]
+        // Measure the sweep across the whole anchor chain, not just the three defining
+        // points: start→through→end alone cannot express a span over half a turn, so a
+        // dragged 300° arc would come back as the short way round.
+        guard let circle = arcCenter(start: start, end: end, through: through),
+              let sweep = signedCircularSweep(of: anchors, around: circle.center),
+              abs(sweep) > 0.0001 else { return nil }
+
+        var updated = stroke
+        updated.points = defaultCircularAnchors(
+            center: circle.center,
+            radius: circle.radius,
+            start: start,
+            end: end,
+            sweep: sweep,
+            closed: false
+        )
+        updated.curveHandles = nil
+        updated.smoothCornerIndices = nil
+        return updated
     }
 
     static func updateEllipseHandle(at index: Int, to point: CGPoint, stroke: VectorStroke) -> [CGPoint] {

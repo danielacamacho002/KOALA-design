@@ -9,7 +9,7 @@ import Foundation
 extension ShapeGeometry {
     /// Collapses tessellated circular geometry back to the default editable anchors:
     /// - a full circle → 4 cardinal points (N, E, S, W)
-    /// - an arc → 2, 3, or 4 points depending on sweep (endpoints + crossed cardinals)
+    /// - an arc → endpoints plus every cardinal the sweep crosses (2–6 points)
     ///
     /// Dense sample lists produced by join, boolean cuts, trim, or Add Anchor are
     /// rewritten in place so move/edit keep showing the compact default, not every
@@ -60,7 +60,7 @@ extension ShapeGeometry {
             )
         }
 
-        var interiors = cardinalsInteriorToSweep(startAngle: startAngle, sweep: sweep).map(point(at:))
+        let interiors = cardinalsInteriorToSweep(startAngle: startAngle, sweep: sweep).map(point(at:))
         let absSweep = abs(sweep)
 
         if absSweep <= .pi / 2 + 0.03 {
@@ -73,11 +73,12 @@ extension ShapeGeometry {
             return [start, point(at: startAngle + sweep / 2), end]
         }
 
-        if interiors.count >= 2 {
-            return [start, interiors[0], interiors[1], end]
-        }
-        if interiors.count == 1 {
-            return [start, interiors[0], point(at: startAngle + sweep * 2 / 3), end]
+        // Keep *every* interior cardinal. Consecutive anchors must stay under half a
+        // turn apart, because sweep recovery (`signedCircularSweep`) resolves each step
+        // to the shorter arc: a gap over 180° comes back with the wrong sign, so a 350°
+        // leftover reconstructs as a -10° sliver.
+        if !interiors.isEmpty {
+            return [start] + interiors + [end]
         }
         return [
             start,
@@ -155,7 +156,7 @@ private extension ShapeGeometry {
     }
 
     nonisolated static func compactStandaloneArc(_ stroke: VectorStroke) -> VectorStroke {
-        // Sparse arcs are already at the default 2–4 anchors (or user-edited).
+        // Sparse arcs are already at the default 2–6 anchors (or user-edited).
         // Re-emitting cardinals here would insert extra points while dragging.
         if stroke.points.count < 8 { return stroke }
         guard let geometry = circularGeometry(from: stroke.points, closed: stroke.isClosed) else {
@@ -437,9 +438,21 @@ private extension ShapeGeometry {
         var anyCircular = false
         var index = 0
 
-        func appendStraight(_ point: CGPoint) {
+        // An already-compacted arc arrives as a handful of sparse anchors whose curvature
+        // lives only in `smoothCornerIndices` — far too few points to be re-detected as a
+        // dense circular run. Rebuilding the smooth set from scratch therefore silently
+        // straightens it, and since this runs on every drag start the shape loses one more
+        // arc each time the user grabs it.
+        let inheritedSmooth = stroke.smoothCornerIndices ?? []
+
+        func appendStraight(_ oldIndex: Int) {
+            let point = points[oldIndex]
             if let last = newPoints.last, hypot(last.x - point.x, last.y - point.y) <= 0.0005 {
                 return
+            }
+            if inheritedSmooth.contains(oldIndex) {
+                smooth.insert(newPoints.count)
+                anyCircular = true
             }
             newPoints.append(point)
         }
@@ -482,7 +495,7 @@ private extension ShapeGeometry {
                 repeat { index += 1 } while index < count && runSet.contains(index)
                 continue
             }
-            appendStraight(points[index])
+            appendStraight(index)
             index += 1
         }
 
