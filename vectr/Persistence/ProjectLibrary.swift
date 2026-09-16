@@ -141,6 +141,17 @@ final class ProjectLibrary {
         saveIndex()
     }
 
+    /// Rewrites the gallery PNG without persisting the `.vectr` file.
+    func refreshThumbnail(snapshot: DocumentSnapshot, fileURL: URL) async throws {
+        let normalizedURL = fileURL.standardizedFileURL
+        guard let index = indexOfProject(at: normalizedURL) else { return }
+        var record = projects[index]
+        try await writeThumbnail(for: record, snapshot: snapshot)
+        record.modifiedAt = Date()
+        projects[index] = record
+        saveIndex()
+    }
+
     @discardableResult
     func importFile(from sourceURL: URL) throws -> ProjectRecord {
         let accessed = sourceURL.startAccessingSecurityScopedResource()

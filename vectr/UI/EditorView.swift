@@ -56,6 +56,7 @@ struct EditorView: View {
     @State private var didStartLoad = false
     @State private var designCanvasHandle = CanvasViewportHandle()
     @State private var printCanvasHandle = CanvasViewportHandle()
+    @State private var pendingThumbnailRefresh = false
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
 
     init(projectURL: URL? = nil, projectLibrary: ProjectLibrary? = nil) {
@@ -138,7 +139,7 @@ struct EditorView: View {
             }
         }
         .onAppear {
-            store.persistDocument = { Task { await persistDocument() } }
+            store.persistDocument = { Task { await persistDocument(refreshThumbnail: false) } }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background || phase == .inactive {
@@ -886,11 +887,7 @@ struct EditorView: View {
 
     private func flushAutoSave() async {
         store.cancelAutoSave()
-        if let persistTask {
-            await persistTask.value
-        }
-        guard store.hasUnsavedChanges else { return }
-        await persistDocument()
+        await persistDocument(refreshThumbnail: true)
     }
 
     private func flushAutoSaveInBackground() {
@@ -907,7 +904,7 @@ struct EditorView: View {
 
     private func saveDocumentNow() {
         store.cancelAutoSave()
-        Task { await persistDocument() }
+        Task { await persistDocument(refreshThumbnail: true) }
     }
 
     private func presentShare(url: URL, image: UIImage? = nil) async {
@@ -955,6 +952,7 @@ struct EditorView: View {
 
     private func discardChangesAndDismiss() {
         pendingDismiss = false
+        pendingThumbnailRefresh = false
         store.cancelAutoSave()
         persistTask?.cancel()
         persistTask = nil
@@ -1752,18 +1750,21 @@ struct EditorView: View {
         store.document.makeSnapshot()
     }
 
-    private func persistDocument() async {
+    private func persistDocument(refreshThumbnail: Bool) async {
         if let persistTask {
             await persistTask.value
         }
-        guard store.hasUnsavedChanges else { return }
-        let task = Task { await performPersist() }
-        persistTask = task
-        await task.value
-        persistTask = nil
+        if store.hasUnsavedChanges {
+            let task = Task { await performPersist(refreshThumbnail: refreshThumbnail) }
+            persistTask = task
+            await task.value
+            persistTask = nil
+        } else if refreshThumbnail {
+            await refreshGalleryThumbnailIfNeeded()
+        }
     }
 
-    private func performPersist() async {
+    private func performPersist(refreshThumbnail: Bool) async {
         guard store.hasUnsavedChanges else { return }
         do {
             if store.fileURL == nil, let library = projectLibrary {
@@ -1783,14 +1784,20 @@ struct EditorView: View {
             let thumbnailURL = projectLibrary?.projects.first(where: {
                 $0.fileURL.standardizedFileURL.path == url.standardizedFileURL.path
             })?.thumbnailURL
+            let thumbnailExists = thumbnailURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            let shouldWriteThumbnail = GalleryThumbnailPolicy.shouldWriteThumbnail(
+                refreshRequested: refreshThumbnail,
+                thumbnailExists: thumbnailExists
+            )
 
             try await PersistenceWorker.shared.write(snapshot: snapshot, to: url)
-            if let thumbnailURL {
+            if shouldWriteThumbnail, let thumbnailURL {
                 try await PersistenceWorker.shared.writeThumbnail(snapshot: snapshot, to: thumbnailURL)
             }
             lastSavedSnapshot = snapshot
             store.markSaved(forRevision: revision)
             projectLibrary?.updateMetadataAfterSave(fileURL: url, name: name, snapshot: snapshot)
+            pendingThumbnailRefresh = thumbnailURL != nil && !shouldWriteThumbnail
             if pendingDismiss, !store.hasUnsavedChanges {
                 pendingDismiss = false
                 dismiss()
@@ -1799,6 +1806,18 @@ struct EditorView: View {
             errorMessage = error.localizedDescription
         }
     }
+
+    private func refreshGalleryThumbnailIfNeeded() async {
+        guard pendingThumbnailRefresh else { return }
+        guard let url = store.fileURL, let library = projectLibrary else { return }
+        do {
+            try await library.refreshThumbnail(snapshot: store.document.makeSnapshot(), fileURL: url)
+            pendingThumbnailRefresh = false
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
 }
 
 extension UTType {
