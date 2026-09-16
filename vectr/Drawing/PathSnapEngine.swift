@@ -6,10 +6,8 @@
 //
 //  This engine is intentionally decoupled from the canvas/UI. It only knows how to
 //  turn a query point + a set of vector paths into the single best snap candidate.
-//  New snap types (center points, intersections, tangents, …) can be added later by
+//  New snap types (center points, intersections, on-rim, …) can be added later by
 //  implementing `SnapCandidateProvider` and registering it — no other code needs to change.
-//
-//  Sprint scope: Endpoints and Midpoints only.
 //
 
 import CoreGraphics
@@ -26,11 +24,8 @@ enum SnapKind: Equatable {
     case intersection
     /// Exact mathematical origin of a circle / ellipse / arc. Glyph: concentric circle (⊙).
     case center
-    /// North / south / east / west apex of a circular boundary. Glyph: diamond (⋄).
+    /// Compass apex or nearest rim point of a circle / ellipse / arc. Glyph: diamond (⋄).
     case quadrant
-    /// Point where an in-progress straight line kisses a curve without crossing it.
-    /// Glyph: circle with a line across its top edge.
-    case tangent
 }
 
 /// A single resolved snap target in document space.
@@ -56,6 +51,16 @@ protocol SnapCandidateProvider {
     /// Candidate points (document space) for `stroke`. Return `[]` when the stroke has
     /// no features of this kind (e.g. a closed shape has no endpoints).
     func candidates(for stroke: VectorStroke) -> [CGPoint]
+
+    /// Query-aware candidates. Defaults to `candidates(for:)`; override when the
+    /// snap point depends on the cursor (nearest-on-rim).
+    func candidates(for stroke: VectorStroke, near point: CGPoint, within radius: CGFloat) -> [CGPoint]
+}
+
+extension SnapCandidateProvider {
+    func candidates(for stroke: VectorStroke, near point: CGPoint, within radius: CGFloat) -> [CGPoint] {
+        candidates(for: stroke)
+    }
 }
 
 /// A provider that derives candidates from relationships *between* strokes (e.g. where two
@@ -185,49 +190,48 @@ struct CenterSnapProvider: SnapCandidateProvider {
 
 // MARK: - Quadrant plugin
 
-/// Emits the four cardinal apexes (0° / 90° / 180° / 270°) of a circular or elliptical
-/// boundary. These are the oriented quadrant handles of the shape.
+/// Snaps onto circular geometry: the four compass apexes when the cursor is near one of
+/// them, otherwise the nearest point on the rim of a circle, ellipse, or arc.
 struct QuadrantSnapProvider: SnapCandidateProvider {
     let kind: SnapKind = .quadrant
 
     func candidates(for stroke: VectorStroke) -> [CGPoint] {
+        compassPoints(for: stroke)
+    }
+
+    func candidates(for stroke: VectorStroke, near point: CGPoint, within radius: CGFloat) -> [CGPoint] {
+        let radiusSquared = radius * radius
+        var bestCompass: CGPoint?
+        var bestCompassDistanceSquared = radiusSquared
+        for handle in compassPoints(for: stroke) {
+            let dx = handle.x - point.x
+            let dy = handle.y - point.y
+            let distanceSquared = dx * dx + dy * dy
+            if distanceSquared < bestCompassDistanceSquared {
+                bestCompassDistanceSquared = distanceSquared
+                bestCompass = handle
+            }
+        }
+        if let bestCompass { return [bestCompass] }
+
+        guard let rim = SnapGeometry.rimProjection(of: point, onto: stroke) else { return [] }
+        let dx = rim.x - point.x
+        let dy = rim.y - point.y
+        guard dx * dx + dy * dy < radiusSquared else { return [] }
+        return [rim]
+    }
+
+    private func compassPoints(for stroke: VectorStroke) -> [CGPoint] {
         switch stroke.shapeType {
         case .circle, .ellipse:
             return ShapeGeometry.handlePoints(for: stroke)
+        case .arc:
+            guard let circle = ShapeGeometry.arcCircle(for: stroke) else { return [] }
+            return ShapeGeometry.circleCardinalPoints(center: circle.center, radius: circle.radius)
+                .filter { SnapGeometry.arc(stroke, contains: $0, center: circle.center) }
         default:
             return []
         }
-    }
-}
-
-// MARK: - Tangent plugin
-
-/// A provider that needs the anchored end of the in-progress line (its start point) to
-/// resolve candidates — tangency is defined relative to that fixed point.
-protocol AnchoredSnapCandidateProvider {
-    /// The kind of snap this provider emits. Also drives the visual indicator glyph.
-    var kind: SnapKind { get }
-
-    /// Candidate points (document space) for `stroke`, given the fixed `referenceStart`
-    /// of the line currently being drawn.
-    func candidates(for stroke: VectorStroke, referenceStart: CGPoint) -> [CGPoint]
-}
-
-/// Emits the point(s) where a straight line from `referenceStart` touches a circle or arc
-/// tangentially — kissing the edge without crossing it. Arc tangents are kept only when the
-/// contact point actually lies on the drawn arc span.
-struct TangentSnapProvider: AnchoredSnapCandidateProvider {
-    let kind: SnapKind = .tangent
-
-    func candidates(for stroke: VectorStroke, referenceStart: CGPoint) -> [CGPoint] {
-        guard let circle = ShapeGeometry.arcCircle(for: stroke) else { return [] }
-        let tangents = SnapGeometry.tangentPoints(
-            from: referenceStart,
-            center: circle.center,
-            radius: circle.radius
-        )
-        guard stroke.shapeType == .arc else { return tangents }
-        return tangents.filter { SnapGeometry.arc(stroke, contains: $0, center: circle.center) }
     }
 }
 
@@ -303,18 +307,69 @@ enum SnapGeometry {
         return result
     }
 
-    /// The two points on a circle where lines from external point `p` touch tangentially.
-    /// Returns `[]` when `p` is on or inside the circle (no external tangent exists).
-    static func tangentPoints(from p: CGPoint, center: CGPoint, radius: CGFloat) -> [CGPoint] {
-        let dx = p.x - center.x
-        let dy = p.y - center.y
-        let distance = hypot(dx, dy)
-        guard distance > radius + 0.0001 else { return [] }
-        let baseAngle = atan2(dy, dx)
-        let offset = acos(radius / distance)
-        return [baseAngle + offset, baseAngle - offset].map { angle in
-            CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+    /// Ray-from-center intersection with a circle, ellipse, or arc rim. For arcs the
+    /// projected point is dropped when it lies off the drawn span. Returns `nil` when
+    /// `point` is at the center (no unique direction).
+    static func rimProjection(of point: CGPoint, onto stroke: VectorStroke) -> CGPoint? {
+        switch stroke.shapeType {
+        case .circle:
+            guard let circle = ShapeGeometry.circleFromCardinalPoints(stroke.points) else { return nil }
+            return projectOntoCircle(point, center: circle.center, radius: circle.radius)
+        case .arc:
+            guard let circle = ShapeGeometry.arcCircle(for: stroke) else { return nil }
+            guard let projected = projectOntoCircle(point, center: circle.center, radius: circle.radius) else {
+                return nil
+            }
+            guard arc(stroke, contains: projected, center: circle.center) else { return nil }
+            return projected
+        case .ellipse:
+            guard let ellipse = ShapeGeometry.ellipseFromCardinalPoints(stroke.points) else { return nil }
+            return projectOntoEllipse(
+                point,
+                center: ellipse.center,
+                rx: ellipse.rx,
+                ry: ellipse.ry,
+                rotation: stroke.resolvedShapeRotation
+            )
+        default:
+            return nil
         }
+    }
+
+    private static func projectOntoCircle(_ point: CGPoint, center: CGPoint, radius: CGFloat) -> CGPoint? {
+        let dx = point.x - center.x
+        let dy = point.y - center.y
+        let distance = hypot(dx, dy)
+        guard distance > 0.0001, radius > 0.0001 else { return nil }
+        let scale = radius / distance
+        return CGPoint(x: center.x + dx * scale, y: center.y + dy * scale)
+    }
+
+    /// Intersection of the ray from the ellipse center through `point` with the ellipse
+    /// boundary, computed in the ellipse's local (possibly rotated) frame.
+    private static func projectOntoEllipse(
+        _ point: CGPoint,
+        center: CGPoint,
+        rx: CGFloat,
+        ry: CGFloat,
+        rotation: CGFloat
+    ) -> CGPoint? {
+        guard rx > 0.0001, ry > 0.0001 else { return nil }
+        let dx = point.x - center.x
+        let dy = point.y - center.y
+        let cosR = cos(rotation)
+        let sinR = sin(rotation)
+        let localX = dx * cosR + dy * sinR
+        let localY = -dx * sinR + dy * cosR
+        let denom = (localX / rx) * (localX / rx) + (localY / ry) * (localY / ry)
+        guard denom > 0.0001 else { return nil }
+        let k = 1 / sqrt(denom)
+        let projLocalX = k * localX
+        let projLocalY = k * localY
+        return CGPoint(
+            x: center.x + projLocalX * cosR - projLocalY * sinR,
+            y: center.y + projLocalX * sinR + projLocalY * cosR
+        )
     }
 
     /// True when `point` lies on the angular span actually covered by the arc `stroke`.
@@ -376,11 +431,10 @@ enum SnapGeometry {
 struct PathSnapEngine {
     var providers: [SnapCandidateProvider]
     var relationalProviders: [RelationalSnapCandidateProvider]
-    var anchoredProviders: [AnchoredSnapCandidateProvider]
 
-    /// Default engine: centers, quadrants, endpoints + midpoints (per-stroke), intersections
-    /// (relational) and tangents (anchored to the in-progress line). Register additional
-    /// providers here (or inject them) to extend the engine.
+    /// Default engine: centers, on-rim / compass (quadrant), endpoints + midpoints
+    /// (per-stroke), and intersections (relational). Register additional providers here
+    /// (or inject them) to extend the engine.
     ///
     /// Order matters for ties: `consider(_:)` keeps earlier candidates, so the circle-specific
     /// snaps (center, quadrant) win over a generic endpoint at the same coordinate.
@@ -394,9 +448,6 @@ struct PathSnapEngine {
             ],
             relationalProviders: [
                 IntersectionSnapProvider()
-            ],
-            anchoredProviders: [
-                TangentSnapProvider()
             ]
         )
     }
@@ -408,17 +459,13 @@ struct PathSnapEngine {
     ///   - excludedStrokeID: a stroke to ignore (e.g. the one currently being edited).
     ///   - enabledKinds: only providers whose kind is in this set contribute candidates.
     ///     Pass an empty set to disable snapping entirely.
-    ///   - referenceStarts: fixed anchor point(s) of the segment(s) whose free end is being
-    ///     placed, enabling tangent snaps. A dragged endpoint has one; a dragged middle anchor
-    ///     has two (its neighbors), so tangent can engage on either adjacent segment.
     func closestCandidate(
         to point: CGPoint,
         within radius: CGFloat,
         strokes: [VectorStroke],
         excludedStrokeID: UUID? = nil,
         excludedStrokeIDs: Set<UUID> = [],
-        enabledKinds: Set<SnapKind>,
-        referenceStarts: [CGPoint] = []
+        enabledKinds: Set<SnapKind>
     ) -> SnapCandidate? {
         guard radius > 0, !enabledKinds.isEmpty else { return nil }
 
@@ -455,10 +502,10 @@ struct PathSnapEngine {
             nearby.append(stroke)
         }
 
-        // Stage 2a: per-stroke providers (endpoints, midpoints, …).
+        // Stage 2a: per-stroke providers (endpoints, midpoints, on-rim, …).
         for stroke in nearby {
             for provider in providers where enabledKinds.contains(provider.kind) {
-                for candidate in provider.candidates(for: stroke) {
+                for candidate in provider.candidates(for: stroke, near: point, within: radius) {
                     consider(candidate, kind: provider.kind, sourceStrokeID: stroke.id)
                 }
             }
@@ -468,40 +515,6 @@ struct PathSnapEngine {
         for provider in relationalProviders where enabledKinds.contains(provider.kind) {
             for candidate in provider.candidates(near: point, within: radius, strokes: nearby) {
                 consider(candidate, kind: provider.kind, sourceStrokeID: nil)
-            }
-        }
-
-        // Stage 2c: anchored tangent fallback — only when a line is in progress and nothing
-        // else snapped. Tangent contact points sit off-axis on the rim (not where the cursor
-        // usually aims), so instead of requiring the cursor to hit that exact point we let the
-        // line "kiss the edge": when the free end is dragged within `radius` of a circle/arc's
-        // rim, it jumps to the correct tangent point. Vertex/center/quadrant snaps still win
-        // when they are in range, so this never fights the precise snaps.
-        if best == nil, !referenceStarts.isEmpty, !anchoredProviders.isEmpty {
-            // Cap how far the endpoint may leap onto a contact point, so tangent engages only
-            // near an actual contact (the "shoulders" of the circle) rather than teleporting the
-            // line across the rim from the near edge. Bounded to a couple of snap radii.
-            let maxLeap = radius * 2
-            var bestTangentDistanceSquared = maxLeap * maxLeap
-            for stroke in nearby {
-                guard let circle = ShapeGeometry.arcCircle(for: stroke) else { continue }
-                // Require the cursor to be near the boundary ring, so tangent only engages when
-                // the user is clearly bringing the line up to the curve.
-                let rimDistance = abs(hypot(point.x - circle.center.x, point.y - circle.center.y) - circle.radius)
-                guard rimDistance <= radius else { continue }
-                for provider in anchoredProviders where enabledKinds.contains(provider.kind) {
-                    for referenceStart in referenceStarts {
-                        for candidate in provider.candidates(for: stroke, referenceStart: referenceStart) {
-                            let dx = candidate.x - point.x
-                            let dy = candidate.y - point.y
-                            let distanceSquared = dx * dx + dy * dy
-                            if distanceSquared < bestTangentDistanceSquared {
-                                bestTangentDistanceSquared = distanceSquared
-                                best = SnapCandidate(point: candidate, kind: provider.kind, sourceStrokeID: stroke.id)
-                            }
-                        }
-                    }
-                }
             }
         }
 
@@ -554,8 +567,7 @@ final class SnapInteractionSession {
         snapRadius: CGFloat,
         breakawayRadius: CGFloat,
         breakawayVelocity: CGFloat,
-        excludedStrokeID: UUID? = nil,
-        referenceStarts: [CGPoint] = []
+        excludedStrokeID: UUID? = nil
     ) -> Update {
         let now = CACurrentMediaTime()
         let previousPoint = lastPoint
@@ -578,11 +590,11 @@ final class SnapInteractionSession {
 
         // 2. Distance breakaway / stickiness — stay glued within the outer radius.
         //
-        // Tangent is exempt: its contact point sits off-axis on the rim, typically far from the
-        // cursor, so point-distance stickiness would drop the lock immediately. Instead we fall
-        // through and let the engine re-resolve the tangent against the rim every frame; it stays
-        // engaged while the free end hovers the boundary and releases naturally when it leaves.
-        if let current = lockedCandidate, current.kind != .tangent {
+        // On-rim (quadrant) is exempt: the contact slides around the circumference as the
+        // cursor moves, so point-distance stickiness would freeze the lock on one rim point.
+        // Fall through and re-resolve every frame; it stays engaged while the cursor hovers
+        // the boundary and releases when it leaves.
+        if let current = lockedCandidate, current.kind != .quadrant {
             let distance = hypot(rawPoint.x - current.point.x, rawPoint.y - current.point.y)
             if distance <= breakawayRadius {
                 return Update(candidate: current, didLock: false)
@@ -596,10 +608,12 @@ final class SnapInteractionSession {
             within: snapRadius,
             strokes: strokes,
             excludedStrokeID: excludedStrokeID,
-            enabledKinds: enabledKinds,
-            referenceStarts: referenceStarts
+            enabledKinds: enabledKinds
         ) {
-            let isNewLock = candidate != lockedCandidate
+            let isSlidingOnRim = candidate.kind == .quadrant
+                && lockedCandidate?.kind == .quadrant
+                && lockedCandidate?.sourceStrokeID == candidate.sourceStrokeID
+            let isNewLock = !isSlidingOnRim && candidate != lockedCandidate
             lockedCandidate = candidate
             return Update(candidate: candidate, didLock: isNewLock)
         }
@@ -723,7 +737,6 @@ extension VectrDocument {
         if intersectionSnapEnabled { kinds.insert(.intersection) }
         if centerSnapEnabled { kinds.insert(.center) }
         if quadrantSnapEnabled { kinds.insert(.quadrant) }
-        if tangentSnapEnabled { kinds.insert(.tangent) }
         return kinds
     }
 }

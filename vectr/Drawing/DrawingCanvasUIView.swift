@@ -436,9 +436,7 @@ final class DrawingCanvasUIView: UIView {
 
         let viewPoint = gesture.location(in: self)
         let rawPoint = document.viewport.viewToDocument(viewPoint)
-        // Tangent snapping needs the anchored end of the in-progress line, which is
-        // `dragDrawStart` once the drag is underway (nil during `.began`).
-        let documentPoint = snappedDragPoint(rawPoint, referenceStart: dragDrawStart)
+        let documentPoint = snappedDragPoint(rawPoint)
 
         switch gesture.state {
         case .began:
@@ -479,11 +477,11 @@ final class DrawingCanvasUIView: UIView {
         }
     }
 
-    private func snappedDragPoint(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint {
-        // Object snapping (centers/quadrants/endpoints/midpoints/intersections/tangents) takes
+    private func snappedDragPoint(_ point: CGPoint) -> CGPoint {
+        // Object snapping (centers/on-rim/endpoints/midpoints/intersections) takes
         // precedence over grid snapping so the pencil magnetically locks to real geometry when
         // it is in range.
-        if let objectSnapped = resolveObjectSnap(rawPoint: point, referenceStart: referenceStart) {
+        if let objectSnapped = resolveObjectSnap(rawPoint: point) {
             return objectSnapped
         }
         let enabled = document.snapEnabled && document.grid.snapEnabled
@@ -501,7 +499,7 @@ final class DrawingCanvasUIView: UIView {
     ///
     /// Thresholds are defined in view points and converted to document units here so the feel
     /// stays constant across zoom levels.
-    private func resolveObjectSnap(rawPoint: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint? {
+    private func resolveObjectSnap(rawPoint: CGPoint) -> CGPoint? {
         let enabledKinds = document.enabledSnapKinds
         guard !enabledKinds.isEmpty else {
             finishSnapInteraction()
@@ -516,8 +514,7 @@ final class DrawingCanvasUIView: UIView {
             enabledKinds: enabledKinds,
             snapRadius: SnapTuning.snapRadiusPoints / scale,
             breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
-            breakawayVelocity: SnapTuning.breakawayVelocityPoints / scale,
-            referenceStarts: referenceStart.map { [$0] } ?? []
+            breakawayVelocity: SnapTuning.breakawayVelocityPoints / scale
         )
 
         if let candidate = update.candidate {
@@ -575,7 +572,7 @@ final class DrawingCanvasUIView: UIView {
         }
 
         let rawPoint = document.viewport.viewToDocument(gesture.location(in: self))
-        let documentPoint = snappedDragPoint(rawPoint, referenceStart: curveDragStart)
+        let documentPoint = snappedDragPoint(rawPoint)
 
         switch gesture.state {
         case .began:

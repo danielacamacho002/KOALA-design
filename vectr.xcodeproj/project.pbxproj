@@ -8,6 +8,7 @@
 
 /* Begin PBXFileReference section */
 		249864472FC9318400C5E982 /* vectr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = vectr.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000012FC9318700C5E982 /* vectrTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = vectrTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +17,22 @@
 			path = vectr;
 			sourceTree = "<group>";
 		};
+		A10000022FC9318700C5E982 /* vectrTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = vectrTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		249864442FC9318400C5E982 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000052FC9318700C5E982 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +46,7 @@
 			isa = PBXGroup;
 			children = (
 				249864492FC9318400C5E982 /* vectr */,
+				A10000022FC9318700C5E982 /* vectrTests */,
 				249864482FC9318400C5E982 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +55,7 @@
 			isa = PBXGroup;
 			children = (
 				249864472FC9318400C5E982 /* vectr.app */,
+				A10000012FC9318700C5E982 /* vectrTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +85,29 @@
 			productReference = 249864472FC9318400C5E982 /* vectr.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A10000032FC9318700C5E982 /* vectrTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000092FC9318700C5E982 /* Build configuration list for PBXNativeTarget "vectrTests" */;
+			buildPhases = (
+				A10000042FC9318700C5E982 /* Sources */,
+				A10000052FC9318700C5E982 /* Frameworks */,
+				A10000062FC9318700C5E982 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A100000B2FC9318700C5E982 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A10000022FC9318700C5E982 /* vectrTests */,
+			);
+			name = vectrTests;
+			packageProductDependencies = (
+			);
+			productName = vectrTests;
+			productReference = A10000012FC9318700C5E982 /* vectrTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -82,6 +120,10 @@
 				TargetAttributes = {
 					249864462FC9318400C5E982 = {
 						CreatedOnToolsVersion = 26.5;
+					};
+					A10000032FC9318700C5E982 = {
+						CreatedOnToolsVersion = 26.5;
+						TestTargetID = 249864462FC9318400C5E982;
 					};
 				};
 			};
@@ -100,12 +142,20 @@
 			projectRoot = "";
 			targets = (
 				249864462FC9318400C5E982 /* vectr */,
+				A10000032FC9318700C5E982 /* vectrTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		249864452FC9318400C5E982 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000062FC9318700C5E982 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +172,32 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A10000042FC9318700C5E982 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A100000B2FC9318700C5E982 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 249864462FC9318400C5E982 /* vectr */;
+			targetProxy = A100000A2FC9318700C5E982 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		A100000A2FC9318700C5E982 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2498643F2FC9318400C5E982 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 249864462FC9318400C5E982;
+			remoteInfo = vectr;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin XCBuildConfiguration section */
 		249864502FC9318600C5E982 /* Debug */ = {
@@ -331,6 +406,52 @@
 			};
 			name = Release;
 		};
+		A10000072FC9318700C5E982 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8K2PYWYUS6;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ysdwysd.earthwrm.vectrTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/vectr.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/vectr";
+			};
+			name = Debug;
+		};
+		A10000082FC9318700C5E982 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8K2PYWYUS6;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ysdwysd.earthwrm.vectrTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/vectr.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/vectr";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -348,6 +469,15 @@
 			buildConfigurations = (
 				249864532FC9318600C5E982 /* Debug */,
 				249864542FC9318600C5E982 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000092FC9318700C5E982 /* Build configuration list for PBXNativeTarget "vectrTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000072FC9318700C5E982 /* Debug */,
+				A10000082FC9318700C5E982 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

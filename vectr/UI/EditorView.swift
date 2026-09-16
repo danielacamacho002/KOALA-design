@@ -541,9 +541,9 @@ struct EditorView: View {
         store.document.snapEnabled && store.document.grid.snapEnabled
     }
 
-    /// Object snap (endpoints/midpoints) resolved from the committed point, so tap-to-place and
+    /// Object snap (endpoints/midpoints/on-rim) resolved from the committed point, so tap-to-place and
     /// drag-draw commits land exactly on real geometry. Object snap takes priority over the grid.
-    private func objectSnappedPoint(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint? {
+    private func objectSnappedPoint(_ point: CGPoint) -> CGPoint? {
         let enabledKinds = store.document.enabledSnapKinds
         guard !enabledKinds.isEmpty else { return nil }
         let scale = max(store.document.viewport.scale, 0.0001)
@@ -552,13 +552,12 @@ struct EditorView: View {
             within: SnapTuning.snapRadiusPoints / scale,
             strokes: store.document.interactiveStrokes(),
             excludedStrokeID: commandSession.attachedStrokeID,
-            enabledKinds: enabledKinds,
-            referenceStarts: referenceStart.map { [$0] } ?? []
+            enabledKinds: enabledKinds
         )?.point
     }
 
-    private func snapDrawingInput(_ point: CGPoint, referenceStart: CGPoint? = nil) -> CGPoint {
-        if let snapped = objectSnappedPoint(point, referenceStart: referenceStart) { return snapped }
+    private func snapDrawingInput(_ point: CGPoint) -> CGPoint {
+        if let snapped = objectSnappedPoint(point) { return snapped }
         return snapDrawingPoint(
             point,
             grid: store.document.grid,
@@ -1361,10 +1360,7 @@ struct EditorView: View {
 
     private func commitDragDraw(start: CGPoint, end: CGPoint) {
         let snappedStart = snapDrawingInput(start)
-        // Re-snap the end with the start as the tangent reference so a live tangent lock is
-        // preserved on release; without it the on-rim contact point would be grid-snapped off
-        // the circle, making the finished line jump.
-        let snappedEnd = snapDrawingInput(end, referenceStart: snappedStart)
+        let snappedEnd = snapDrawingInput(end)
         guard hypot(snappedEnd.x - snappedStart.x, snappedEnd.y - snappedStart.y) > 0.001 else {
             startDrawingSessionIfNeeded()
             return

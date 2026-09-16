@@ -68,10 +68,8 @@ final class SnapIndicatorRenderer {
             markerLayer.path = crossPath(center: viewPoint, size: markerSize)
         case .center:
             markerLayer.path = concentricPath(center: viewPoint, size: markerSize)
-        case .quadrant:
-            markerLayer.path = diamondPath(center: viewPoint, size: markerSize)
-        case .tangent:
-            markerLayer.path = tangentPath(center: viewPoint, size: markerSize)
+            case .quadrant:
+                markerLayer.path = diamondPath(center: viewPoint, size: markerSize)
         }
         CATransaction.commit()
     }
@@ -144,25 +142,6 @@ final class SnapIndicatorRenderer {
         path.addLine(to: CGPoint(x: center.x, y: center.y + half))
         path.addLine(to: CGPoint(x: center.x - half, y: center.y))
         path.close()
-        return path.cgPath
-    }
-
-    /// Tangent glyph: a small disc with a line kissing its top edge.
-    private func tangentPath(center: CGPoint, size: CGFloat) -> CGPath {
-        let discRadius = size * 0.36
-        let discCenterY = center.y + size * 0.12
-        let path = UIBezierPath(ovalIn: CGRect(
-            x: center.x - discRadius,
-            y: discCenterY - discRadius,
-            width: discRadius * 2,
-            height: discRadius * 2
-        ))
-        let barHeight: CGFloat = 2.4
-        let barWidth = size
-        let barY = discCenterY - discRadius - barHeight / 2
-        path.append(UIBezierPath(rect: CGRect(
-            x: center.x - barWidth / 2, y: barY, width: barWidth, height: barHeight
-        )))
         return path.cgPath
     }
 
