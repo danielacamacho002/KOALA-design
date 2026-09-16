@@ -61,11 +61,9 @@ final class VectrDocument {
     var endpointSnapEnabled: Bool = false
     var midpointSnapEnabled: Bool = false
     var intersectionSnapEnabled: Bool = false
-    /// Curved-geometry snap toggles: circle/ellipse/arc center, quadrant apexes, and
-    /// tangent contact for an in-progress line.
+    /// Curved-geometry snap toggles: circle/ellipse/arc center, and on-rim / compass snap.
     var centerSnapEnabled: Bool = false
     var quadrantSnapEnabled: Bool = false
-    var tangentSnapEnabled: Bool = false
     var dimensionsVisible: Bool = false
     // Document-space offsets of dragged dimension labels, keyed by "<strokeID>:<dimensionID>".
     var dimensionOffsets: [String: CGPoint] = [:]

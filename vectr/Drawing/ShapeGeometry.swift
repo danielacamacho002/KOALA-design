@@ -742,7 +742,7 @@ nonisolated enum ShapeGeometry: Sendable {
     }
 
     /// Center and radius of the circle underlying a circle or arc stroke. Used by object
-    /// snapping (center / tangent) to locate curved geometry regardless of shape type.
+    /// snapping (center / on-rim) to locate curved geometry regardless of shape type.
     static func arcCircle(for stroke: VectorStroke) -> (center: CGPoint, radius: CGFloat)? {
         switch stroke.shapeType {
         case .circle:

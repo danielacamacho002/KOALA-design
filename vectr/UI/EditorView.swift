@@ -561,11 +561,10 @@ struct EditorView: View {
         store.document.snapEnabled && store.document.grid.snapEnabled
     }
 
-    /// Object snap (endpoints/midpoints) resolved from the committed point, so tap-to-place and
+    /// Object snap (endpoints/midpoints/on-rim) resolved from the committed point, so tap-to-place and
     /// drag-draw commits land exactly on real geometry. Object snap takes priority over the grid.
     private func objectSnappedPoint(
         _ point: CGPoint,
-        referenceStart: CGPoint? = nil,
         alignmentOrigin: CGPoint? = nil,
         alignmentThrough: CGPoint? = nil
     ) -> CGPoint? {
@@ -582,7 +581,6 @@ struct EditorView: View {
             strokes: store.document.interactiveStrokes(),
             excludedStrokeID: commandSession.attachedStrokeID,
             enabledKinds: enabledKinds,
-            referenceStarts: referenceStart.map { [$0] } ?? [],
             alignmentOrigin: alignmentOrigin,
             alignmentThrough: alignmentThrough,
             alignmentTolerance: alignmentTolerance,
@@ -602,7 +600,6 @@ struct EditorView: View {
             objectSnap: { query, alignmentOrigin, alignmentThrough in
                 objectSnappedPoint(
                     query,
-                    referenceStart: referenceStart,
                     alignmentOrigin: alignmentOrigin,
                     alignmentThrough: alignmentThrough
                 )
@@ -1484,7 +1481,7 @@ struct EditorView: View {
         // The start was already resolved during the gesture. Re-running object snap
         // can pull it onto a nearby corner and turn a straight preview into a diagonal.
         let snappedStart = start
-        // Re-snap the end with the start as the axis / tangent reference so a live lock
+        // Re-snap the end with the start as the axis reference so a live lock
         // is preserved on release; without it the free end can be grid-snapped off-axis.
         let snappedEnd = snapDrawingInput(end, referenceStart: snappedStart)
         guard hypot(snappedEnd.x - snappedStart.x, snappedEnd.y - snappedStart.y) > 0.001 else {
