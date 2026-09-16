@@ -162,10 +162,19 @@ enum SVGExporter {
         let paintHex = hexRGB(from: color)
         let strokeOpacity = formatSVG(clampedUnit(color.alpha))
         let lineWidth = formatSVG(max(0, stroke.strokeWidth))
-        let isFilled = stroke.isClosed && !stroke.isConstruction
+        let isFilled = stroke.isClosed && !stroke.isConstruction && stroke.resolvedFillOpacity > 0.0001
+        let fillHex = stroke.fillColor.map { hexRGB(from: $0) } ?? Self.planeFillHex
         let cutEdges = Set(stroke.openEdgeStarts ?? [])
         let prefix = pad(indent)
-        let fillRule = stroke.cutoutPoints.isEmpty ? "" : " fill-rule=\"evenodd\""
+        let fillRuleAttr: String
+        switch stroke.fillRule ?? (stroke.cutoutPoints.isEmpty ? nil : PathFillRule.evenodd) {
+        case .evenodd:
+            fillRuleAttr = " fill-rule=\"evenodd\""
+        case .nonzero:
+            fillRuleAttr = " fill-rule=\"nonzero\""
+        case nil:
+            fillRuleAttr = ""
+        }
         let dash = stroke.isConstruction ? " stroke-dasharray=\"10 6\"" : ""
         let strokePaint = "stroke=\"\(paintHex)\" stroke-opacity=\"\(strokeOpacity)\" stroke-width=\"\(lineWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"\(dash)"
 
@@ -179,7 +188,7 @@ enum SVGExporter {
             // Fill the filleted contour, then stroke only the retained (non-cut)
             // edges so the carved notch has no outline.
             let fillOpacity = formatSVG(stroke.resolvedFillOpacity)
-            var markup = "\(prefix)<path d=\"\(displayData)\" fill=\"\(Self.planeFillHex)\" fill-opacity=\"\(fillOpacity)\" stroke=\"none\"\(fillRule)/>\n"
+            var markup = "\(prefix)<path d=\"\(displayData)\" fill=\"\(fillHex)\" fill-opacity=\"\(fillOpacity)\" stroke=\"none\"\(fillRuleAttr)/>\n"
             let points = ShapeGeometry.renderPoints(for: stroke)
             let strokeData = strokePathData(from: points, cutEdges: cutEdges)
             if !strokeData.isEmpty {
@@ -190,7 +199,7 @@ enum SVGExporter {
 
         if isFilled {
             let fillOpacity = formatSVG(stroke.resolvedFillOpacity)
-            return "\(prefix)<path d=\"\(displayData)\" \(strokePaint) fill=\"\(Self.planeFillHex)\" fill-opacity=\"\(fillOpacity)\"\(fillRule)/>\n"
+            return "\(prefix)<path d=\"\(displayData)\" \(strokePaint) fill=\"\(fillHex)\" fill-opacity=\"\(fillOpacity)\"\(fillRuleAttr)/>\n"
         }
         return "\(prefix)<path d=\"\(displayData)\" \(strokePaint) fill=\"none\"/>\n"
     }
@@ -218,7 +227,7 @@ enum SVGExporter {
                 points: cutout,
                 strokeWidth: stroke.strokeWidth,
                 isClosed: true,
-                shapeType: .circle
+                shapeType: .polyline
             )
             path.addPath(hole.displayPath())
         }

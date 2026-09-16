@@ -302,9 +302,3 @@ struct ProjectGalleryView: View {
 private enum GalleryViewMode: String {
     case grid, list
 }
-
-extension ImportRouter {
-    static var supportedTypes: [UTType] {
-        [.vectrDocument, .jpeg, .pdf, .svg, UTType(filenameExtension: "ai") ?? .pdf]
-    }
-}

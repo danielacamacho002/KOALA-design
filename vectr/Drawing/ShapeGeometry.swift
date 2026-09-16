@@ -282,12 +282,12 @@ nonisolated enum ShapeGeometry: Sendable {
             }
             return stroke.points
         case .ellipse:
-            if stroke.points.count == 4, let ellipse = ellipseFromCardinalPoints(stroke.points) {
+            if stroke.points.count == 4, let axes = ellipseAxes(from: stroke.points) {
                 return orientedCardinalPoints(
-                    center: ellipse.center,
-                    rx: ellipse.rx,
-                    ry: ellipse.ry,
-                    rotation: stroke.resolvedShapeRotation
+                    center: axes.center,
+                    rx: axes.rx,
+                    ry: axes.ry,
+                    rotation: axes.rotation + stroke.resolvedShapeRotation
                 )
             }
             return stroke.points
@@ -297,7 +297,7 @@ nonisolated enum ShapeGeometry: Sendable {
             }
             return stroke.points
         default:
-            let compacted = withCompactedCircularAnchors(stroke)
+            let compacted = withCompactedCircularAnchors(stroke, rewritingPartialRuns: false)
             if compacted.shapeType == .circle
                 || compacted.shapeType == .ellipse
                 || compacted.shapeType == .arc {
@@ -541,10 +541,10 @@ nonisolated enum ShapeGeometry: Sendable {
                 updated.shapeRotation = stroke.resolvedShapeRotation + angle
             }
         case .ellipse:
-            if let ellipse = ellipseFromCardinalPoints(stroke.points) {
-                let newCenter = rotatePoint(ellipse.center, around: pivot, by: angle)
-                updated.points = ellipseCardinalPoints(center: newCenter, rx: ellipse.rx, ry: ellipse.ry)
-                updated.shapeRotation = stroke.resolvedShapeRotation + angle
+            if let axes = ellipseAxes(from: stroke.points) {
+                let newCenter = rotatePoint(axes.center, around: pivot, by: angle)
+                updated.points = ellipseCardinalPoints(center: newCenter, rx: axes.rx, ry: axes.ry)
+                updated.shapeRotation = axes.rotation + stroke.resolvedShapeRotation + angle
             } else {
                 updated.points = rotatePoints(stroke.points, around: pivot, by: angle)
                 updated.shapeRotation = stroke.resolvedShapeRotation + angle
@@ -587,18 +587,18 @@ nonisolated enum ShapeGeometry: Sendable {
             }
             return stroke.points
         case .ellipse:
-            if let ellipse = ellipseFromCardinalPoints(stroke.points) {
-                let rotation = stroke.resolvedShapeRotation
+            if let axes = ellipseAxes(from: stroke.points) {
+                let rotation = axes.rotation + stroke.resolvedShapeRotation
                 let axisEnd = CGPoint(
-                    x: ellipse.center.x + cos(rotation) * ellipse.rx,
-                    y: ellipse.center.y + sin(rotation) * ellipse.rx
+                    x: axes.center.x + cos(rotation) * axes.rx,
+                    y: axes.center.y + sin(rotation) * axes.rx
                 )
                 let secondAxisEnd = CGPoint(
-                    x: ellipse.center.x + cos(rotation + .pi / 2) * ellipse.ry,
-                    y: ellipse.center.y + sin(rotation + .pi / 2) * ellipse.ry
+                    x: axes.center.x + cos(rotation + .pi / 2) * axes.ry,
+                    y: axes.center.y + sin(rotation + .pi / 2) * axes.ry
                 )
                 return ellipsePoints(
-                    center: ellipse.center,
+                    center: axes.center,
                     axisEnd: axisEnd,
                     secondAxisEnd: secondAxisEnd,
                     segments: 64
@@ -952,12 +952,22 @@ nonisolated enum ShapeGeometry: Sendable {
     }
 
     static func ellipseFromCardinalPoints(_ points: [CGPoint]) -> (center: CGPoint, rx: CGFloat, ry: CGFloat)? {
+        ellipseAxes(from: points).map { ($0.center, $0.rx, $0.ry) }
+    }
+
+    /// Radii and axis angle from the four stored cardinals. Uses distance, not
+    /// axis-aligned deltas, so a rotated handle set still yields the true oval.
+    static func ellipseAxes(
+        from points: [CGPoint]
+    ) -> (center: CGPoint, rx: CGFloat, ry: CGFloat, rotation: CGFloat)? {
         guard points.count == 4 else { return nil }
         let center = CGPoint(x: (points[0].x + points[2].x) / 2, y: (points[0].y + points[2].y) / 2)
-        let rx = abs(points[1].x - center.x)
-        let ry = abs(points[0].y - center.y)
+        let rxVec = CGPoint(x: points[1].x - center.x, y: points[1].y - center.y)
+        let ryVec = CGPoint(x: points[2].x - center.x, y: points[2].y - center.y)
+        let rx = hypot(rxVec.x, rxVec.y)
+        let ry = hypot(ryVec.x, ryVec.y)
         guard rx > 0.001, ry > 0.001 else { return nil }
-        return (center, rx, ry)
+        return (center, rx, ry, atan2(rxVec.y, rxVec.x))
     }
 
     static func axisAlignedEllipsePoints(center: CGPoint, rx: CGFloat, ry: CGFloat, segments: Int = 64) -> [CGPoint] {

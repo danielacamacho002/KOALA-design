@@ -53,6 +53,11 @@ nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
     var curveHandles: [CurveHandle]? = nil
     /// Fill opacity (0...1) for closed shapes. `nil` falls back to `defaultFillOpacity`.
     var fillOpacity: CGFloat? = nil
+    /// Optional fill color for imported artwork. `nil` keeps the default gray plane fill.
+    var fillColor: CodableColor? = nil
+    /// Fill rule for compound contours (`cutoutPoints`). `nil` uses even-odd when
+    /// holes exist (native boolean cuts) and nonzero otherwise.
+    var fillRule: PathFillRule? = nil
     /// When `true`, omitted from canvas, hit-testing, and export.
     /// Optional so older documents without this key still decode: synthesized
     /// Codable throws on a missing non-optional key even when a default exists.
@@ -81,6 +86,8 @@ nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
         openCutoutIndices: Set<Int>? = nil,
         curveHandles: [CurveHandle]? = nil,
         fillOpacity: CGFloat? = nil,
+        fillColor: CodableColor? = nil,
+        fillRule: PathFillRule? = nil,
         isHidden: Bool? = nil
     ) {
         self.id = id
@@ -102,7 +109,21 @@ nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
         self.openCutoutIndices = openCutoutIndices
         self.curveHandles = curveHandles
         self.fillOpacity = fillOpacity
+        self.fillColor = fillColor
+        self.fillRule = fillRule
         self.isHidden = isHidden
+    }
+
+    /// Core Graphics fill rule matching SVG `fill-rule` when imported, else native holes.
+    var resolvedCGFillRule: CGPathFillRule {
+        switch fillRule {
+        case .evenodd:
+            return .evenOdd
+        case .nonzero:
+            return .winding
+        case nil:
+            return cutoutPoints.isEmpty ? .winding : .evenOdd
+        }
     }
 
     /// True when this stroke should be omitted from canvas, hit-testing, and export.
@@ -115,6 +136,27 @@ nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
     /// Effective fill opacity for closed, non-construction shapes, clamped to 0...1.
     var resolvedFillOpacity: CGFloat {
         min(1, max(0, fillOpacity ?? VectorStroke.defaultFillOpacity))
+    }
+
+    /// Plane fill used on canvas, export, and thumbnails.
+    var resolvedFillCGColor: CGColor {
+        let opacity = resolvedFillOpacity
+        guard isClosed, !isConstruction, opacity > 0.0001 else {
+            return CGColor(gray: 0, alpha: 0)
+        }
+        if let fillColor {
+            return CGColor(
+                srgbRed: fillColor.red,
+                green: fillColor.green,
+                blue: fillColor.blue,
+                alpha: fillColor.alpha * opacity
+            )
+        }
+        #if canImport(UIKit)
+        return UIColor.systemGray.withAlphaComponent(opacity).cgColor
+        #else
+        return CGColor(gray: 0.67, alpha: opacity)
+        #endif
     }
 
     var rotationDegrees: Double {
@@ -301,14 +343,13 @@ nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
                     layerID: layerID,
                     points: cutout,
                     isClosed: true,
-                    shapeType: .circle
+                    shapeType: .polyline
                 )
             )
             appendContour(renderedCutout, to: path)
         }
 
-        let fillRule: CGPathFillRule = cutoutPoints.isEmpty ? .winding : .evenOdd
-        return path.contains(point, using: fillRule, transform: .identity)
+        return path.contains(point, using: resolvedCGFillRule, transform: .identity)
     }
 
     private func distance(from point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {
