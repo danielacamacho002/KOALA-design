@@ -1,6 +1,7 @@
 ---
 name: update-codemap
-description: Updates the Vectr architecture map after structural changes. Use when adding folders, moving hot files, changing revision counters, fixing listed perf debt, or when the user says update the codemap, architecture map, or AGENTS.md.
+description: Updates docs/ARCHITECTURE.md after an actual folder, hot-file, revision-counter, or listed perf-debt change. Use only then, or when the user asks to update the architecture map. Do not use for ordinary feature or UI work.
+disable-model-invocation: true
 ---
 
 # Update the Vectr code map

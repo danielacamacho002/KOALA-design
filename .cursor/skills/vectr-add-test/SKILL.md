@@ -1,6 +1,7 @@
 ---
 name: vectr-add-test
-description: Adds Swift Testing unit tests for new Vectr model, geometry, or persistence behavior. Use when implementing a feature, writing tests, or the user mentions Swift Testing, vectrTests, or test coverage.
+description: Adds a Swift Testing unit test file under vectrTests. Use only when writing a vectrTests file, or when the user asks for a Swift Testing test. Do not use for UI chrome or general feature work.
+disable-model-invocation: true
 ---
 
 # Add a Vectr unit test
