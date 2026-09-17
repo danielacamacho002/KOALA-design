@@ -107,6 +107,9 @@ final class VectrDocument {
     }
     var activeFontRef: FontRef = .default
     var activeFontSize: CGFloat = 24
+    /// Defaults applied to the next text placed with the Type tool.
+    var activeTextIsOutline = false
+    var activeTextStrokeWidth: CGFloat = TextElement.defaultStrokeWidth
     var referenceImageData: Data?
     var referenceImageFrame: CGRect?
 
@@ -590,6 +593,21 @@ final class VectrDocument {
         pushUndo()
         textElements.append(element)
         geometryRevision += 1
+    }
+
+    /// Builds a text element using the Type tool's current font, color, outline, and stroke defaults.
+    func makeTextElement(at position: CGPoint, layerID: UUID? = nil) -> TextElement {
+        TextElement(
+            layerID: layerID ?? activeLayerID,
+            text: "",
+            position: position,
+            fontRef: activeFontRef,
+            fontSize: activeFontSize,
+            color: strokeColor,
+            strokeColor: strokeColor,
+            strokeWidth: activeTextStrokeWidth,
+            isOutline: activeTextIsOutline
+        )
     }
 
     func updateTextElement(_ element: TextElement, recordUndo: Bool = true) {

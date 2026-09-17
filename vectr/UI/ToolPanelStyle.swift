@@ -232,6 +232,33 @@ struct ToolPanelNumericStepper: View {
     }
 }
 
+/// Full-width row that reveals a menu to the side of a command panel.
+struct ToolPanelMenuButton: View {
+    let title: String
+    var isExpanded: Bool = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+                    .foregroundStyle(isExpanded ? Color.black : Color.toolPanelButtonForeground)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(isExpanded ? Color.black : .secondary)
+            }
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity)
+            .frame(height: 28)
+            .background(isExpanded ? Color.accentColor : Color.toolPanelButtonFill)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// Text button matching the shape command panel's variant/action controls.
 struct ToolPanelLabelButton: View {
     let title: String

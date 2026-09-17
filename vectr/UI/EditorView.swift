@@ -377,9 +377,15 @@ struct EditorView: View {
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .type && editingTextID == nil {
-                    FontPickerView(document: store.document, library: FontLibrary.shared) {
-                        store.markDirty()
-                    }
+                    FontPickerView(
+                        document: store.document,
+                        library: FontLibrary.shared,
+                        onChanged: { store.markDirty() },
+                        onCancel: {
+                            store.document.clearActiveTool()
+                            updateChromeInsets()
+                        }
+                    )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
@@ -1261,14 +1267,7 @@ struct EditorView: View {
             if let hit = store.document.selectTextElement(at: documentPoint) {
                 beginTextEditing(hit.id)
             } else {
-                let element = TextElement(
-                    layerID: store.document.activeLayerID,
-                    text: "",
-                    position: documentPoint,
-                    fontRef: store.document.activeFontRef,
-                    fontSize: store.document.activeFontSize,
-                    color: store.document.strokeColor
-                )
+                let element = store.document.makeTextElement(at: documentPoint)
                 store.document.addTextElement(element)
                 beginTextEditing(element.id)
                 store.markDirty()
