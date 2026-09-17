@@ -116,6 +116,122 @@ struct ToolPanelApplyButton: View {
     }
 }
 
+/// Hairline used between segments in joined tool-panel controls.
+private struct ToolPanelSegmentDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.12))
+            .frame(width: 1, height: 16)
+    }
+}
+
+/// Equal-width option bar for tool variants (line / arc / construction, etc.).
+struct ToolPanelSegmentBar: View {
+    let options: [String]
+    let selectedIndex: Int
+    let action: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(options.enumerated()), id: \.offset) { index, label in
+                let isSelected = index == selectedIndex
+                if index > 0 {
+                    ToolPanelSegmentDivider()
+                }
+                Button {
+                    action(index)
+                } label: {
+                    Text(label)
+                        .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .foregroundStyle(isSelected ? Color.black : Color.toolPanelButtonForeground)
+                        .padding(.horizontal, 2)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 22)
+                        .background(isSelected ? Color.accentColor : Color.clear)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(label)
+                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+            }
+        }
+        .background(Color.toolPanelButtonFill)
+    }
+}
+
+/// Minus / value / plus as one filled control with hairline dividers.
+struct ToolPanelNumericStepper: View {
+    @Binding var text: String
+    var placeholder: String
+    var unitLabel: String? = nil
+    var onMinus: () -> Void
+    var onPlus: () -> Void
+    var onSubmit: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            stepperButton(systemImage: "minus", action: onMinus)
+                .accessibilityLabel("Decrease")
+
+            ToolPanelSegmentDivider()
+
+            HStack(spacing: 0) {
+                Spacer(minLength: 4)
+
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text(text.isEmpty ? placeholder : text)
+                        .font(.system(size: 12, design: .monospaced))
+                        .hidden()
+                        .frame(width: 52, alignment: .trailing)
+                        .overlay {
+                            FingerOnlyTextField(
+                                placeholder: placeholder,
+                                text: $text,
+                                keyboardType: .decimalPad,
+                                fontSize: 12,
+                                cornerRadius: 0,
+                                backgroundColor: .clear,
+                                textAlignment: .right,
+                                onSubmit: onSubmit,
+                                onEditingEnded: onSubmit
+                            )
+                        }
+
+                    if let unitLabel {
+                        Text(unitLabel)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                    }
+                }
+
+                Spacer(minLength: 4)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 28)
+
+            ToolPanelSegmentDivider()
+
+            stepperButton(systemImage: "plus", action: onPlus)
+                .accessibilityLabel("Increase")
+        }
+        .background(Color.toolPanelButtonFill)
+    }
+
+    private func stepperButton(systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color.toolPanelButtonForeground)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// Text button matching the shape command panel's variant/action controls.
 struct ToolPanelLabelButton: View {
     let title: String
