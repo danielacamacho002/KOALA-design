@@ -1315,6 +1315,22 @@ final class VectrDocument {
         return true
     }
 
+    /// Geometry of the span `trimAt` would remove at the same point. Read-only: no undo,
+    /// no revision bump. Non-`nil` exactly when `trimAt` would accept the tap, so callers
+    /// can use it to decide between trimming and the edge-delete fallback; a degenerate
+    /// span comes back with no points rather than `nil`.
+    func trimRemovalPreview(at documentPoint: CGPoint, threshold: CGFloat) -> TrimEngine.RemovedSegmentGeometry? {
+        if isHitOnInactiveLayer(near: documentPoint, threshold: threshold) { return nil }
+        guard let result = TrimEngine.trim(
+            at: documentPoint,
+            threshold: threshold,
+            strokes: interactiveStrokes(),
+            preferredStrokeID: selectedStrokeID
+        ) else { return nil }
+        return result.removedSegment
+            ?? TrimEngine.RemovedSegmentGeometry(points: [], strokeWidth: result.stroke.strokeWidth)
+    }
+
     func currentAnchorCount(for stroke: VectorStroke) -> Int {
         AnchorPointEngine.anchorCount(for: stroke)
     }

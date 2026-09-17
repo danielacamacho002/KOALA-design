@@ -54,6 +54,13 @@ final class DrawingCanvasUIView: UIView {
     var isConstructionPreview = false
     var commandPreviewClosed = false
     var allowsDragDraw = false
+    /// Span the trim tool is about to remove, flashed in red before the cut applies.
+    var trimPreviewPoints: [CGPoint] = [] {
+        didSet { updateTrimPreviewLayer() }
+    }
+    var trimPreviewStrokeWidth: CGFloat = 1 {
+        didSet { updateTrimPreviewLayer() }
+    }
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
     var onCanvasTap: ((CGPoint) -> Void)?
@@ -81,6 +88,7 @@ final class DrawingCanvasUIView: UIView {
     private var textLayers: [UUID: CAShapeLayer] = [:]
     private var commandPreviewLayer: CAShapeLayer?
     private var dragPreviewLayer: CAShapeLayer?
+    private var trimPreviewLayer: CAShapeLayer?
     private var commandPointLayers: [CAShapeLayer] = []
     private var isPanning = false
     private var lastPanLocation: CGPoint?
@@ -415,6 +423,7 @@ final class DrawingCanvasUIView: UIView {
         reloadReferenceImage()
         updateCommandPreviewLayer()
         updateDragPreviewLayer()
+        updateTrimPreviewLayer()
         updateCurvePreview()
         updateGridPresentation()
     }
@@ -1232,6 +1241,47 @@ final class DrawingCanvasUIView: UIView {
         pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
         pathLayer.lineDashPattern = isConstruction ? [10, 6] : nil
         pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
+    }
+
+    /// `trimPreviewPoints` arrive already flattened by `TrimEngine`, so a plain polyline
+    /// traces the removed span without re-fitting it through `StrokeRenderer`.
+    private func updateTrimPreviewLayer() {
+        guard trimPreviewPoints.count >= 2 else {
+            performWithoutLayerAnimation {
+                trimPreviewLayer?.removeFromSuperlayer()
+                trimPreviewLayer = nil
+            }
+            return
+        }
+
+        performWithoutLayerAnimation {
+            let pathLayer: CAShapeLayer
+            if let existing = trimPreviewLayer {
+                pathLayer = existing
+            } else {
+                let newLayer = CAShapeLayer()
+                newLayer.fillColor = UIColor.clear.cgColor
+                newLayer.lineCap = .round
+                newLayer.lineJoin = .round
+                newLayer.zPosition = Self.previewZPosition
+                self.layer.addSublayer(newLayer)
+                trimPreviewLayer = newLayer
+                pathLayer = newLayer
+            }
+
+            let viewPoints = trimPreviewPoints.map { document.viewport.documentToView($0) }
+            let path = UIBezierPath()
+            path.move(to: viewPoints[0])
+            for point in viewPoints.dropFirst() {
+                path.addLine(to: point)
+            }
+            pathLayer.path = path.cgPath
+            pathLayer.strokeColor = UIColor.systemRed.cgColor
+            pathLayer.lineWidth = max(
+                3,
+                document.viewport.documentToView(distance: trimPreviewStrokeWidth) + 2
+            )
+        }
     }
 
     private func dragPreviewPoints(start: CGPoint, end: CGPoint) -> [CGPoint] {
