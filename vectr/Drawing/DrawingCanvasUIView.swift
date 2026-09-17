@@ -24,7 +24,6 @@ final class DrawingCanvasUIView: UIView {
         }
     }
 
-    var isCommandMode = false
     var activeCategory: ToolCategory? {
         didSet {
             if oldValue == .curve, activeCategory != .curve {
@@ -745,11 +744,7 @@ final class DrawingCanvasUIView: UIView {
         let documentPoint = document.viewport.viewToDocument(viewPoint)
 
         switch activeCategory {
-        case .line, .circle, .rectangle:
-            if isCommandMode {
-                onCanvasTap?(documentPoint)
-            }
-        case .trim, .delete, .addAnchor, .type, .copy, .scale, .fillet, .pattern, .dimensions, .curve:
+        case .line, .circle, .rectangle, .trim, .delete, .addAnchor, .type, .copy, .scale, .fillet, .pattern, .dimensions, .curve:
             // Forward taps so empty-canvas / outside-shape hits can dismiss the tool.
             // Scale/fillet handles still win via the overlay's high-priority gestures.
             onCanvasTap?(documentPoint)
@@ -1192,6 +1187,17 @@ final class DrawingCanvasUIView: UIView {
             return
         }
 
+        if activeCategory == .line, lineVariant == .arc {
+            // Sweep preview lives on the command session once center + start are parked.
+            if commandControlPoints.count >= 2 {
+                dragPreviewLayer?.removeFromSuperlayer()
+                dragPreviewLayer = nil
+                return
+            }
+            updateArcRadiusPreviewLayer(center: start, start: end)
+            return
+        }
+
         let previewPoints = dragPreviewPoints(start: start, end: end)
         guard previewPoints.count >= 2 else {
             dragPreviewLayer?.removeFromSuperlayer()
@@ -1234,12 +1240,55 @@ final class DrawingCanvasUIView: UIView {
         pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
     }
 
+    private func updateArcRadiusPreviewLayer(center: CGPoint, start: CGPoint) {
+        let radius = hypot(start.x - center.x, start.y - center.y)
+        guard radius > 0.001 else {
+            dragPreviewLayer?.removeFromSuperlayer()
+            dragPreviewLayer = nil
+            return
+        }
+
+        let pathLayer: CAShapeLayer
+        if let existing = dragPreviewLayer {
+            pathLayer = existing
+        } else {
+            let newLayer = CAShapeLayer()
+            newLayer.fillColor = UIColor.clear.cgColor
+            newLayer.lineCap = .round
+            newLayer.lineJoin = .round
+            newLayer.zPosition = Self.previewZPosition
+            self.layer.addSublayer(newLayer)
+            dragPreviewLayer = newLayer
+            pathLayer = newLayer
+        }
+
+        let path = UIBezierPath()
+        path.append(
+            StrokeRenderer.livePath(
+                points: ShapeGeometry.circleCardinalPoints(center: center, radius: radius),
+                viewport: document.viewport,
+                closed: true,
+                shapeType: .circle
+            )
+        )
+        path.append(
+            StrokeRenderer.livePath(
+                points: [center, start],
+                viewport: document.viewport,
+                closed: false
+            )
+        )
+        pathLayer.path = path.cgPath
+        pathLayer.strokeColor = document.strokeColor.platformCGColor
+        pathLayer.fillColor = UIColor.systemGray.withAlphaComponent(0.15).cgColor
+        pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
+        pathLayer.lineDashPattern = nil
+        pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
+    }
+
     private func dragPreviewPoints(start: CGPoint, end: CGPoint) -> [CGPoint] {
         switch activeCategory {
         case .line:
-            if lineVariant == .arc {
-                return []
-            }
             return [start, end]
         case .circle:
             switch circleVariant {
@@ -1381,12 +1430,7 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
                 return true
             }
             switch activeCategory {
-            case .line, .circle, .rectangle:
-                if isCommandMode {
-                    return shouldAcceptDrawingTouch(touch)
-                }
-            case .trim, .delete, .addAnchor, .copy, .scale, .fillet, .pattern, .dimensions:
-                // These tools used to hit-test via SwiftUI overlays (finger-friendly).
+            case .line, .circle, .rectangle, .trim, .delete, .addAnchor, .copy, .scale, .fillet, .pattern, .dimensions:
                 // Always accept finger taps so they keep working when "finger drawing"
                 // is off, including tap-empty-to-dismiss.
                 return true
