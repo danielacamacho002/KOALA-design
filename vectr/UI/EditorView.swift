@@ -176,7 +176,6 @@ struct EditorView: View {
 
                 DrawingCanvasView(
                     document: store.document,
-                    isCommandMode: commandSession.isActive,
                     activeCategory: store.document.activeCategory,
                     commandPreviewPoints: commandSession.previewPoints,
                     commandControlPoints: commandSession.displayControlPoints,
@@ -255,6 +254,7 @@ struct EditorView: View {
                         start: start,
                         end: end,
                         category: category,
+                        lineVariant: store.document.lineVariant,
                         circleVariant: store.document.circleVariant,
                         rectangleVariant: store.document.rectangleVariant
                     )
@@ -571,8 +571,8 @@ struct EditorView: View {
         store.document.snapEnabled && store.document.grid.snapEnabled
     }
 
-    /// Object snap (endpoints/midpoints) resolved from the committed point, so tap-to-place and
-    /// drag-draw commits land exactly on real geometry. Object snap takes priority over the grid.
+    /// Object snap (endpoints/midpoints) resolved from the committed point, so drag-draw and
+    /// typed-coordinate commits land exactly on real geometry. Object snap takes priority over the grid.
     private func objectSnappedPoint(
         _ point: CGPoint,
         referenceStart: CGPoint? = nil,
@@ -624,18 +624,6 @@ struct EditorView: View {
         store.document.activeCategory == .line && store.document.lineVariant != .arc
     }
 
-    private func snapDrawingControlInput(_ raw: CGPoint, projected: CGPoint) -> CGPoint {
-        if let snapped = objectSnappedPoint(projected) { return snapped }
-        return snapDrawingControlPoint(
-            raw: raw,
-            projected: projected,
-            grid: store.document.grid,
-            settings: store.document.settings,
-            enabled: drawingSnapEnabled,
-            scale: store.document.viewport.scale
-        )
-    }
-
     private var canvasOverlayAcceptsHits: Bool {
         if commandSession.isActive { return false }
         switch store.document.activeCategory {
@@ -656,15 +644,8 @@ struct EditorView: View {
 
     private var allowsDragDraw: Bool {
         switch store.document.activeCategory {
-        case .curve:
+        case .line, .curve:
             return true
-        case .line:
-            switch store.document.lineVariant {
-            case .line, .constructionLine:
-                return true
-            case .arc:
-                return canBeginArcDrag
-            }
         case .circle:
             return store.document.circleVariant == .center
                 || store.document.circleVariant == .edge
@@ -1128,6 +1109,9 @@ struct EditorView: View {
         if let anchor {
             commandSession.addPoint(anchor)
         }
+        if category == .line, store.document.lineVariant == .arc, commandSession.controlPoints.count < 2 {
+            statusMessage = "Drag from the center to the start, then drag to set the sweep"
+        }
         updateChromeInsets()
     }
 
@@ -1274,33 +1258,11 @@ struct EditorView: View {
                 store.markDirty()
             }
         case .line, .circle, .rectangle:
-            guard let category = store.document.activeCategory else { return }
-            if commandSession.isRefiningAttachedStroke {
-                startDrawingSessionIfNeeded()
-            }
-            guard commandSession.isActive else {
+            if isEmptyCanvasTap(at: documentPoint) {
                 dismissActiveTool()
                 return
             }
-            let angleOrigin = shouldAngleSnapDrawnSegment ? commandSession.controlPoints.first : nil
-            let snapped = snapDrawingInput(documentPoint, referenceStart: angleOrigin)
-            if shouldAngleSnapDrawnSegment {
-                commandSession.addPoint(snapped)
-            } else {
-                let projected = ShapeGeometry.projectCommandPoint(
-                    snapped,
-                    controlPoints: commandSession.controlPoints,
-                    category: category,
-                    lineVariant: store.document.lineVariant,
-                    circleVariant: store.document.circleVariant,
-                    rectangleVariant: store.document.rectangleVariant
-                )
-                let final = snapDrawingControlInput(snapped, projected: projected)
-                commandSession.addPoint(final)
-            }
-            if commandSession.canFinish, shouldAutoCommitAfterPoint {
-                commitCommandShape(restart: true)
-            }
+            activateMoveIfHit(at: documentPoint)
         case .trim:
             if isEmptyCanvasTap(at: documentPoint) {
                 dismissActiveTool()
@@ -1520,12 +1482,17 @@ struct EditorView: View {
             commandSession.addPoint(point)
         }
 
+        if category == .line, store.document.lineVariant == .arc, !commandSession.canFinish {
+            statusMessage = "Drag to set the sweep"
+            return
+        }
+
         guard commandSession.canFinish else {
             startDrawingSessionIfNeeded()
             return
         }
 
-        // Use the same commit pathway as point-by-point entry.
+        // Use the same commit pathway as typed point-by-point entry.
         commitCommandShape(restart: false)
 
         if store.document.isDrawingToolActive {
