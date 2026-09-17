@@ -136,11 +136,11 @@ struct ProjectGalleryView: View {
     }
 
     private var galleryTitle: some View {
-        Text("koala.")
-            .font(.custom("HelveticaNeue-Bold", size: 34))
+        Text("KOALA")
+            .font(.custom("HelveticaNeue-Medium", size: 34))
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityLabel("koala.")
+            .accessibilityLabel("KOALA")
     }
 
     @ToolbarContentBuilder
