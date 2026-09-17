@@ -8,6 +8,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 extension Color {
     /// Fill for the non-prominent (secondary) tool panel buttons.
@@ -166,6 +167,7 @@ struct ToolPanelNumericStepper: View {
     @Binding var text: String
     var placeholder: String
     var unitLabel: String? = nil
+    var keyboardType: UIKeyboardType = .decimalPad
     var onMinus: () -> Void
     var onPlus: () -> Void
     var onSubmit: () -> Void
@@ -184,16 +186,16 @@ struct ToolPanelNumericStepper: View {
                     Text(text.isEmpty ? placeholder : text)
                         .font(.system(size: 12, design: .monospaced))
                         .hidden()
-                        .frame(width: 52, alignment: .trailing)
+                        .fixedSize()
                         .overlay {
                             FingerOnlyTextField(
                                 placeholder: placeholder,
                                 text: $text,
-                                keyboardType: .decimalPad,
+                                keyboardType: keyboardType,
                                 fontSize: 12,
                                 cornerRadius: 0,
                                 backgroundColor: .clear,
-                                textAlignment: .right,
+                                textAlignment: .center,
                                 onSubmit: onSubmit,
                                 onEditingEnded: onSubmit
                             )
