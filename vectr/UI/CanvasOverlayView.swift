@@ -340,8 +340,6 @@ struct CanvasOverlayView: View {
                     at: index,
                     to: resolveNodeSnap(
                         rawPoint: rawPoint,
-                        stroke: stroke,
-                        index: index,
                         strokeID: strokeID
                     )
                 )
@@ -359,14 +357,10 @@ struct CanvasOverlayView: View {
             }
     }
 
-    /// Snaps a node-edit vertex to nearby object geometry (endpoints/center/quadrant/intersection),
-    /// and for straight segmented paths lets it go tangent to circles/arcs using the vertex's
-    /// stationary neighbors as the tangent anchors. Returns the raw point when nothing snaps.
-    private func resolveNodeSnap(rawPoint: CGPoint, stroke: VectorStroke, index: Int, strokeID: UUID) -> CGPoint {
-        let references: [CGPoint] = (stroke.shapeType == .polyline || stroke.shapeType == .construction)
-            ? neighborReferenceStarts(movingAnchor: index, points: nodeDragOriginPoints, isClosed: stroke.isClosed)
-            : []
-        return resolveMoveSnap(reference: rawPoint, excluding: strokeID, referenceStarts: references)
+    /// Snaps a node-edit vertex to nearby object geometry (endpoints/center/on-rim/intersection).
+    /// Returns the raw point when nothing snaps.
+    private func resolveNodeSnap(rawPoint: CGPoint, strokeID: UUID) -> CGPoint {
+        resolveMoveSnap(reference: rawPoint, excluding: strokeID)
     }
 
     // MARK: - Move tool routing
@@ -880,10 +874,6 @@ struct CanvasOverlayView: View {
                     .fill(Color.pink.opacity(0.95))
                     .overlay(SnapDiamond().stroke(Color.white, lineWidth: 1.5))
                     .frame(width: size, height: size)
-            case .tangent:
-                SnapTangent()
-                    .fill(Color.pink.opacity(0.95))
-                    .frame(width: size, height: size)
             }
         }
         .position(position)
@@ -1095,54 +1085,9 @@ struct CanvasOverlayView: View {
 
         let snapped = resolveMoveSnap(
             reference: raw,
-            excluding: strokeID,
-            referenceStarts: tangentReferenceStarts(stroke: stroke, movingAnchor: anchorIndex)
+            excluding: strokeID
         )
         return CGPoint(x: rawDelta.x + (snapped.x - raw.x), y: rawDelta.y + (snapped.y - raw.y))
-    }
-
-    /// Fixed neighbor anchor(s) of the vertex being dragged, used as tangent anchors. A dragged
-    /// endpoint has one stationary neighbor; a dragged middle anchor has two, so its adjacent
-    /// segments can each go tangent. Only straight segmented paths qualify, and only neighbors
-    /// that are themselves stationary (not part of the same multi-anchor move) are included.
-    private func tangentReferenceStarts(stroke: VectorStroke, movingAnchor: Int?) -> [CGPoint] {
-        guard let movingAnchor,
-              stroke.points.count >= 2,
-              stroke.shapeType == .polyline || stroke.shapeType == .construction else { return [] }
-        return neighborReferenceStarts(
-            movingAnchor: movingAnchor,
-            points: moveDragOriginPoints,
-            isClosed: stroke.isClosed
-        )
-    }
-
-    /// Shared neighbor lookup: the stationary anchors adjacent to `movingAnchor` in `points`.
-    /// Skips neighbors also included in the current anchor selection so a tangent reference is
-    /// always a truly fixed point.
-    private func neighborReferenceStarts(
-        movingAnchor: Int,
-        points: [CGPoint],
-        isClosed: Bool
-    ) -> [CGPoint] {
-        guard points.indices.contains(movingAnchor) else { return [] }
-        let count = points.count
-        var neighborIndices: [Int] = []
-        if movingAnchor - 1 >= 0 {
-            neighborIndices.append(movingAnchor - 1)
-        } else if isClosed {
-            neighborIndices.append(count - 1)
-        }
-        if movingAnchor + 1 < count {
-            neighborIndices.append(movingAnchor + 1)
-        } else if isClosed {
-            neighborIndices.append(0)
-        }
-        return neighborIndices.compactMap { index in
-            guard index != movingAnchor,
-                  points.indices.contains(index),
-                  !document.selectedAnchorIndices.contains(index) else { return nil }
-            return points[index]
-        }
     }
 
     /// Radius handles on circles/ellipses move radially rather than translating, so absolute
@@ -1159,8 +1104,7 @@ struct CanvasOverlayView: View {
     /// and haptics. Returns the locked point (or the raw point when nothing snaps).
     private func resolveMoveSnap(
         reference raw: CGPoint,
-        excluding strokeID: UUID,
-        referenceStarts: [CGPoint] = []
+        excluding strokeID: UUID
     ) -> CGPoint {
         let scale = max(document.viewport.scale, 0.0001)
         let update = snapSession.update(
@@ -1171,8 +1115,7 @@ struct CanvasOverlayView: View {
             snapRadius: SnapTuning.snapRadiusPoints / scale,
             breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
             breakawayVelocity: SnapTuning.breakawayVelocityPoints / scale,
-            excludedStrokeID: strokeID,
-            referenceStarts: referenceStarts
+            excludedStrokeID: strokeID
         )
         if let candidate = update.candidate {
             activeSnap = candidate
@@ -1850,27 +1793,6 @@ private struct SnapDiamond: Shape {
         path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
         path.addLine(to: CGPoint(x: rect.minX, y: rect.midY))
         path.closeSubpath()
-        return path
-    }
-}
-
-/// A disc with a line kissing its top edge, used for the tangent snap indicator.
-private struct SnapTangent: Shape {
-    func path(in rect: CGRect) -> Path {
-        let size = min(rect.width, rect.height)
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let discRadius = size * 0.36
-        let discCenterY = center.y + size * 0.12
-        var path = Path()
-        path.addEllipse(in: CGRect(
-            x: center.x - discRadius,
-            y: discCenterY - discRadius,
-            width: discRadius * 2,
-            height: discRadius * 2
-        ))
-        let barHeight: CGFloat = 2.4
-        let barY = discCenterY - discRadius - barHeight / 2
-        path.addRect(CGRect(x: center.x - size / 2, y: barY, width: size, height: barHeight))
         return path
     }
 }

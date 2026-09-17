@@ -769,9 +769,7 @@ final class DrawingCanvasUIView: UIView {
 
         let viewPoint = drawingViewPoint(from: gesture)
         let rawPoint = document.viewport.viewToDocument(viewPoint)
-        // Tangent snapping needs the anchored end of the in-progress line, which is
-        // `dragDrawStart` once the drag is underway (nil during `.began`).
-        let documentPoint = snappedDragPoint(rawPoint, referenceStart: dragDrawStart)
+        let documentPoint = snappedDragPoint(rawPoint)
 
         switch gesture.state {
         case .began:
@@ -824,7 +822,6 @@ final class DrawingCanvasUIView: UIView {
             objectSnap: { query, alignmentOrigin, alignmentThrough in
                 resolveObjectSnap(
                     rawPoint: query,
-                    referenceStart: referenceStart,
                     alignmentOrigin: alignmentOrigin,
                     alignmentThrough: alignmentThrough
                 )
@@ -845,7 +842,6 @@ final class DrawingCanvasUIView: UIView {
     /// stays constant across zoom levels.
     private func resolveObjectSnap(
         rawPoint: CGPoint,
-        referenceStart: CGPoint? = nil,
         alignmentOrigin: CGPoint? = nil,
         alignmentThrough: CGPoint? = nil
     ) -> CGPoint? {
@@ -868,7 +864,6 @@ final class DrawingCanvasUIView: UIView {
             snapRadius: SnapTuning.snapRadiusPoints / scale,
             breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
             breakawayVelocity: SnapTuning.breakawayVelocityPoints / scale,
-            referenceStarts: referenceStart.map { [$0] } ?? [],
             alignmentOrigin: alignmentOrigin,
             alignmentThrough: alignmentThrough,
             alignmentTolerance: alignmentTolerance,
