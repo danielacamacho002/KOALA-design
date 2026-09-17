@@ -73,7 +73,7 @@ struct AddAnchorPanelView: View {
         case .success:
             onApply()
         case .noSelection:
-            onStatus("Select a closed shape first")
+            onStatus("Select a shape first")
         case .notEligible:
             onStatus("Selected shape cannot receive anchors")
         case .alreadyHasCount(let count):

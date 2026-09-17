@@ -1015,7 +1015,7 @@ struct EditorView: View {
             commandSession.cancel()
             store.document.clearToolSelections()
             if store.document.selectedStrokeID == nil {
-                statusMessage = "Select a closed shape, then tap an edge or enter total anchor count"
+                statusMessage = "Select a shape or line, then tap an edge or enter total anchor count"
             } else {
                 statusMessage = "Tap an edge to add an anchor, or enter total anchor count"
             }
@@ -1317,7 +1317,7 @@ struct EditorView: View {
                         statusMessage = "Tap closer to an edge between anchors"
                     }
                 } else {
-                    statusMessage = "Select a closed shape to add anchors"
+                    statusMessage = "Selected shape cannot receive anchors"
                 }
             } else {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
