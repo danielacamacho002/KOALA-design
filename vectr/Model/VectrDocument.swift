@@ -745,6 +745,53 @@ final class VectrDocument {
         geometryRevision += 1
     }
 
+    /// Merges imported artwork into the active layer. Vector items get new IDs;
+    /// a reference image replaces any existing one. `offset` is added in document space.
+    @discardableResult
+    func importContent(_ content: ImportRouter.ImportedContent, offset: CGPoint = .zero) throws -> Int {
+        let hasVectors = content.hasVectorContent
+        if hasVectors && activeLayer?.isLocked == true {
+            throw ImportRouter.ImportError.layerLocked
+        }
+        guard hasVectors || content.hasReferenceImage else {
+            throw ImportRouter.ImportError.noVectorContent
+        }
+
+        pushUndo()
+
+        var newStrokeIDs: Set<UUID> = []
+        var newTextIDs: Set<UUID> = []
+
+        for stroke in content.strokes {
+            var copy = stroke.duplicated(offset: offset)
+            copy.layerID = activeLayerID
+            strokes.append(ShapeGeometry.captureRotationBaseIfNeeded(copy))
+            newStrokeIDs.insert(copy.id)
+        }
+        for text in content.textElements {
+            var copy = text
+            copy.id = UUID()
+            copy.layerID = activeLayerID
+            copy.position = CGPoint(x: copy.position.x + offset.x, y: copy.position.y + offset.y)
+            textElements.append(copy)
+            newTextIDs.insert(copy.id)
+        }
+        if let data = content.referenceImageData {
+            referenceImageData = data
+            if let frame = content.referenceImageFrame {
+                referenceImageFrame = frame.offsetBy(dx: offset.x, dy: offset.y)
+            } else {
+                referenceImageFrame = nil
+            }
+        }
+
+        geometryRevision += 1
+        if !newStrokeIDs.isEmpty || !newTextIDs.isEmpty {
+            setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs, compactAnchors: false)
+        }
+        return newStrokeIDs.count + newTextIDs.count
+    }
+
     /// Adds a line segment, extending an open polyline when an endpoint connects.
     @discardableResult
     func commitLineSegment(
@@ -882,7 +929,7 @@ final class VectrDocument {
         for id in ids {
             guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
             let stroke = strokes[index]
-            let compacted = ShapeGeometry.withCompactedCircularAnchors(stroke)
+            let compacted = ShapeGeometry.withCompactedCircularAnchors(stroke, rewritingPartialRuns: false)
             if compacted != stroke {
                 strokes[index] = compacted
                 changed = true
@@ -1420,7 +1467,7 @@ final class VectrDocument {
     /// Replaces the entire element selection, picking a stable primary so the
     /// single-object tools (fillet/trim/scale/rotate panel) keep working.
     /// Off-layer items are dropped so Move/Edit cannot target another layer.
-    func setElementSelection(strokeIDs: Set<UUID>, textIDs: Set<UUID>) {
+    func setElementSelection(strokeIDs: Set<UUID>, textIDs: Set<UUID>, compactAnchors: Bool = true) {
         let strokeIDs = strokeIDs.filter { stroke(with: $0).map(isSelectableStroke) ?? false }
         let textIDs = textIDs.filter { textElement(with: $0).map(isSelectableText) ?? false }
         isSyncingSelection = true
@@ -1439,7 +1486,9 @@ final class VectrDocument {
         }
         isSyncingSelection = false
         clearAnchorSelection()
-        compactCircularAnchors(for: strokeIDs)
+        if compactAnchors {
+            compactCircularAnchors(for: strokeIDs)
+        }
     }
 
     func toggleStrokeSelection(_ id: UUID) {

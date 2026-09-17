@@ -45,8 +45,8 @@ enum LayerThumbnailRenderer {
             for stroke in strokes {
                 if stroke.isClosed, !stroke.isConstruction {
                     context.addPath(StrokeRenderer.path(for: stroke, viewport: viewport).cgPath)
-                    context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
-                    context.fillPath(using: stroke.cutoutPoints.isEmpty ? .winding : .evenOdd)
+                    context.setFillColor(stroke.resolvedFillCGColor)
+                    context.fillPath(using: stroke.resolvedCGFillRule)
                 }
                 context.addPath(StrokeRenderer.outlinePath(for: stroke, viewport: viewport).cgPath)
                 context.setStrokeColor(thumbnailStrokeColor(for: stroke))

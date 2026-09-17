@@ -7,7 +7,6 @@ import SwiftUI
 
 struct DrawingCanvasView: UIViewRepresentable {
     @Bindable var document: VectrDocument
-    var isCommandMode: Bool = false
     var activeCategory: ToolCategory?
     var commandPreviewPoints: [CGPoint] = []
     var commandControlPoints: [CGPoint] = []
@@ -124,9 +123,6 @@ struct DrawingCanvasView: UIViewRepresentable {
         let resolvedCanvasFill = UIColor(canvasBackgroundColor)
         if uiView.canvasFillColor != resolvedCanvasFill {
             uiView.canvasFillColor = resolvedCanvasFill
-        }
-        if uiView.isCommandMode != isCommandMode {
-            uiView.isCommandMode = isCommandMode
         }
         if uiView.activeCategory != activeCategory {
             uiView.activeCategory = activeCategory

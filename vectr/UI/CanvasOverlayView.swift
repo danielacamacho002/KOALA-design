@@ -15,6 +15,7 @@ struct CanvasOverlayView: View {
     var onDismissTool: () -> Void = {}
 
     @State private var nodeDragOriginPoints: [CGPoint] = []
+    @State private var nodeDragOriginStroke: VectorStroke?
     @State private var curveHandleDragActive = false
     @State private var moveDragOriginPoints: [CGPoint] = []
     @State private var moveDragOriginStroke: VectorStroke?
@@ -323,11 +324,15 @@ struct CanvasOverlayView: View {
             .onChanged { value in
                 if nodeDragOriginPoints.isEmpty {
                     document.beginInteractiveEdit()
-                    nodeDragOriginPoints = document.stroke(with: strokeID).map {
+                    nodeDragOriginStroke = document.stroke(with: strokeID)
+                    nodeDragOriginPoints = nodeDragOriginStroke.map {
                         ShapeGeometry.handlePoints(for: $0)
                     } ?? []
                 }
-                guard let stroke = document.stroke(with: strokeID),
+                // Edit the geometry captured at drag start. A parametric shape rewrites its
+                // anchor set on every edit, so re-reading the live stroke would let `index`
+                // land on a different anchor (or out of bounds) part-way through the drag.
+                guard let stroke = nodeDragOriginStroke ?? document.stroke(with: strokeID),
                       stroke.points.indices.contains(index) else { return }
                 let rawPoint = document.viewport.viewToDocument(value.location)
                 let moved = ShapeGeometry.applyingMovedAnchor(
@@ -344,6 +349,7 @@ struct CanvasOverlayView: View {
             .onEnded { _ in
                 let didEdit = !nodeDragOriginPoints.isEmpty
                 nodeDragOriginPoints = []
+                nodeDragOriginStroke = nil
                 clearMoveSnap()
                 guard didEdit else { return }
                 document.reconcileIntersectionAnchors(around: [strokeID])
@@ -945,9 +951,13 @@ struct CanvasOverlayView: View {
             }
     }
 
-    private func applyMove(strokeID: UUID, stroke: VectorStroke, delta: CGPoint) {
+    private func applyMove(strokeID: UUID, stroke: VectorStroke, delta: CGPoint, anchorIndex: Int?) {
         guard !moveDragOriginPoints.isEmpty else { return }
-        let indices = document.selectedAnchorIndices
+        // Only a drag that began on an anchor handle edits nodes. Dragging the body
+        // translates the whole object even while anchors are selected — otherwise a
+        // leftover anchor selection turns a move into a reshape, which flattens the
+        // curvature a Bézier keeps in `curveHandles`.
+        let indices = anchorIndex == nil ? [] : document.selectedAnchorIndices
 
         if indices.isEmpty {
             let origin = moveDragOriginStroke ?? stroke
@@ -955,17 +965,21 @@ struct CanvasOverlayView: View {
             return
         }
 
-        var updated = document.stroke(with: strokeID) ?? moveDragOriginStroke ?? stroke
-        for index in indices.sorted() where moveDragOriginPoints.indices.contains(index) {
-            let origin = moveDragOriginPoints[index]
-            guard updated.points.indices.contains(index) else { continue }
-            updated = ShapeGeometry.applyingMovedAnchor(
-                updated,
-                at: index,
-                to: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y)
-            )
+        // Re-apply from the geometry captured at drag start, not from last frame's result:
+        // parametric shapes re-derive their anchors on every edit (an arc re-emits a
+        // different number of them as its sweep changes), so accumulating would let the
+        // dragged index drift onto a different anchor part-way through the drag.
+        let origin = moveDragOriginStroke ?? document.stroke(with: strokeID) ?? stroke
+        var moves: [Int: CGPoint] = [:]
+        for index in indices where moveDragOriginPoints.indices.contains(index) {
+            let anchor = moveDragOriginPoints[index]
+            moves[index] = CGPoint(x: anchor.x + delta.x, y: anchor.y + delta.y)
         }
-        document.updateStroke(updated, recordUndo: false)
+        guard !moves.isEmpty else { return }
+        document.updateStroke(
+            ShapeGeometry.applyingMovedAnchors(origin, moves: moves),
+            recordUndo: false
+        )
     }
 
     private func anchorMoveDrag(strokeID: UUID, stroke: VectorStroke, anchorIndex: Int) -> some Gesture {
@@ -1007,7 +1021,7 @@ struct CanvasOverlayView: View {
             anchorIndex: anchorIndex,
             cursorViewPoint: value.location
         )
-        applyMove(strokeID: strokeID, stroke: stroke, delta: delta)
+        applyMove(strokeID: strokeID, stroke: stroke, delta: delta, anchorIndex: anchorIndex)
         onChanged()
     }
 
@@ -1028,9 +1042,9 @@ struct CanvasOverlayView: View {
     /// is disabled, unsupported, or nothing is in range.
     ///
     /// Reference point selection:
+    /// - whole-object body drag → every anchor plus the shape center,
     /// - dragging a single anchor handle → that anchor,
-    /// - dragging with a multi-anchor selection → the first selected anchor,
-    /// - whole-object background drag → the pencil/cursor position.
+    /// - anchor drag whose index is out of range → the first selected anchor.
     private func snapAdjustedDelta(
         strokeID: UUID,
         stroke: VectorStroke,
@@ -1045,7 +1059,7 @@ struct CanvasOverlayView: View {
 
         // Whole-object move: snap using every anchor (plus center) as a reference so the shape
         // locks on when any of its own points lands on other geometry.
-        if anchorIndex == nil, document.selectedAnchorIndices.isEmpty {
+        if anchorIndex == nil {
             let center = ShapeGeometry.shapeCenter(for: stroke)
             var origins = moveDragOriginPoints
             if let center { origins.append(center) }
@@ -1173,7 +1187,7 @@ struct CanvasOverlayView: View {
             ForEach(patternPreviewStrokes) { stroke in
                 patternPreviewPath(for: stroke)
                     .stroke(
-                        Color.accentColor.opacity(0.45),
+                        Color.accentColor.opacity(0.65),
                         style: StrokeStyle(
                             lineWidth: max(stroke.strokeWidth * document.viewport.scale, 1),
                             dash: [6, 4]

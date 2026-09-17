@@ -136,11 +136,11 @@ struct ProjectGalleryView: View {
     }
 
     private var galleryTitle: some View {
-        Text("koala.")
-            .font(.custom("HelveticaNeue-Bold", size: 34))
+        Text("KOALA")
+            .font(.custom("HelveticaNeue-Medium", size: 34))
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityLabel("koala.")
+            .accessibilityLabel("KOALA")
     }
 
     @ToolbarContentBuilder
@@ -301,10 +301,4 @@ struct ProjectGalleryView: View {
 
 private enum GalleryViewMode: String {
     case grid, list
-}
-
-extension ImportRouter {
-    static var supportedTypes: [UTType] {
-        [.vectrDocument, .jpeg, .pdf, .svg, UTType(filenameExtension: "ai") ?? .pdf]
-    }
 }
