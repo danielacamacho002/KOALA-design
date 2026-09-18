@@ -88,6 +88,9 @@ final class VectrDocument {
     /// Move is the idle default, so its toolbar icon stays off until the user
     /// taps it or starts using it. Launch and "exit tool → Move" leave this false.
     var isMoveToolHighlighted = false
+    /// When true, the Move tool shows the rotation handle. Off by default so
+    /// the handle is not in the way during ordinary move/edit.
+    var isMoveRotateMode = false
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
@@ -2497,6 +2500,7 @@ final class VectrDocument {
         activeCategory = category
         if category != .move {
             isMoveToolHighlighted = false
+            isMoveRotateMode = false
         }
         if let lineVariant { self.lineVariant = lineVariant }
         if let circleVariant { self.circleVariant = circleVariant }

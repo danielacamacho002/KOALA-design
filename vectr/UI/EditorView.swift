@@ -1101,9 +1101,9 @@ struct EditorView: View {
                     store.document.expandSelectionToGroupsIfNeeded()
                 }
                 if store.document.usesGroupTransform {
-                    statusMessage = "Drag to move the group, or use the handle to rotate; tap to add or remove"
+                    statusMessage = "Drag to move the group; tap to add or remove"
                 } else if store.document.selectedTextID != nil {
-                    statusMessage = "Drag to move the text, or use the handle to rotate"
+                    statusMessage = "Drag to move the text"
                 } else if store.document.selectedStrokeID == nil {
                     statusMessage = "Tap a shape to select; drag empty space to marquee-select"
                 } else {

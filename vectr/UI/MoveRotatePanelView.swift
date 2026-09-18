@@ -47,13 +47,6 @@ struct MoveRotatePanelView: View {
         return selectedStroke?.rotationDegrees ?? 0
     }
 
-    private var pivotLabel: String {
-        if let index = document.moveRotationPivotAnchorIndex {
-            return "Anchor \(index + 1)"
-        }
-        return "Center"
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             rotateSection
@@ -305,95 +298,56 @@ struct MoveRotatePanelView: View {
 
     @ViewBuilder
     private var thicknessSection: some View {
-        ToolPanelHeader("Thickness")
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Thickness")
 
-        HStack(spacing: 4) {
-            Text("Current:")
-            Text(currentThicknessText)
-                .fontWeight(.semibold)
-                .monospacedDigit()
-        }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-
-        HStack(spacing: 4) {
-            ToolPanelIconButton(systemImage: "minus") {
-                stepThickness(by: -Self.thicknessStepPoints)
-            }
-
-            FingerOnlyTextField(
-                placeholder: units.shortLabel,
+            ToolPanelNumericStepper(
                 text: $thicknessText,
-                keyboardType: .decimalPad,
-                fontSize: 12,
-                cornerRadius: 0,
+                placeholder: "0",
+                unitLabel: units.shortLabel,
+                onMinus: { stepThickness(by: -Self.thicknessStepPoints) },
+                onPlus: { stepThickness(by: Self.thicknessStepPoints) },
                 onSubmit: applyThickness
             )
-            .frame(height: 28)
-
-            ToolPanelIconButton(systemImage: "plus") {
-                stepThickness(by: Self.thicknessStepPoints)
-            }
-        }
-
-        ToolPanelLabelButton(title: "Apply", fullWidth: true) {
-            applyThickness()
         }
     }
 
     @ViewBuilder
     private var colorSection: some View {
-        ToolPanelHeader("Color")
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Color")
 
-        HStack(spacing: 8) {
-            Rectangle()
-                .fill(currentStrokeColor)
-                .frame(width: 26, height: 26)
-                .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
+            HStack(spacing: 2) {
+                Rectangle()
+                    .fill(currentStrokeColor)
+                    .frame(width: 26, height: 26)
+                    .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
 
-            Button {
-                showColorPicker = true
-            } label: {
-                colorWheel
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Line and border color")
-            .sheet(isPresented: $showColorPicker) {
-                SystemColorPickerSheet(
-                    color: strokeColorBinding,
-                    onBeginEditing: { document.beginInteractiveEdit() }
-                )
-            }
-
-            if isStrokeColorMixed {
-                Text("Mixed")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var colorWheel: some View {
-        Circle()
-            .fill(
-                AngularGradient(
-                    colors: (0...12).map { Color(hue: Double($0) / 12.0, saturation: 0.85, brightness: 0.95) },
-                    center: .center
-                )
-            )
-            .overlay(
-                Circle().fill(
-                    RadialGradient(
-                        colors: [Color.white.opacity(0.85), Color.white.opacity(0)],
-                        center: .center,
-                        startRadius: 0,
-                        endRadius: 14
+                Button {
+                    showColorPicker = true
+                } label: {
+                    Image(systemName: "eyedropper")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.blue)
+                        .frame(width: 24, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Line and border color")
+                .sheet(isPresented: $showColorPicker) {
+                    SystemColorPickerSheet(
+                        color: strokeColorBinding,
+                        onBeginEditing: { document.beginInteractiveEdit() }
                     )
-                )
-            )
+                }
+
+                if isStrokeColorMixed {
+                    Text("Mixed")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     private var currentStrokeColor: Color {
@@ -445,68 +399,25 @@ struct MoveRotatePanelView: View {
 
     @ViewBuilder
     private var rotateSection: some View {
-        ToolPanelHeader("Rotate")
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Rotate")
 
-        if document.usesGroupTransform {
-            Text("Enter degrees to rotate the selection around its center.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            FingerOnlyTextField(
-                placeholder: "Degrees",
+            ToolPanelNumericStepper(
                 text: $degreesText,
+                placeholder: "0",
+                unitLabel: "°",
                 keyboardType: .numbersAndPunctuation,
-                fontSize: 13,
-                cornerRadius: 0,
+                onMinus: { stepRotation(by: -1) },
+                onPlus: { stepRotation(by: 1) },
                 onSubmit: apply
             )
-            .frame(height: 30)
 
-            HStack(spacing: 4) {
-                ToolPanelLabelButton(title: "Rotate", fullWidth: true) {
-                    applyGroupRotation()
-                }
-            }
-        } else {
-            Text("0° is the original drawn angle. Drag the handle or enter an absolute degree.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("Current: \(String(format: "%.1f°", currentDegrees))")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-
-            FingerOnlyTextField(
-                placeholder: "Degrees",
-                text: $degreesText,
-                keyboardType: .numbersAndPunctuation,
-                fontSize: 13,
-                cornerRadius: 0,
-                onSubmit: apply
-            )
-            .frame(height: 30)
-
-            if !isTextSelected {
-                Text("Pivot: \(pivotLabel)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 4) {
-                ToolPanelLabelButton(title: "Reset to 0°") {
-                    resetToOriginal()
-                }
-
-                if !isTextSelected {
-                    ToolPanelLabelButton(
-                        title: "Center pivot",
-                        isDisabled: document.moveRotationPivotAnchorIndex == nil
-                    ) {
-                        document.moveRotationPivotAnchorIndex = nil
-                    }
-                }
+            ToolPanelLabelButton(
+                title: document.isMoveRotateMode ? "Rotating" : "Rotate",
+                prominent: document.isMoveRotateMode,
+                fullWidth: true
+            ) {
+                document.isMoveRotateMode.toggle()
             }
         }
     }
@@ -514,11 +425,6 @@ struct MoveRotatePanelView: View {
     @ViewBuilder
     private var multiSelectionSection: some View {
         ToolPanelHeader("\(document.selectionCount) selected")
-
-        Text("Drag to move the group. Tap a shape to add or remove it.")
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
 
         HStack(spacing: 4) {
             ToolPanelLabelButton(
@@ -548,11 +454,6 @@ struct MoveRotatePanelView: View {
             ) {
                 if document.joinSelectedShapes() { onApply() }
             }
-
-            Text("Welds touching anchors into one shape. Unlike Group, this is permanent.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -581,17 +482,6 @@ struct MoveRotatePanelView: View {
                 document.flipSelection(horizontal: false)
                 onApply()
             }
-        }
-    }
-
-    private var currentThicknessText: String {
-        switch document.selectedStrokeWidthSummary() {
-        case .none:
-            return "—"
-        case .mixed:
-            return "Mixed"
-        case .uniform(let width):
-            return "\(displayString(units.fromDocumentUnits(width))) \(units.shortLabel)"
         }
     }
 
@@ -706,8 +596,14 @@ struct MoveRotatePanelView: View {
         onApply()
     }
 
-    private func resetToOriginal() {
-        setRotation(toDegrees: 0)
+    private func stepRotation(by delta: Double) {
+        if document.usesGroupTransform {
+            document.rotateSelectedElements(byDegrees: delta)
+            degreesText = "0"
+            onApply()
+        } else {
+            setRotation(toDegrees: currentDegrees + delta)
+        }
     }
 
     private func setRotation(toDegrees value: Double) {
