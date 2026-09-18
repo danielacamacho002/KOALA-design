@@ -28,7 +28,7 @@ iPad vector editor: design on a canvas, then arrange artwork for tiled print. iP
 - `vectr/Model/VectrDocument.swift` — source of truth
 - `vectr/Persistence/DocumentStore.swift` — file, dirty, `contentRevision`
 - `vectr/UI/EditorView.swift` — editor orchestration
-- `vectr/Drawing/DrawingCanvasView.swift` + `DrawingCanvasUIView.swift`
+- `vectr/Drawing/DrawingCanvasView.swift` + `DrawingCanvasUIView.swift` + `ViewportNavigationInstaller.swift`
 - `vectr/UI/PrintLayout/PrintLayoutCanvasView.swift` + `Rendering/PrintLayout/PrintLayoutCanvasUIView.swift`
 - `vectr/Persistence/DocumentCodec.swift`
 
@@ -50,7 +50,7 @@ These counters mean different things. Mixing them is the usual bug.
 
 ## Canvas updates
 
-**Design** (`DrawingCanvasView.Coordinator`): diff viewport vs geometry vs selection vs command preview. Pan/zoom should transform existing layers, not rebuild every stroke.
+**Design** (`DrawingCanvasView.Coordinator`): diff viewport vs geometry vs selection vs command preview. Pan/zoom should transform existing layers, not rebuild every stroke. Pinch / two-finger pan / two-finger tap live on `ViewportNavigationInstaller` (a parent of the canvas and SwiftUI overlay) so Move/Scale cannot swallow zoom.
 
 **Print** (`PrintLayoutCanvasView.updateUIView`): today calls `reloadAll()` on almost every SwiftUI update; `printLayoutRevision` / `geometryRevision` are passed in and ignored. Match design-canvas diffing when touching this path.
 

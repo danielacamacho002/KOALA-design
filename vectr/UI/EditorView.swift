@@ -203,7 +203,6 @@ struct EditorView: View {
                     rectangleVariant: store.document.rectangleVariant,
                     canvasBackgroundColor: Color(hex: canvasColorHex),
                     onCanvasTap: handleCanvasTap,
-                    onTwoFingerTap: handleDesignUndo,
                     onStrokeSelected: { stroke in
                         if let stroke {
                             store.document.selectStrokeConsideringGroups(stroke.id)
@@ -285,6 +284,14 @@ struct EditorView: View {
                 }
                 .ignoresSafeArea()
                 .transaction { $0.animation = nil }
+
+                ViewportNavigationInstaller(
+                    document: store.document,
+                    viewportHandle: designCanvasHandle,
+                    onTwoFingerTap: handleDesignUndo
+                )
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .fillet {
