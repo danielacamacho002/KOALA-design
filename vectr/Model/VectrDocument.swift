@@ -61,11 +61,9 @@ final class VectrDocument {
     var endpointSnapEnabled: Bool = false
     var midpointSnapEnabled: Bool = false
     var intersectionSnapEnabled: Bool = false
-    /// Curved-geometry snap toggles: circle/ellipse/arc center, quadrant apexes, and
-    /// tangent contact for an in-progress line.
+    /// Curved-geometry snap toggles: circle/ellipse/arc center, and on-rim / compass snap.
     var centerSnapEnabled: Bool = false
     var quadrantSnapEnabled: Bool = false
-    var tangentSnapEnabled: Bool = false
     var dimensionsVisible: Bool = false
     // Document-space offsets of dragged dimension labels, keyed by "<strokeID>:<dimensionID>".
     var dimensionOffsets: [String: CGPoint] = [:]
@@ -88,6 +86,9 @@ final class VectrDocument {
     /// Move is the idle default, so its toolbar icon stays off until the user
     /// taps it or starts using it. Launch and "exit tool → Move" leave this false.
     var isMoveToolHighlighted = false
+    /// When true, the Move tool shows the rotation handle. Off by default so
+    /// the handle is not in the way during ordinary move/edit.
+    var isMoveRotateMode = false
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
@@ -107,6 +108,9 @@ final class VectrDocument {
     }
     var activeFontRef: FontRef = .default
     var activeFontSize: CGFloat = 24
+    /// Defaults applied to the next text placed with the Type tool.
+    var activeTextIsOutline = false
+    var activeTextStrokeWidth: CGFloat = TextElement.defaultStrokeWidth
     var referenceImageData: Data?
     var referenceImageFrame: CGRect?
 
@@ -592,6 +596,21 @@ final class VectrDocument {
         geometryRevision += 1
     }
 
+    /// Builds a text element using the Type tool's current font, color, outline, and stroke defaults.
+    func makeTextElement(at position: CGPoint, layerID: UUID? = nil) -> TextElement {
+        TextElement(
+            layerID: layerID ?? activeLayerID,
+            text: "",
+            position: position,
+            fontRef: activeFontRef,
+            fontSize: activeFontSize,
+            color: strokeColor,
+            strokeColor: strokeColor,
+            strokeWidth: activeTextStrokeWidth,
+            isOutline: activeTextIsOutline
+        )
+    }
+
     func updateTextElement(_ element: TextElement, recordUndo: Bool = true) {
         guard let index = textElements.firstIndex(where: { $0.id == element.id }) else { return }
         if recordUndo { pushUndo() }
@@ -747,6 +766,53 @@ final class VectrDocument {
         geometryRevision += 1
     }
 
+    /// Merges imported artwork into the active layer. Vector items get new IDs;
+    /// a reference image replaces any existing one. `offset` is added in document space.
+    @discardableResult
+    func importContent(_ content: ImportRouter.ImportedContent, offset: CGPoint = .zero) throws -> Int {
+        let hasVectors = content.hasVectorContent
+        if hasVectors && activeLayer?.isLocked == true {
+            throw ImportRouter.ImportError.layerLocked
+        }
+        guard hasVectors || content.hasReferenceImage else {
+            throw ImportRouter.ImportError.noVectorContent
+        }
+
+        pushUndo()
+
+        var newStrokeIDs: Set<UUID> = []
+        var newTextIDs: Set<UUID> = []
+
+        for stroke in content.strokes {
+            var copy = stroke.duplicated(offset: offset)
+            copy.layerID = activeLayerID
+            strokes.append(ShapeGeometry.captureRotationBaseIfNeeded(copy))
+            newStrokeIDs.insert(copy.id)
+        }
+        for text in content.textElements {
+            var copy = text
+            copy.id = UUID()
+            copy.layerID = activeLayerID
+            copy.position = CGPoint(x: copy.position.x + offset.x, y: copy.position.y + offset.y)
+            textElements.append(copy)
+            newTextIDs.insert(copy.id)
+        }
+        if let data = content.referenceImageData {
+            referenceImageData = data
+            if let frame = content.referenceImageFrame {
+                referenceImageFrame = frame.offsetBy(dx: offset.x, dy: offset.y)
+            } else {
+                referenceImageFrame = nil
+            }
+        }
+
+        geometryRevision += 1
+        if !newStrokeIDs.isEmpty || !newTextIDs.isEmpty {
+            setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs, compactAnchors: false)
+        }
+        return newStrokeIDs.count + newTextIDs.count
+    }
+
     /// Adds a line segment, extending an open polyline when an endpoint connects.
     @discardableResult
     func commitLineSegment(
@@ -884,7 +950,7 @@ final class VectrDocument {
         for id in ids {
             guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
             let stroke = strokes[index]
-            let compacted = ShapeGeometry.withCompactedCircularAnchors(stroke)
+            let compacted = ShapeGeometry.withCompactedCircularAnchors(stroke, rewritingPartialRuns: false)
             if compacted != stroke {
                 strokes[index] = compacted
                 changed = true
@@ -1422,7 +1488,7 @@ final class VectrDocument {
     /// Replaces the entire element selection, picking a stable primary so the
     /// single-object tools (fillet/trim/scale/rotate panel) keep working.
     /// Off-layer items are dropped so Move/Edit cannot target another layer.
-    func setElementSelection(strokeIDs: Set<UUID>, textIDs: Set<UUID>) {
+    func setElementSelection(strokeIDs: Set<UUID>, textIDs: Set<UUID>, compactAnchors: Bool = true) {
         let strokeIDs = strokeIDs.filter { stroke(with: $0).map(isSelectableStroke) ?? false }
         let textIDs = textIDs.filter { textElement(with: $0).map(isSelectableText) ?? false }
         isSyncingSelection = true
@@ -1441,7 +1507,9 @@ final class VectrDocument {
         }
         isSyncingSelection = false
         clearAnchorSelection()
-        compactCircularAnchors(for: strokeIDs)
+        if compactAnchors {
+            compactCircularAnchors(for: strokeIDs)
+        }
     }
 
     func toggleStrokeSelection(_ id: UUID) {
@@ -2430,6 +2498,7 @@ final class VectrDocument {
         activeCategory = category
         if category != .move {
             isMoveToolHighlighted = false
+            isMoveRotateMode = false
         }
         if let lineVariant { self.lineVariant = lineVariant }
         if let circleVariant { self.circleVariant = circleVariant }

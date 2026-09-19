@@ -9,81 +9,112 @@ import UIKit
 import UniformTypeIdentifiers
 
 enum ImportRouter {
+    struct ImportedContent: Equatable {
+        var strokes: [VectorStroke] = []
+        var textElements: [TextElement] = []
+        var referenceImageData: Data?
+        var referenceImageFrame: CGRect?
+
+        var hasVectorContent: Bool { !strokes.isEmpty || !textElements.isEmpty }
+        var hasReferenceImage: Bool { referenceImageData != nil }
+    }
+
+    static var supportedTypes: [UTType] {
+        [.vectrDocument, .jpeg, .pdf, .svg, UTType(filenameExtension: "ai") ?? .pdf]
+    }
+
     static func importIntoLibrary(sourceURL: URL, library: ProjectLibrary) throws -> ProjectRecord {
         let ext = sourceURL.pathExtension.lowercased()
         let baseName = sourceURL.deletingPathExtension().lastPathComponent
 
-        switch ext {
-        case DocumentCodec.fileExtension:
+        if ext == DocumentCodec.fileExtension {
             let dest = try library.copyIntoLibrary(from: sourceURL, name: baseName)
             let document = try DocumentCodec.read(from: dest)
             return try library.registerImportedProject(name: baseName, fileURL: dest, document: document)
+        }
+
+        let document = VectrDocument()
+        let content = try loadContent(from: sourceURL, layerID: document.activeLayerID)
+        apply(content, to: document)
+
+        let dest = library.projectsDirectory.appendingPathComponent(
+            libraryUniqueName(base: baseName, in: library.projectsDirectory, ext: DocumentCodec.fileExtension)
+        )
+        try DocumentCodec.write(document, to: dest)
+        return try library.registerImportedProject(name: baseName, fileURL: dest, document: document)
+    }
+
+    static func loadContent(from sourceURL: URL, layerID: UUID) throws -> ImportedContent {
+        let ext = sourceURL.pathExtension.lowercased()
+        switch ext {
+        case DocumentCodec.fileExtension:
+            let imported = try DocumentCodec.read(from: sourceURL)
+            guard imported.strokes.isEmpty == false
+                    || imported.textElements.isEmpty == false
+                    || imported.referenceImageData != nil else {
+                throw ImportError.noVectorContent
+            }
+            return ImportedContent(
+                strokes: imported.strokes,
+                textElements: imported.textElements,
+                referenceImageData: imported.referenceImageData,
+                referenceImageFrame: imported.referenceImageFrame
+            )
 
         case "jpg", "jpeg":
             let data = try Data(contentsOf: sourceURL)
             guard let image = UIImage(data: data) else { throw ImportError.unsupportedFormat }
-            var document = VectrDocument()
-            document.referenceImageData = data
-            document.referenceImageFrame = CGRect(
-                x: -image.size.width / 2,
-                y: -image.size.height / 2,
-                width: image.size.width,
-                height: image.size.height
+            return ImportedContent(
+                referenceImageData: data,
+                referenceImageFrame: CGRect(
+                    x: -image.size.width / 2,
+                    y: -image.size.height / 2,
+                    width: image.size.width,
+                    height: image.size.height
+                )
             )
-            let dest = library.projectsDirectory.appendingPathComponent(
-                libraryUniqueName(base: baseName, in: library.projectsDirectory, ext: DocumentCodec.fileExtension)
-            )
-            try DocumentCodec.write(document, to: dest)
-            return try library.registerImportedProject(name: baseName, fileURL: dest, document: document)
 
         case "svg":
-            var document = VectrDocument()
-            let strokes = try SVGImporter.importStrokes(from: sourceURL, layerID: document.activeLayerID)
-            guard !strokes.isEmpty else { throw ImportError.noVectorContent }
-            document.strokes = SVGImporter.centeredStrokes(strokes)
-            let dest = library.projectsDirectory.appendingPathComponent(
-                libraryUniqueName(base: baseName, in: library.projectsDirectory, ext: DocumentCodec.fileExtension)
-            )
-            try DocumentCodec.write(document, to: dest)
-            return try library.registerImportedProject(name: baseName, fileURL: dest, document: document)
+            let parsed = try SVGImporter.importDocument(from: sourceURL, layerID: layerID)
+            let centered = SVGImporter.centered(parsed)
+            guard centered.hasVectorContent else { throw ImportError.noVectorContent }
+            return ImportedContent(strokes: centered.strokes, textElements: centered.textElements)
 
         case "pdf", "ai":
-            return try importPDF(from: sourceURL, name: baseName, library: library)
+            return try loadPDF(from: sourceURL, layerID: layerID)
 
         default:
             throw ImportError.unsupportedFormat
         }
     }
 
-    private static func importPDF(from sourceURL: URL, name: String, library: ProjectLibrary) throws -> ProjectRecord {
+    private static func apply(_ content: ImportedContent, to document: VectrDocument) {
+        document.strokes = content.strokes
+        document.textElements = content.textElements
+        document.referenceImageData = content.referenceImageData
+        document.referenceImageFrame = content.referenceImageFrame
+    }
+
+    private static func loadPDF(from sourceURL: URL, layerID: UUID) throws -> ImportedContent {
         guard let provider = CGDataProvider(url: sourceURL as CFURL),
               let pdf = CGPDFDocument(provider),
               let page = pdf.page(at: 1) else {
             throw ImportError.unsupportedFormat
         }
 
-        var document = VectrDocument()
         let pageRect = page.getBoxRect(.mediaBox)
-        let strokes = extractLineStrokes(from: page, layerID: document.activeLayerID, pageHeight: pageRect.height)
-
-        if strokes.isEmpty {
-            let renderer = UIGraphicsImageRenderer(size: pageRect.size)
-            let data = renderer.jpegData(withCompressionQuality: 0.9) { ctx in
-                ctx.cgContext.setFillColor(UIColor.white.cgColor)
-                ctx.cgContext.fill(pageRect)
-                ctx.cgContext.drawPDFPage(page)
-            }
-            document.referenceImageData = data
-            document.referenceImageFrame = pageRect
-        } else {
-            document.strokes = strokes
+        let strokes = extractLineStrokes(from: page, layerID: layerID, pageHeight: pageRect.height)
+        if !strokes.isEmpty {
+            return ImportedContent(strokes: strokes)
         }
 
-        let dest = library.projectsDirectory.appendingPathComponent(
-            libraryUniqueName(base: name, in: library.projectsDirectory, ext: DocumentCodec.fileExtension)
-        )
-        try DocumentCodec.write(document, to: dest)
-        return try library.registerImportedProject(name: name, fileURL: dest, document: document)
+        let renderer = UIGraphicsImageRenderer(size: pageRect.size)
+        let data = renderer.jpegData(withCompressionQuality: 0.9) { ctx in
+            ctx.cgContext.setFillColor(UIColor.white.cgColor)
+            ctx.cgContext.fill(pageRect)
+            ctx.cgContext.drawPDFPage(page)
+        }
+        return ImportedContent(referenceImageData: data, referenceImageFrame: pageRect)
     }
 
     private static func extractLineStrokes(from page: CGPDFPage, layerID: UUID, pageHeight: CGFloat) -> [VectorStroke] {
@@ -102,14 +133,16 @@ enum ImportRouter {
         return candidate
     }
 
-    enum ImportError: Error, LocalizedError {
+    enum ImportError: Error, LocalizedError, Equatable {
         case unsupportedFormat
         case noVectorContent
+        case layerLocked
 
         var errorDescription: String? {
             switch self {
             case .unsupportedFormat: return "This file format is not supported."
             case .noVectorContent: return "No vector content found in this file."
+            case .layerLocked: return "Unlock the active layer to import artwork."
             }
         }
     }

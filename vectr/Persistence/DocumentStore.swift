@@ -110,3 +110,11 @@ enum SaveRevisionPolicy {
         savedRevision == currentRevision
     }
 }
+
+enum GalleryThumbnailPolicy {
+    /// Quiet autosaves keep an existing gallery PNG. Rewrite it on explicit
+    /// save / leave / background, or when the thumbnail file is missing.
+    static func shouldWriteThumbnail(refreshRequested: Bool, thumbnailExists: Bool) -> Bool {
+        refreshRequested || !thumbnailExists
+    }
+}

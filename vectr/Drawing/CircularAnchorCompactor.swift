@@ -9,13 +9,22 @@ import Foundation
 extension ShapeGeometry {
     /// Collapses tessellated circular geometry back to the default editable anchors:
     /// - a full circle → 4 cardinal points (N, E, S, W)
-    /// - an arc → 2, 3, or 4 points depending on sweep (endpoints + crossed cardinals)
+    /// - an arc → endpoints plus every cardinal the sweep crosses (2–6 points)
     ///
     /// Dense sample lists produced by join, boolean cuts, trim, or Add Anchor are
     /// rewritten in place so move/edit keep showing the compact default, not every
     /// tessellation vertex. Already-compact or user-densified (5–11 sparse) shapes
     /// are left alone.
-    nonisolated static func withCompactedCircularAnchors(_ stroke: VectorStroke) -> VectorStroke {
+    ///
+    /// `rewritingPartialRuns` is for join/boolean leftovers (a circular bite in a
+    /// polyline). Leave it off for move / thickness / selection so imported letters
+    /// and ovals are not mistaken for circles.
+    nonisolated static func withCompactedCircularAnchors(
+        _ stroke: VectorStroke,
+        rewritingPartialRuns: Bool = true
+    ) -> VectorStroke {
+        // Compound SVG paths (letters, overlapping ovals) must keep every contour.
+        if !stroke.cutoutPoints.isEmpty { return stroke }
         switch stroke.shapeType {
         case .circle:
             return compactStandaloneCircle(stroke)
@@ -28,9 +37,9 @@ extension ShapeGeometry {
                 return restored
             }
             if stroke.points.count < 8 { return stroke }
-            return compactCircularRuns(in: stroke)
+            return compactCircularRuns(in: stroke, rewritingPartialRuns: rewritingPartialRuns)
         case .polyline, .rectangle:
-            return compactCircularRuns(in: stroke)
+            return compactCircularRuns(in: stroke, rewritingPartialRuns: rewritingPartialRuns)
         default:
             return stroke
         }
@@ -60,7 +69,7 @@ extension ShapeGeometry {
             )
         }
 
-        var interiors = cardinalsInteriorToSweep(startAngle: startAngle, sweep: sweep).map(point(at:))
+        let interiors = cardinalsInteriorToSweep(startAngle: startAngle, sweep: sweep).map(point(at:))
         let absSweep = abs(sweep)
 
         if absSweep <= .pi / 2 + 0.03 {
@@ -73,11 +82,12 @@ extension ShapeGeometry {
             return [start, point(at: startAngle + sweep / 2), end]
         }
 
-        if interiors.count >= 2 {
-            return [start, interiors[0], interiors[1], end]
-        }
-        if interiors.count == 1 {
-            return [start, interiors[0], point(at: startAngle + sweep * 2 / 3), end]
+        // Keep *every* interior cardinal. Consecutive anchors must stay under half a
+        // turn apart, because sweep recovery (`signedCircularSweep`) resolves each step
+        // to the shorter arc: a gap over 180° comes back with the wrong sign, so a 350°
+        // leftover reconstructs as a -10° sliver.
+        if !interiors.isEmpty {
+            return [start] + interiors + [end]
         }
         return [
             start,
@@ -155,7 +165,7 @@ private extension ShapeGeometry {
     }
 
     nonisolated static func compactStandaloneArc(_ stroke: VectorStroke) -> VectorStroke {
-        // Sparse arcs are already at the default 2–4 anchors (or user-edited).
+        // Sparse arcs are already at the default 2–6 anchors (or user-edited).
         // Re-emitting cardinals here would insert extra points while dragging.
         if stroke.points.count < 8 { return stroke }
         guard let geometry = circularGeometry(from: stroke.points, closed: stroke.isClosed) else {
@@ -193,8 +203,16 @@ private extension ShapeGeometry {
         let points = stroke.points
         guard points.count >= 2 else { return nil }
 
-        if stroke.isClosed, points.count == 4, circleFromCardinalPoints(points) != nil {
-            return replacingPoints(stroke, points: points, shapeType: .circle, closed: true)
+        // Four closed anchors are often an ellipse (or a cubic oval). Only promote
+        // when every vertex actually sits on one circle.
+        if stroke.isClosed, points.count == 4,
+           let circle = fittedCircleIfCircular(points, closed: true) {
+            return replacingPoints(
+                stroke,
+                points: circleCardinalPoints(center: circle.center, radius: circle.radius),
+                shapeType: .circle,
+                closed: true
+            )
         }
         if stroke.isClosed, points.count >= 8,
            let circle = fittedCircleIfCircular(points, closed: true) {
@@ -335,7 +353,10 @@ private extension ShapeGeometry {
         )
     }
 
-    nonisolated static func compactCircularRuns(in stroke: VectorStroke) -> VectorStroke {
+    nonisolated static func compactCircularRuns(
+        in stroke: VectorStroke,
+        rewritingPartialRuns: Bool = true
+    ) -> VectorStroke {
         let points = stroke.points
         guard points.count >= denseSampleThreshold else { return stroke }
 
@@ -359,6 +380,7 @@ private extension ShapeGeometry {
             return compactStandaloneArc(draft)
         }
 
+        guard rewritingPartialRuns else { return stroke }
         return rebuildStroke(stroke, replacing: runs)
     }
 
@@ -437,9 +459,21 @@ private extension ShapeGeometry {
         var anyCircular = false
         var index = 0
 
-        func appendStraight(_ point: CGPoint) {
+        // An already-compacted arc arrives as a handful of sparse anchors whose curvature
+        // lives only in `smoothCornerIndices` — far too few points to be re-detected as a
+        // dense circular run. Rebuilding the smooth set from scratch therefore silently
+        // straightens it, and since this runs on every drag start the shape loses one more
+        // arc each time the user grabs it.
+        let inheritedSmooth = stroke.smoothCornerIndices ?? []
+
+        func appendStraight(_ oldIndex: Int) {
+            let point = points[oldIndex]
             if let last = newPoints.last, hypot(last.x - point.x, last.y - point.y) <= 0.0005 {
                 return
+            }
+            if inheritedSmooth.contains(oldIndex) {
+                smooth.insert(newPoints.count)
+                anyCircular = true
             }
             newPoints.append(point)
         }
@@ -482,7 +516,7 @@ private extension ShapeGeometry {
                 repeat { index += 1 } while index < count && runSet.contains(index)
                 continue
             }
-            appendStraight(points[index])
+            appendStraight(index)
             index += 1
         }
 

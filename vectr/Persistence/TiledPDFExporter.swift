@@ -62,8 +62,8 @@ enum TiledPDFExporter {
             context.setAlpha(snapshot.opacity(forLayerID: stroke.layerID))
             if stroke.isClosed, !stroke.isConstruction {
                 context.addPath(StrokeRenderer.path(for: stroke, viewport: viewport, pointTransform: transform).cgPath)
-                context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
-                context.fillPath(using: stroke.cutoutPoints.isEmpty ? .winding : .evenOdd)
+                context.setFillColor(stroke.resolvedFillCGColor)
+                context.fillPath(using: stroke.resolvedCGFillRule)
             }
             context.addPath(StrokeRenderer.outlinePath(for: stroke, viewport: viewport, pointTransform: transform).cgPath)
             context.setStrokeColor(strokeColor(for: stroke))
