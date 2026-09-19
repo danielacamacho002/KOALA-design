@@ -20,13 +20,17 @@ struct ImportRouterTests {
         let content = try ImportRouter.loadContent(from: url, layerID: document.activeLayerID)
         #expect(content.hasReferenceImage)
         #expect(content.strokes.isEmpty)
+        #expect(content.referenceImages[0].layerID == document.activeLayerID)
 
         let importedCount = try document.importContent(content)
         #expect(importedCount == 0)
         #expect(document.strokes.count == 1)
         #expect(document.strokes[0].id == existing.id)
-        #expect(document.referenceImageData == content.referenceImageData)
-        #expect(document.referenceImageFrame == content.referenceImageFrame)
+        #expect(document.referenceImages.count == 1)
+        #expect(document.referenceImages[0].data == content.referenceImages[0].data)
+        #expect(document.referenceImages[0].frame == content.referenceImages[0].frame)
+        #expect(document.referenceImages[0].layerID == document.activeLayerID)
+        #expect(document.isReferenceImageSelected)
     }
 
     @Test func svgImportAppendsCenteredStrokesToActiveLayer() throws {
@@ -107,7 +111,7 @@ struct ImportRouterTests {
         #expect(document.strokes.isEmpty)
     }
 
-    @Test func jpegImportOntoLockedLayerStillSetsReferenceImage() throws {
+    @Test func jpegImportOntoLockedLayerThrows() throws {
         let url = try writeJPEG()
         defer { try? FileManager.default.removeItem(at: url) }
 
@@ -115,8 +119,21 @@ struct ImportRouterTests {
         document.toggleLayerLock(id: document.activeLayerID)
         let content = try ImportRouter.loadContent(from: url, layerID: document.activeLayerID)
 
-        #expect(try document.importContent(content) == 0)
-        #expect(document.referenceImageData != nil)
+        #expect(throws: ImportRouter.ImportError.layerLocked) {
+            try document.importContent(content)
+        }
+        #expect(document.referenceImages.isEmpty)
+        #expect(!document.isReferenceImageSelected)
+    }
+
+    @Test func pngImportAddsReferenceImage() throws {
+        let url = try writePNG()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let content = try ImportRouter.loadContent(from: url, layerID: UUID())
+        #expect(content.hasReferenceImage)
+        #expect(content.referenceImages.first?.frame.width == 2)
+        #expect(content.referenceImages.first?.frame.height == 2)
     }
 
     private func writeJPEG() throws -> URL {
@@ -127,6 +144,18 @@ struct ImportRouterTests {
         }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("import-\(UUID().uuidString).jpg")
+        try data.write(to: url)
+        return url
+    }
+
+    private func writePNG() throws -> URL {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2))
+        let data = renderer.pngData { ctx in
+            UIColor.blue.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("import-\(UUID().uuidString).png")
         try data.write(to: url)
         return url
     }

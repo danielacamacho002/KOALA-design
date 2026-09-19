@@ -18,7 +18,7 @@ final class DrawingCanvasUIView: UIView {
         didSet {
             performWithoutLayerAnimation {
                 reloadStrokes()
-                reloadReferenceImage()
+                reloadReferenceImages()
                 updateGridPresentation(forcePathRebuild: true)
             }
         }
@@ -103,9 +103,8 @@ final class DrawingCanvasUIView: UIView {
     private var cachedGridSubdiv: Int = -1
     private var cachedGridMajor: CGFloat = -1
     private var cachedCanvasSize: CGSize = .zero
-    private var referenceImageLayer: CALayer?
-    private var cachedReferenceImageData: Data?
-    private var cachedReferenceImage: UIImage?
+    private var referenceImageLayers: [UUID: CALayer] = [:]
+    private var cachedReferenceImages: [UUID: (data: Data, image: UIImage)] = [:]
     private var lastLaidOutSize: CGSize = .zero
     private var lastEmittedLayoutSize: CGSize = .zero
     private var lastEmittedSafeAreaInsets: UIEdgeInsets = .zero
@@ -161,7 +160,7 @@ final class DrawingCanvasUIView: UIView {
             if sizeChanged {
                 if strokeLayers.isEmpty && textLayers.isEmpty {
                     reloadStrokes()
-                    reloadReferenceImage()
+                    reloadReferenceImages()
                     refreshCommandPreview()
                     updateGridPresentation(forcePathRebuild: true)
                 } else {
@@ -215,7 +214,7 @@ final class DrawingCanvasUIView: UIView {
         switch selection {
         case .stroke(let id):
             delegate?.canvasDidSelectStroke(document.stroke(with: id))
-        case .text, .none:
+        case .text, .referenceImage, .none:
             delegate?.canvasDidSelectStroke(nil)
         }
         reloadStrokesHighlight()
@@ -257,6 +256,7 @@ final class DrawingCanvasUIView: UIView {
         }
         reloadStrokesHighlight()
         reloadTextElements()
+        reloadReferenceImages()
     }
 
     func reloadTextElements() {
@@ -283,51 +283,53 @@ final class DrawingCanvasUIView: UIView {
         }
     }
 
-    private func reloadReferenceImage() {
-        guard let data = document.referenceImageData else {
-            referenceImageLayer?.removeFromSuperlayer()
-            referenceImageLayer = nil
-            cachedReferenceImageData = nil
-            cachedReferenceImage = nil
-            return
+    func reloadReferenceImages() {
+        let images = document.visibleReferenceImages()
+        let ids = Set(images.map(\.id))
+        let zPositions = layerZPositions()
+
+        for id in referenceImageLayers.keys where !ids.contains(id) {
+            referenceImageLayers[id]?.removeFromSuperlayer()
+            referenceImageLayers.removeValue(forKey: id)
+            cachedReferenceImages.removeValue(forKey: id)
         }
 
-        if cachedReferenceImageData != data {
-            cachedReferenceImageData = data
-            cachedReferenceImage = UIImage(data: data)
+        for (index, item) in images.enumerated() {
+            if cachedReferenceImages[item.id]?.data != item.data {
+                if let image = UIImage(data: item.data) {
+                    cachedReferenceImages[item.id] = (item.data, image)
+                } else {
+                    cachedReferenceImages.removeValue(forKey: item.id)
+                }
+            }
+            guard let image = cachedReferenceImages[item.id]?.image else {
+                referenceImageLayers[item.id]?.removeFromSuperlayer()
+                referenceImageLayers.removeValue(forKey: item.id)
+                continue
+            }
+
+            let layer: CALayer
+            if let existing = referenceImageLayers[item.id] {
+                layer = existing
+            } else {
+                let created = CALayer()
+                self.layer.insertSublayer(created, above: gridLayer)
+                referenceImageLayers[item.id] = created
+                layer = created
+            }
+
+            let frame = item.frame
+            let viewOrigin = document.viewport.documentToView(frame.origin)
+            let viewSize = CGSize(
+                width: document.viewport.documentToView(distance: frame.width),
+                height: document.viewport.documentToView(distance: frame.height)
+            )
+            layer.contents = image.cgImage
+            layer.frame = CGRect(origin: viewOrigin, size: viewSize)
+            layer.opacity = Float(document.opacity(forLayerID: item.layerID) * 0.85)
+            let layerZ = zPositions[item.layerID] ?? 1
+            layer.zPosition = layerZ - 0.5 + CGFloat(index) * 0.001
         }
-
-        guard let image = cachedReferenceImage else {
-            referenceImageLayer?.removeFromSuperlayer()
-            referenceImageLayer = nil
-            return
-        }
-
-        let frame = document.referenceImageFrame ?? CGRect(
-            x: -image.size.width / 2,
-            y: -image.size.height / 2,
-            width: image.size.width,
-            height: image.size.height
-        )
-        let viewOrigin = document.viewport.documentToView(frame.origin)
-        let viewSize = CGSize(
-            width: document.viewport.documentToView(distance: frame.width),
-            height: document.viewport.documentToView(distance: frame.height)
-        )
-
-        let layer: CALayer
-        if let existing = referenceImageLayer {
-            layer = existing
-        } else {
-            let created = CALayer()
-            self.layer.insertSublayer(created, above: gridLayer)
-            referenceImageLayer = created
-            layer = created
-        }
-
-        layer.contents = image.cgImage
-        layer.frame = CGRect(origin: viewOrigin, size: viewSize)
-        layer.opacity = 0.85
     }
 
     private func addStrokeLayer(_ stroke: VectorStroke) {
@@ -411,7 +413,7 @@ final class DrawingCanvasUIView: UIView {
                 )
             }
         }
-        reloadReferenceImage()
+        reloadReferenceImages()
         updateCommandPreviewLayer()
         updateDragPreviewLayer()
         updateCurvePreview()

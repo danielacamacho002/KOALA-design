@@ -210,6 +210,7 @@ extension VectrDocument {
     enum ElementHit: Equatable {
         case text(UUID)
         case stroke(UUID)
+        case referenceImage(UUID)
         case none
     }
 
@@ -238,10 +239,11 @@ extension VectrDocument {
     }
 
     /// Unified selection: prefers a hit text element, otherwise falls back to
-    /// stroke hit testing. Text and strokes share a single active selection so
-    /// the standard manipulation tools (move/scale/delete) treat text like a shape.
-    /// Selecting any member of a group expands to the whole group.
-    /// A tap on another layer's item is ignored (does not select or clear).
+    /// stroke hit testing, then the imported reference image. Text and strokes
+    /// share a single active selection so the standard manipulation tools
+    /// (move/scale/delete) treat text like a shape. Selecting any member of a
+    /// group expands to the whole group. A tap on another layer's item is
+    /// ignored (does not select or clear).
     @discardableResult
     func selectElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
         if isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
@@ -254,6 +256,10 @@ extension VectrDocument {
         if let stroke = strokeHit(near: documentPoint, threshold: threshold) {
             selectStrokeConsideringGroups(stroke.id)
             return .stroke(stroke.id)
+        }
+        if let image = referenceImageHit(at: documentPoint), isSelectableReferenceImage(image) {
+            selectReferenceImage(id: image.id)
+            return .referenceImage(image.id)
         }
         clearElementSelection()
         return .none
