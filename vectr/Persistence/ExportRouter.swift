@@ -31,7 +31,7 @@ enum ExportRouter {
         case .svg:
             try SVGExporter.write(snapshot: snapshot, to: url)
         case .ai:
-            try PDFExporter.write(snapshot: snapshot, to: url)
+            try PDFExporter.write(snapshot: snapshot, to: url, opaqueFills: true)
         }
     }
 
