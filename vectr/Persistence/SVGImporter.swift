@@ -75,12 +75,13 @@ enum SVGImporter {
             if subpath.hasCurves {
                 return VectorStroke(
                     layerID: layerID,
-                    points: sampledPoints(for: subpath),
+                    points: subpath.points,
                     strokeWidth: paint.strokeWidth,
                     strokeColor: paint.strokeColor,
                     isClosed: subpath.isClosed,
-                    shapeType: .polyline,
+                    shapeType: .curve,
                     cutoutPoints: cutouts,
+                    curveHandles: normalizedHandles(for: subpath),
                     fillOpacity: subpath.isClosed ? paint.fillOpacity : nil,
                     fillColor: subpath.isClosed ? paint.fillColor : nil,
                     fillRule: subpath.isClosed ? paint.fillRule : nil
@@ -126,6 +127,14 @@ enum SVGImporter {
 
     nonisolated private static func sampledPoints(for subpath: SVGPathParser.Subpath) -> [CGPoint] {
         guard subpath.hasCurves else { return subpath.points }
+        return ShapeGeometry.curvePoints(
+            anchors: subpath.points,
+            handles: normalizedHandles(for: subpath),
+            closed: subpath.isClosed
+        )
+    }
+
+    nonisolated private static func normalizedHandles(for subpath: SVGPathParser.Subpath) -> [CurveHandle] {
         var handles = subpath.handles
         if handles.count < subpath.points.count {
             handles.append(contentsOf: Array(
@@ -135,11 +144,7 @@ enum SVGImporter {
         } else if handles.count > subpath.points.count {
             handles = Array(handles.prefix(subpath.points.count))
         }
-        return ShapeGeometry.curvePoints(
-            anchors: subpath.points,
-            handles: handles,
-            closed: subpath.isClosed
-        )
+        return handles
     }
 
     fileprivate static func circleStroke(
