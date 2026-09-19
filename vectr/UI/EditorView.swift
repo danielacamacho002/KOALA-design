@@ -377,9 +377,15 @@ struct EditorView: View {
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .type && editingTextID == nil {
-                    FontPickerView(document: store.document, library: FontLibrary.shared) {
-                        store.markDirty()
-                    }
+                    FontPickerView(
+                        document: store.document,
+                        library: FontLibrary.shared,
+                        onChanged: { store.markDirty() },
+                        onCancel: {
+                            store.document.clearActiveTool()
+                            updateChromeInsets()
+                        }
+                    )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
@@ -1073,9 +1079,9 @@ struct EditorView: View {
                     store.document.expandSelectionToGroupsIfNeeded()
                 }
                 if store.document.usesGroupTransform {
-                    statusMessage = "Drag to move the group, or use the handle to rotate; tap to add or remove"
+                    statusMessage = "Drag to move the group; tap to add or remove"
                 } else if store.document.selectedTextID != nil {
-                    statusMessage = "Drag to move the text, or use the handle to rotate"
+                    statusMessage = "Drag to move the text"
                 } else if store.document.selectedStrokeID == nil {
                     statusMessage = "Tap a shape to select; drag empty space to marquee-select"
                 } else {
@@ -1242,14 +1248,7 @@ struct EditorView: View {
             if let hit = store.document.selectTextElement(at: documentPoint) {
                 beginTextEditing(hit.id)
             } else {
-                let element = TextElement(
-                    layerID: store.document.activeLayerID,
-                    text: "",
-                    position: documentPoint,
-                    fontRef: store.document.activeFontRef,
-                    fontSize: store.document.activeFontSize,
-                    color: store.document.strokeColor
-                )
+                let element = store.document.makeTextElement(at: documentPoint)
                 store.document.addTextElement(element)
                 beginTextEditing(element.id)
                 store.markDirty()

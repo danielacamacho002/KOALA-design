@@ -469,8 +469,10 @@ struct CanvasOverlayView: View {
                 .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
                 .allowsHitTesting(false)
 
-            pivotMarker(at: center)
-            groupRotationHandle(pivot: center)
+            if document.isMoveRotateMode {
+                pivotMarker(at: center)
+                groupRotationHandle(pivot: center)
+            }
 
             if let activeSnap {
                 snapMarker(activeSnap)
@@ -794,14 +796,15 @@ struct CanvasOverlayView: View {
                         }
                 )
 
-            if let pivot {
+            if let pivot, document.isMoveRotateMode {
                 pivotMarker(at: pivot)
                 rotationHandle(strokeID: strokeID, pivot: pivot)
             }
 
             ForEach(Array(handles.enumerated()), id: \.offset) { index, point in
                 let selected = document.selectedAnchorIndices.contains(index)
-                let isPivot = document.moveRotationPivotAnchorIndex == index
+                let isPivot = document.isMoveRotateMode
+                    && document.moveRotationPivotAnchorIndex == index
                 ZStack {
                     handleView(style: selected ? .selectedAnchor : .move)
                     if isPivot {
@@ -1551,7 +1554,9 @@ struct CanvasOverlayView: View {
                 .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
                 .allowsHitTesting(false)
 
-            textRotationHandle(id: id, viewCorners: viewCorners, viewCenter: viewCenter)
+            if document.isMoveRotateMode {
+                textRotationHandle(id: id, viewCorners: viewCorners, viewCenter: viewCenter)
+            }
         }
     }
 

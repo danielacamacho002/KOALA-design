@@ -18,6 +18,9 @@ struct ToolCommandPanelView: View {
     var onVariantChanged: () -> Void
 
     private let panelWidth: CGFloat = 150
+    /// Compact width for point entry. Sized for `12.5, 8.0` / `d100` without
+    /// stretching across the panel; 12pt mono matches the thickness field.
+    private static let pointInputWidth: CGFloat = 100
     /// Thickness step in document points so behavior matches the select/move panel.
     private static let thicknessStepPoints: CGFloat = 0.5
 
@@ -25,48 +28,56 @@ struct ToolCommandPanelView: View {
     @State private var showColorPicker = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            panelHeader
+        VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    panelHeader
+                    variantSection
+                }
 
-            variantSection
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(session.prompt)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
 
-            Text(session.prompt)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                    FingerOnlyTextField(
+                        placeholder: inputPlaceholder,
+                        text: $session.inputText,
+                        keyboardType: .numbersAndPunctuation,
+                        fontSize: 12,
+                        cornerRadius: 0,
+                        backgroundColor: .clear,
+                        onSubmit: submitInput
+                    )
+                    .padding(.horizontal, 6)
+                    .frame(width: Self.pointInputWidth, height: 28, alignment: .leading)
+                    .background(Color.toolPanelButtonFill)
 
-            FingerOnlyTextField(
-                placeholder: inputPlaceholder,
-                text: $session.inputText,
-                keyboardType: .numbersAndPunctuation,
-                fontSize: 13,
-                cornerRadius: 0,
-                onSubmit: submitInput
-            )
-            .frame(height: 30)
+                    if let error = session.lastError {
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 
-            if let error = session.lastError {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
+                    if let placed = session.placedPointsLabel(units: units) {
+                        Text(placed)
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                thicknessSection
+                colorRow
             }
-
-            if let placed = session.placedPointsLabel(units: units) {
-                Text(placed)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
-            thicknessSection
-            colorRow
 
             HStack {
+                Spacer()
+
                 ToolPanelCancelButton {
                     session.cancel()
                     onCancel()
                 }
-
-                Spacer()
             }
         }
         .toolPanelChrome(width: panelWidth)
@@ -85,18 +96,11 @@ struct ToolCommandPanelView: View {
     private var variantSection: some View {
         let options = variantOptions
         if !options.isEmpty {
-            VStack(spacing: 2) {
-                ForEach(Array(options.enumerated()), id: \.offset) { index, label in
-                    ToolPanelLabelButton(
-                        title: label,
-                        prominent: index == selectedVariantIndex,
-                        fullWidth: true,
-                        alignment: .leading
-                    ) {
-                        applyVariant(index: index)
-                    }
-                }
-            }
+            ToolPanelSegmentBar(
+                options: options,
+                selectedIndex: selectedVariantIndex,
+                action: applyVariant
+            )
         }
     }
 
@@ -132,44 +136,18 @@ struct ToolCommandPanelView: View {
 
     @ViewBuilder
     private var thicknessSection: some View {
-        ToolPanelHeader("Thickness")
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Thickness")
 
-        HStack(spacing: 4) {
-            Text("Current:")
-            Text(currentThicknessText)
-                .fontWeight(.semibold)
-                .monospacedDigit()
-        }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-
-        HStack(spacing: 4) {
-            ToolPanelIconButton(systemImage: "minus") {
-                stepThickness(by: -Self.thicknessStepPoints)
-            }
-
-            FingerOnlyTextField(
-                placeholder: units.shortLabel,
+            ToolPanelNumericStepper(
                 text: $thicknessText,
-                keyboardType: .decimalPad,
-                fontSize: 12,
-                cornerRadius: 0,
+                placeholder: "0",
+                unitLabel: units.shortLabel,
+                onMinus: { stepThickness(by: -Self.thicknessStepPoints) },
+                onPlus: { stepThickness(by: Self.thicknessStepPoints) },
                 onSubmit: applyThickness
             )
-            .frame(height: 28)
-
-            ToolPanelIconButton(systemImage: "plus") {
-                stepThickness(by: Self.thicknessStepPoints)
-            }
         }
-
-        ToolPanelLabelButton(title: "Apply", fullWidth: true) {
-            applyThickness()
-        }
-    }
-
-    private var currentThicknessText: String {
-        "\(displayString(units.fromDocumentUnits(document.strokeWidth))) \(units.shortLabel)"
     }
 
     /// Formats a display-unit value with just enough precision (tiny units like inches need more).
@@ -208,7 +186,7 @@ struct ToolCommandPanelView: View {
         VStack(alignment: .leading, spacing: 4) {
             ToolPanelSectionLabel("Color")
 
-            HStack(spacing: 8) {
+            HStack(spacing: 2) {
                 Rectangle()
                     .fill(document.strokeColor.color)
                     .frame(width: 26, height: 26)
@@ -217,8 +195,11 @@ struct ToolCommandPanelView: View {
                 Button {
                     showColorPicker = true
                 } label: {
-                    colorWheel
-                        .frame(width: 28, height: 28)
+                    Image(systemName: "eyedropper")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.blue)
+                        .frame(width: 24, height: 32)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Line color")
@@ -234,28 +215,8 @@ struct ToolCommandPanelView: View {
         }
     }
 
-    private var colorWheel: some View {
-        Circle()
-            .fill(
-                AngularGradient(
-                    colors: (0...12).map { Color(hue: Double($0) / 12.0, saturation: 0.85, brightness: 0.95) },
-                    center: .center
-                )
-            )
-            .overlay(
-                Circle().fill(
-                    RadialGradient(
-                        colors: [Color.white.opacity(0.85), Color.white.opacity(0)],
-                        center: .center,
-                        startRadius: 0,
-                        endRadius: 14
-                    )
-                )
-            )
-    }
-
     private var inputPlaceholder: String {
-        session.controlPoints.isEmpty ? "x, y" : "x, y or d °"
+        session.controlPoints.isEmpty ? "x, y" : "x,y or d°"
     }
 
     private func submitInput() {

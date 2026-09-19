@@ -8,6 +8,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 extension Color {
     /// Fill for the non-prominent (secondary) tool panel buttons.
@@ -113,6 +114,150 @@ struct ToolPanelApplyButton: View {
             action: action
         )
         .accessibilityLabel("Apply")
+    }
+}
+
+/// Hairline used between segments in joined tool-panel controls.
+private struct ToolPanelSegmentDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.12))
+            .frame(width: 1, height: 16)
+    }
+}
+
+/// Equal-width option bar for tool variants (line / arc / construction, etc.).
+struct ToolPanelSegmentBar: View {
+    let options: [String]
+    let selectedIndex: Int
+    let action: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(options.enumerated()), id: \.offset) { index, label in
+                let isSelected = index == selectedIndex
+                if index > 0 {
+                    ToolPanelSegmentDivider()
+                }
+                Button {
+                    action(index)
+                } label: {
+                    Text(label)
+                        .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .foregroundStyle(isSelected ? Color.black : Color.toolPanelButtonForeground)
+                        .padding(.horizontal, 2)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 22)
+                        .background(isSelected ? Color.accentColor : Color.clear)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(label)
+                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+            }
+        }
+        .background(Color.toolPanelButtonFill)
+    }
+}
+
+/// Minus / value / plus as one filled control with hairline dividers.
+struct ToolPanelNumericStepper: View {
+    @Binding var text: String
+    var placeholder: String
+    var unitLabel: String? = nil
+    var keyboardType: UIKeyboardType = .decimalPad
+    var onMinus: () -> Void
+    var onPlus: () -> Void
+    var onSubmit: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            stepperButton(systemImage: "minus", action: onMinus)
+                .accessibilityLabel("Decrease")
+
+            ToolPanelSegmentDivider()
+
+            HStack(spacing: 0) {
+                Spacer(minLength: 4)
+
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text(text.isEmpty ? placeholder : text)
+                        .font(.system(size: 12, design: .monospaced))
+                        .hidden()
+                        .fixedSize()
+                        .overlay {
+                            FingerOnlyTextField(
+                                placeholder: placeholder,
+                                text: $text,
+                                keyboardType: keyboardType,
+                                fontSize: 12,
+                                cornerRadius: 0,
+                                backgroundColor: .clear,
+                                textAlignment: .center,
+                                onSubmit: onSubmit,
+                                onEditingEnded: onSubmit
+                            )
+                        }
+
+                    if let unitLabel {
+                        Text(unitLabel)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                    }
+                }
+
+                Spacer(minLength: 4)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 28)
+
+            ToolPanelSegmentDivider()
+
+            stepperButton(systemImage: "plus", action: onPlus)
+                .accessibilityLabel("Increase")
+        }
+        .background(Color.toolPanelButtonFill)
+    }
+
+    private func stepperButton(systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color.toolPanelButtonForeground)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Full-width row that reveals a menu to the side of a command panel.
+struct ToolPanelMenuButton: View {
+    let title: String
+    var isExpanded: Bool = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+                    .foregroundStyle(isExpanded ? Color.black : Color.toolPanelButtonForeground)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(isExpanded ? Color.black : .secondary)
+            }
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity)
+            .frame(height: 28)
+            .background(isExpanded ? Color.accentColor : Color.toolPanelButtonFill)
+        }
+        .buttonStyle(.plain)
     }
 }
 
