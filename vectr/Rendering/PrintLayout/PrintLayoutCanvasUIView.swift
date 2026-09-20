@@ -334,22 +334,27 @@ final class PrintLayoutCanvasUIView: UIView {
     // MARK: - Gestures
 
     private func setupGestures() {
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        addGestureRecognizer(tap)
-
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        pinch.delegate = self
         addGestureRecognizer(pinch)
 
         let twoFingerPan = UIPanGestureRecognizer(target: self, action: #selector(handleTwoFingerPan(_:)))
         twoFingerPan.minimumNumberOfTouches = 2
         twoFingerPan.maximumNumberOfTouches = 2
+        twoFingerPan.delegate = self
         addGestureRecognizer(twoFingerPan)
 
         let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
         twoFingerTap.numberOfTouchesRequired = 2
+        twoFingerTap.delegate = self
         twoFingerTap.require(toFail: pinch)
         twoFingerTap.require(toFail: twoFingerPan)
         addGestureRecognizer(twoFingerTap)
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tap.delegate = self
+        tap.require(toFail: twoFingerPan)
+        addGestureRecognizer(tap)
     }
 
     @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
@@ -384,5 +389,18 @@ final class PrintLayoutCanvasUIView: UIView {
             gesture.setTranslation(.zero, in: self)
             refreshViewport()
         }
+    }
+}
+
+extension PrintLayoutCanvasUIView: UIGestureRecognizerDelegate {
+    /// The overlay's marquee and move drags are SwiftUI gestures, which are recognizers
+    /// on the hosting view above this one. Without granting simultaneous recognition
+    /// these canvas recognizers block them and the drags never begin, so print layout
+    /// would lose marquee multi-select. Matches `DrawingCanvasUIView`.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        true
     }
 }
