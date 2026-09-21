@@ -80,7 +80,8 @@ struct CanvasOverlayView: View {
     @State private var groupRotateActive = false
 
     private let handleSize: CGFloat = 22
-    private let centerHandleSize: CGFloat = 16
+    /// Visible side length of path anchors and the center handle. Hit testing uses `anchorTouchTargetSize`.
+    private let anchorHandleSize: CGFloat = 6
     private let coordinateSpaceName = "editor"
     private let filletDragThreshold: CGFloat = 6
     private let rotateHandleOffset: CGFloat = 36
@@ -282,9 +283,8 @@ struct CanvasOverlayView: View {
     private func tangentDot() -> some View {
         Circle()
             .fill(Color.teal)
-            .frame(width: 14, height: 14)
-            .overlay(Circle().stroke(Color.white, lineWidth: 1.5))
-            .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+            .frame(width: anchorHandleSize, height: anchorHandleSize)
+            .shadow(color: .white.opacity(0.85), radius: 0.5)
             .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
             .contentShape(Rectangle())
     }
@@ -836,7 +836,7 @@ struct CanvasOverlayView: View {
                     if isPivot {
                         Circle()
                             .stroke(Color.yellow, lineWidth: 2)
-                            .frame(width: handleSize + 6, height: handleSize + 6)
+                            .frame(width: anchorHandleSize + 6, height: anchorHandleSize + 6)
                     }
                 }
                 .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
@@ -1456,11 +1456,12 @@ struct CanvasOverlayView: View {
     @ViewBuilder
     private func centerHandle(strokeID: UUID, stroke: VectorStroke, centerOverride: CGPoint? = nil) -> some View {
         if let center = centerOverride ?? ShapeGeometry.shapeCenter(for: stroke) {
-            RoundedRectangle(cornerRadius: 3)
-                .fill(Color.cyan)
-                .frame(width: centerHandleSize, height: centerHandleSize)
-                .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.white, lineWidth: 2))
-                .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+            RoundedRectangle(cornerRadius: 1)
+                .fill(Color(red: 0.22, green: 0.48, blue: 0.78))
+                .frame(width: anchorHandleSize, height: anchorHandleSize)
+                .shadow(color: .white.opacity(0.85), radius: 0.5)
+                .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
+                .contentShape(Rectangle())
                 .position(document.viewport.documentToView(center))
                 .highPriorityGesture(centerHandleDrag(strokeID: strokeID))
         }
@@ -1863,19 +1864,13 @@ struct CanvasOverlayView: View {
     }
 
     private func handleView(style: HandleStyle) -> some View {
-        let fill: Color = switch style {
-        case .edit: .accentColor
-        case .move: .orange
-        case .command: .blue
-        case .selectedAnchor: .mint
-        case .fillet: .purple
-        case .addAnchor: .green
-        }
-        return Circle()
+        let fill: Color = style == .selectedAnchor ? .blue : Color(white: 0.28)
+        return Rectangle()
             .fill(fill)
-            .frame(width: handleSize, height: handleSize)
-            .overlay(Circle().stroke(Color.white, lineWidth: 2))
-            .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+            .frame(width: anchorHandleSize, height: anchorHandleSize)
+            .shadow(color: .white.opacity(0.85), radius: 0.5)
+            .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
+            .contentShape(Rectangle())
     }
 
     private func documentDelta(from translation: CGSize) -> CGPoint {
