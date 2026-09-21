@@ -24,7 +24,7 @@ final class VectrDocument {
     var grid: GridSettings
     var settings: DocumentSettings = DocumentSettings()
 
-    var strokeWidth: CGFloat = 1.5
+    var strokeWidth: CGFloat = VectorStroke.defaultStrokeWidth
     var strokeColor: CodableColor = CodableColor(.primary)
     var selectedStrokeID: UUID? {
         didSet {
