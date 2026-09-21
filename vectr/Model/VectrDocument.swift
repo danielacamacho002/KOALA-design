@@ -1260,43 +1260,15 @@ final class VectrDocument {
 
     /// CAD-style trim: remove the contour span between cut points that bounds `documentPoint`.
     @discardableResult
-    func trimAt(_ documentPoint: CGPoint, threshold: CGFloat, canvas: DrawingCanvasUIView? = nil, completion: ((Bool) -> Void)? = nil) {
-        if isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
-            completion?(false)
-            return
-        }
+    func trimAt(_ documentPoint: CGPoint, threshold: CGFloat) -> Bool {
+        if isHitOnInactiveLayer(near: documentPoint, threshold: threshold) { return false }
         guard let result = TrimEngine.trim(
             at: documentPoint,
             threshold: threshold,
             strokes: interactiveStrokes(),
             preferredStrokeID: selectedStrokeID
-        ) else {
-            completion?(false)
-            return
-        }
+        ) else { return false }
 
-        // Show red highlight flash if canvas is provided and removed segment exists
-        if let canvas = canvas, let removedSegment = result.removedSegment {
-            canvas.showTrimHighlight(
-                points: removedSegment.points,
-                strokeWidth: removedSegment.strokeWidth,
-                isClosed: removedSegment.isClosed
-            )
-            
-            // Wait 200ms then execute trim
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak canvas] in
-                self.executeTrim(result: result)
-                canvas?.clearTrimHighlight()
-                completion?(true)
-            }
-        } else {
-            // No preview, execute immediately
-            executeTrim(result: result)
-            completion?(true)
-        }
-    }
-    
-    private func executeTrim(result: TrimEngine.TrimResult) {
         pushUndo()
         if let index = strokes.firstIndex(where: { $0.id == result.strokeID }) {
             strokes[index] = ShapeGeometry.withCompactedCircularAnchors(result.stroke)
@@ -1311,6 +1283,23 @@ final class VectrDocument {
         ClosedShapeDetector.reconcile(document: self)
         DonutDetector.reconcile(document: self)
         geometryRevision += 1
+        return true
+    }
+
+    /// Geometry of the span `trimAt` would remove at the same point. Read-only: no undo,
+    /// no revision bump. Non-`nil` exactly when `trimAt` would accept the tap, so callers
+    /// can use it to decide between trimming and the edge-delete fallback; a degenerate
+    /// span comes back with no points rather than `nil`.
+    func trimRemovalPreview(at documentPoint: CGPoint, threshold: CGFloat) -> TrimEngine.RemovedSegmentGeometry? {
+        if isHitOnInactiveLayer(near: documentPoint, threshold: threshold) { return nil }
+        guard let result = TrimEngine.trim(
+            at: documentPoint,
+            threshold: threshold,
+            strokes: interactiveStrokes(),
+            preferredStrokeID: selectedStrokeID
+        ) else { return nil }
+        return result.removedSegment
+            ?? TrimEngine.RemovedSegmentGeometry(points: [], isClosed: false, strokeWidth: result.stroke.strokeWidth)
     }
 
     func currentAnchorCount(for stroke: VectorStroke) -> Int {

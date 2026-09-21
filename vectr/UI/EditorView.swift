@@ -50,7 +50,10 @@ struct EditorView: View {
     @State private var patternSettings = PatternSettings()
     @State private var patternPreviewStrokes: [VectorStroke] = []
     @State private var autoSaveTask: Task<Void, Never>?
-    @State private var canvasView: DrawingCanvasUIView?
+    @State private var trimPreviewPoints: [CGPoint] = []
+    @State private var trimPreviewStrokeWidth: CGFloat = 1
+    @State private var trimFlashTask: Task<Void, Never>?
+    @State private var pendingTrim: PendingTrim?
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
 
     init(projectURL: URL? = nil, projectLibrary: ProjectLibrary? = nil) {
@@ -168,6 +171,8 @@ struct EditorView: View {
                         && (store.document.activeCategory == .rectangle
                             || store.document.activeCategory == .circle),
                     allowsDragDraw: allowsDragDraw,
+                    trimPreviewPoints: trimPreviewPoints,
+                    trimPreviewStrokeWidth: trimPreviewStrokeWidth,
                     lineVariant: store.document.lineVariant,
                     circleVariant: store.document.circleVariant,
                     rectangleVariant: store.document.rectangleVariant,
@@ -212,10 +217,7 @@ struct EditorView: View {
                     },
                     curveDraft: curveDraft,
                     onCurveCommitted: commitCurve,
-                    onLayoutMetrics: updateCanvasLayoutMetrics,
-                    onCanvasReady: { canvas in
-                        canvasView = canvas
-                    }
+                    onLayoutMetrics: updateCanvasLayoutMetrics
                 )
                 .ignoresSafeArea()
                 .transaction { $0.animation = nil }
@@ -984,6 +986,7 @@ struct EditorView: View {
         if category != .pattern {
             patternPreviewStrokes = []
         }
+        settlePendingTrim()
         switch category {
         case .type:
             commandSession.cancel()
@@ -1210,11 +1213,48 @@ struct EditorView: View {
         refreshCanvas()
     }
 
+    /// A trim tap that has been previewed but not yet cut.
+    private struct PendingTrim {
+        var point: CGPoint
+        var threshold: CGFloat
+    }
+
+    /// Flash the span in red, then cut. `removal` already told us the trim will land, so
+    /// `trimAt` is re-run after the flash rather than being made asynchronous.
+    private func flashTrimRemoval(
+        _ removal: TrimEngine.RemovedSegmentGeometry,
+        at documentPoint: CGPoint,
+        threshold: CGFloat
+    ) {
+        trimPreviewStrokeWidth = removal.strokeWidth
+        trimPreviewPoints = removal.points
+        pendingTrim = PendingTrim(point: documentPoint, threshold: threshold)
+        trimFlashTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            settlePendingTrim()
+        }
+    }
+
+    /// Apply the cut the flash is previewing and take the highlight down. The flash is
+    /// cosmetic, so anything that interrupts it — another trim tap, leaving the tool —
+    /// still commits the tap the user already made.
+    private func settlePendingTrim() {
+        trimFlashTask?.cancel()
+        trimFlashTask = nil
+        trimPreviewPoints = []
+        guard let pending = pendingTrim else { return }
+        pendingTrim = nil
+        store.document.trimAt(pending.point, threshold: pending.threshold)
+        store.markDirty()
+    }
+
     private func dismissActiveTool() {
         endTextEditingIfNeeded()
         commandSession.cancel()
         resetArcDragState()
         patternPreviewStrokes = []
+        settlePendingTrim()
         showCommandPanel = false
         store.document.clearToolSelections()
         store.document.clearElementSelection()
@@ -1293,6 +1333,9 @@ struct EditorView: View {
                 refreshCanvas()
             }
         case .trim:
+            // Commit any still-flashing cut first, so a fast second tap is measured
+            // against the geometry it will actually act on.
+            settlePendingTrim()
             if isEmptyCanvasTap(at: documentPoint) {
                 dismissActiveTool()
                 return
@@ -1305,33 +1348,32 @@ struct EditorView: View {
             // opens the shape; a collinear point is removed without changing the geometry.
             if store.document.deleteStrokeAnchor(near: documentPoint, threshold: threshold) {
                 refreshCanvas()
-            } else {
-                store.document.trimAt(documentPoint, threshold: threshold, canvas: canvasView) { success in
-                    if success {
-                        refreshCanvas()
-                    } else if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
-                        // Non-CAD shapes previously trimmed via edge/vertex handles. Keep that
-                        // behavior by tapping the geometry itself (no overlay handles).
-                        let usesCADTrim = stroke.shapeType == .circle
-                            || stroke.shapeType == .ellipse
-                            || (stroke.shapeType == .arc && !stroke.isClosed)
-                        if !usesCADTrim,
-                           let edgeIndex = StrokeEditor.nearestEdgeIndex(
-                               in: stroke,
-                               point: documentPoint,
-                               threshold: threshold
-                           ),
-                           closingEdgeFallbackAllowed(stroke, edgeIndex: edgeIndex) {
-                            store.document.deleteStrokeEdge(at: edgeIndex)
-                            refreshCanvas()
-                        } else {
-                            statusMessage = "Tap the line segment to trim away"
-                        }
-                    } else {
-                        _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
-                        refreshCanvas()
-                    }
+            } else if let removal = store.document.trimRemovalPreview(
+                at: documentPoint,
+                threshold: threshold
+            ) {
+                flashTrimRemoval(removal, at: documentPoint, threshold: threshold)
+            } else if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
+                // Non-CAD shapes previously trimmed via edge/vertex handles. Keep that
+                // behavior by tapping the geometry itself (no overlay handles).
+                let usesCADTrim = stroke.shapeType == .circle
+                    || stroke.shapeType == .ellipse
+                    || (stroke.shapeType == .arc && !stroke.isClosed)
+                if !usesCADTrim,
+                   let edgeIndex = StrokeEditor.nearestEdgeIndex(
+                       in: stroke,
+                       point: documentPoint,
+                       threshold: threshold
+                   ),
+                   closingEdgeFallbackAllowed(stroke, edgeIndex: edgeIndex) {
+                    store.document.deleteStrokeEdge(at: edgeIndex)
+                    refreshCanvas()
+                } else {
+                    statusMessage = "Tap the line segment to trim away"
                 }
+            } else {
+                _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
+                refreshCanvas()
             }
         case .addAnchor:
             if isEmptyCanvasTap(at: documentPoint, viewThreshold: 28) {
