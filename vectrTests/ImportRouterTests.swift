@@ -137,7 +137,7 @@ struct ImportRouterTests {
     }
 
     private func writeJPEG() throws -> URL {
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2))
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2), format: pointScaleFormat())
         let data = renderer.jpegData(withCompressionQuality: 0.9) { ctx in
             UIColor.red.setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
@@ -149,7 +149,7 @@ struct ImportRouterTests {
     }
 
     private func writePNG() throws -> URL {
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2))
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2), format: pointScaleFormat())
         let data = renderer.pngData { ctx in
             UIColor.blue.setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
@@ -158,6 +158,14 @@ struct ImportRouterTests {
             .appendingPathComponent("import-\(UUID().uuidString).png")
         try data.write(to: url)
         return url
+    }
+
+    /// Keep fixture pixels 1:1 with points so retina simulators don't 2× the imported frame.
+    private func pointScaleFormat() -> UIGraphicsImageRendererFormat {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        return format
     }
 
     private func writeSVG(body: String) throws -> URL {
