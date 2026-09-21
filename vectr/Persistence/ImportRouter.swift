@@ -12,15 +12,14 @@ enum ImportRouter {
     struct ImportedContent: Equatable {
         var strokes: [VectorStroke] = []
         var textElements: [TextElement] = []
-        var referenceImageData: Data?
-        var referenceImageFrame: CGRect?
+        var referenceImages: [ReferenceImage] = []
 
         var hasVectorContent: Bool { !strokes.isEmpty || !textElements.isEmpty }
-        var hasReferenceImage: Bool { referenceImageData != nil }
+        var hasReferenceImage: Bool { !referenceImages.isEmpty }
     }
 
     static var supportedTypes: [UTType] {
-        [.vectrDocument, .jpeg, .pdf, .svg, UTType(filenameExtension: "ai") ?? .pdf]
+        [.vectrDocument, .jpeg, .png, .heic, .gif, .tiff, .pdf, .svg, UTType(filenameExtension: "ai") ?? .pdf]
     }
 
     static func importIntoLibrary(sourceURL: URL, library: ProjectLibrary) throws -> ProjectRecord {
@@ -51,28 +50,17 @@ enum ImportRouter {
             let imported = try DocumentCodec.read(from: sourceURL)
             guard imported.strokes.isEmpty == false
                     || imported.textElements.isEmpty == false
-                    || imported.referenceImageData != nil else {
+                    || imported.referenceImages.isEmpty == false else {
                 throw ImportError.noVectorContent
             }
             return ImportedContent(
                 strokes: imported.strokes,
                 textElements: imported.textElements,
-                referenceImageData: imported.referenceImageData,
-                referenceImageFrame: imported.referenceImageFrame
+                referenceImages: imported.referenceImages
             )
 
-        case "jpg", "jpeg":
-            let data = try Data(contentsOf: sourceURL)
-            guard let image = UIImage(data: data) else { throw ImportError.unsupportedFormat }
-            return ImportedContent(
-                referenceImageData: data,
-                referenceImageFrame: CGRect(
-                    x: -image.size.width / 2,
-                    y: -image.size.height / 2,
-                    width: image.size.width,
-                    height: image.size.height
-                )
-            )
+        case "jpg", "jpeg", "png", "heic", "heif", "gif", "tif", "tiff", "webp":
+            return try loadRasterImage(from: sourceURL, layerID: layerID)
 
         case "svg":
             let parsed = try SVGImporter.importDocument(from: sourceURL, layerID: layerID)
@@ -91,8 +79,30 @@ enum ImportRouter {
     private static func apply(_ content: ImportedContent, to document: VectrDocument) {
         document.strokes = content.strokes
         document.textElements = content.textElements
-        document.referenceImageData = content.referenceImageData
-        document.referenceImageFrame = content.referenceImageFrame
+        document.referenceImages = content.referenceImages.map { image in
+            var copy = image
+            copy.layerID = document.activeLayerID
+            return copy
+        }
+    }
+
+    private static func loadRasterImage(from sourceURL: URL, layerID: UUID) throws -> ImportedContent {
+        let data = try Data(contentsOf: sourceURL)
+        guard let image = UIImage(data: data) else { throw ImportError.unsupportedFormat }
+        return ImportedContent(
+            referenceImages: [
+                ReferenceImage(
+                    layerID: layerID,
+                    data: data,
+                    frame: CGRect(
+                        x: -image.size.width / 2,
+                        y: -image.size.height / 2,
+                        width: image.size.width,
+                        height: image.size.height
+                    )
+                )
+            ]
+        )
     }
 
     private static func loadPDF(from sourceURL: URL, layerID: UUID) throws -> ImportedContent {
@@ -114,7 +124,9 @@ enum ImportRouter {
             ctx.cgContext.fill(pageRect)
             ctx.cgContext.drawPDFPage(page)
         }
-        return ImportedContent(referenceImageData: data, referenceImageFrame: pageRect)
+        return ImportedContent(
+            referenceImages: [ReferenceImage(layerID: layerID, data: data, frame: pageRect)]
+        )
     }
 
     private static func extractLineStrokes(from page: CGPDFPage, layerID: UUID, pageHeight: CGFloat) -> [VectorStroke] {

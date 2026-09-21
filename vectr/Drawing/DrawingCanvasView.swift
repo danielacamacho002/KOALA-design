@@ -17,6 +17,8 @@ struct DrawingCanvasView: UIViewRepresentable {
     var selectedStrokeID: UUID?
     var selectedTextID: UUID?
     var selectedStrokeIDs: Set<UUID> = []
+    var referenceImageIDs: [UUID] = []
+    var referenceImageFrames: [CGRect] = []
     var visualGridSpacing: CGFloat = 20
     var measurementUnit: MeasurementUnit = .points
     var gridVisible: Bool = true
@@ -89,8 +91,8 @@ struct DrawingCanvasView: UIViewRepresentable {
             didSwapDocument: didSwapDocument
         )
         let referenceImageChanged = context.coordinator.consumeReferenceImageChange(
-            data: document.referenceImageData,
-            frame: document.referenceImageFrame,
+            ids: referenceImageIDs,
+            frames: referenceImageFrames,
             didSwapDocument: didSwapDocument
         )
 
@@ -191,8 +193,8 @@ struct DrawingCanvasView: UIViewRepresentable {
         private var lastVisualGridSpacing: CGFloat?
         private var lastMeasurementUnit: MeasurementUnit?
         private var lastGridVisible: Bool?
-        private var lastReferenceImageData: Data?
-        private var lastReferenceImageFrame: CGRect?
+        private var lastReferenceImageIDs: [UUID] = []
+        private var lastReferenceImageFrames: [CGRect] = []
         private var viewportHandledByCanvas = false
 
         init(document: VectrDocument, onStrokeSelected: ((VectorStroke?) -> Void)?) {
@@ -264,15 +266,13 @@ struct DrawingCanvasView: UIViewRepresentable {
                 || lastGridVisible != gridVisible
         }
 
-        func consumeReferenceImageChange(data: Data?, frame: CGRect?, didSwapDocument: Bool) -> Bool {
+        func consumeReferenceImageChange(ids: [UUID], frames: [CGRect], didSwapDocument: Bool) -> Bool {
             defer {
-                lastReferenceImageData = data
-                lastReferenceImageFrame = frame
+                lastReferenceImageIDs = ids
+                lastReferenceImageFrames = frames
             }
             if didSwapDocument { return true }
-            if lastReferenceImageData != data { return true }
-            if lastReferenceImageFrame != frame { return true }
-            return false
+            return lastReferenceImageIDs != ids || lastReferenceImageFrames != frames
         }
 
         func consumeCanvasHandledViewportUpdate() -> Bool {
