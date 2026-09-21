@@ -18,7 +18,7 @@ final class DrawingCanvasUIView: UIView {
         didSet {
             performWithoutLayerAnimation {
                 reloadStrokes()
-                reloadReferenceImage()
+                reloadReferenceImages()
                 updateGridPresentation(forcePathRebuild: true)
             }
         }
@@ -56,8 +56,6 @@ final class DrawingCanvasUIView: UIView {
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
     var onCanvasTap: ((CGPoint) -> Void)?
-    /// Two-finger tap — same as the toolbar undo button (Procreate-style).
-    var onTwoFingerTap: (() -> Void)?
     var onDragDrawBegan: ((CGPoint) -> Void)?
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
@@ -81,10 +79,6 @@ final class DrawingCanvasUIView: UIView {
     private var commandPreviewLayer: CAShapeLayer?
     private var dragPreviewLayer: CAShapeLayer?
     private var commandPointLayers: [CAShapeLayer] = []
-    private var isPanning = false
-    private var lastPanLocation: CGPoint?
-    private var pinchStartScale: CGFloat = 1
-    private var pinchAnchor: CGPoint = .zero
     private var dragDrawStart: CGPoint?
     private var dragDrawCurrent: CGPoint?
     private var curveDragStart: CGPoint?
@@ -103,9 +97,8 @@ final class DrawingCanvasUIView: UIView {
     private var cachedGridSubdiv: Int = -1
     private var cachedGridMajor: CGFloat = -1
     private var cachedCanvasSize: CGSize = .zero
-    private var referenceImageLayer: CALayer?
-    private var cachedReferenceImageData: Data?
-    private var cachedReferenceImage: UIImage?
+    private var referenceImageLayers: [UUID: CALayer] = [:]
+    private var cachedReferenceImages: [UUID: (data: Data, image: UIImage)] = [:]
     private var lastLaidOutSize: CGSize = .zero
     private var lastEmittedLayoutSize: CGSize = .zero
     private var lastEmittedSafeAreaInsets: UIEdgeInsets = .zero
@@ -161,7 +154,7 @@ final class DrawingCanvasUIView: UIView {
             if sizeChanged {
                 if strokeLayers.isEmpty && textLayers.isEmpty {
                     reloadStrokes()
-                    reloadReferenceImage()
+                    reloadReferenceImages()
                     refreshCommandPreview()
                     updateGridPresentation(forcePathRebuild: true)
                 } else {
@@ -185,29 +178,6 @@ final class DrawingCanvasUIView: UIView {
         }
     }
 
-    // MARK: - Touch navigation
-
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        handleNavigationBegan(touches, with: event)
-    }
-
-    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if isPanning {
-            handleNavigationMoved(touches)
-        }
-    }
-
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if isPanning {
-            handleNavigationEnded()
-        }
-    }
-
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        isPanning = false
-        lastPanLocation = nil
-    }
-
     func handleSelection(at viewPoint: CGPoint) {
         let documentPoint = document.viewport.viewToDocument(viewPoint)
         let threshold = document.viewport.viewToDocument(distance: 16)
@@ -215,7 +185,7 @@ final class DrawingCanvasUIView: UIView {
         switch selection {
         case .stroke(let id):
             delegate?.canvasDidSelectStroke(document.stroke(with: id))
-        case .text, .none:
+        case .text, .referenceImage, .none:
             delegate?.canvasDidSelectStroke(nil)
         }
         reloadStrokesHighlight()
@@ -257,6 +227,7 @@ final class DrawingCanvasUIView: UIView {
         }
         reloadStrokesHighlight()
         reloadTextElements()
+        reloadReferenceImages()
     }
 
     func reloadTextElements() {
@@ -283,51 +254,53 @@ final class DrawingCanvasUIView: UIView {
         }
     }
 
-    private func reloadReferenceImage() {
-        guard let data = document.referenceImageData else {
-            referenceImageLayer?.removeFromSuperlayer()
-            referenceImageLayer = nil
-            cachedReferenceImageData = nil
-            cachedReferenceImage = nil
-            return
+    func reloadReferenceImages() {
+        let images = document.visibleReferenceImages()
+        let ids = Set(images.map(\.id))
+        let zPositions = layerZPositions()
+
+        for id in referenceImageLayers.keys where !ids.contains(id) {
+            referenceImageLayers[id]?.removeFromSuperlayer()
+            referenceImageLayers.removeValue(forKey: id)
+            cachedReferenceImages.removeValue(forKey: id)
         }
 
-        if cachedReferenceImageData != data {
-            cachedReferenceImageData = data
-            cachedReferenceImage = UIImage(data: data)
+        for (index, item) in images.enumerated() {
+            if cachedReferenceImages[item.id]?.data != item.data {
+                if let image = UIImage(data: item.data) {
+                    cachedReferenceImages[item.id] = (item.data, image)
+                } else {
+                    cachedReferenceImages.removeValue(forKey: item.id)
+                }
+            }
+            guard let image = cachedReferenceImages[item.id]?.image else {
+                referenceImageLayers[item.id]?.removeFromSuperlayer()
+                referenceImageLayers.removeValue(forKey: item.id)
+                continue
+            }
+
+            let layer: CALayer
+            if let existing = referenceImageLayers[item.id] {
+                layer = existing
+            } else {
+                let created = CALayer()
+                self.layer.insertSublayer(created, above: gridLayer)
+                referenceImageLayers[item.id] = created
+                layer = created
+            }
+
+            let frame = item.frame
+            let viewOrigin = document.viewport.documentToView(frame.origin)
+            let viewSize = CGSize(
+                width: document.viewport.documentToView(distance: frame.width),
+                height: document.viewport.documentToView(distance: frame.height)
+            )
+            layer.contents = image.cgImage
+            layer.frame = CGRect(origin: viewOrigin, size: viewSize)
+            layer.opacity = Float(document.opacity(forLayerID: item.layerID) * 0.85)
+            let layerZ = zPositions[item.layerID] ?? 1
+            layer.zPosition = layerZ - 0.5 + CGFloat(index) * 0.001
         }
-
-        guard let image = cachedReferenceImage else {
-            referenceImageLayer?.removeFromSuperlayer()
-            referenceImageLayer = nil
-            return
-        }
-
-        let frame = document.referenceImageFrame ?? CGRect(
-            x: -image.size.width / 2,
-            y: -image.size.height / 2,
-            width: image.size.width,
-            height: image.size.height
-        )
-        let viewOrigin = document.viewport.documentToView(frame.origin)
-        let viewSize = CGSize(
-            width: document.viewport.documentToView(distance: frame.width),
-            height: document.viewport.documentToView(distance: frame.height)
-        )
-
-        let layer: CALayer
-        if let existing = referenceImageLayer {
-            layer = existing
-        } else {
-            let created = CALayer()
-            self.layer.insertSublayer(created, above: gridLayer)
-            referenceImageLayer = created
-            layer = created
-        }
-
-        layer.contents = image.cgImage
-        layer.frame = CGRect(origin: viewOrigin, size: viewSize)
-        layer.opacity = 0.85
     }
 
     private func addStrokeLayer(_ stroke: VectorStroke) {
@@ -411,7 +384,7 @@ final class DrawingCanvasUIView: UIView {
                 )
             }
         }
-        reloadReferenceImage()
+        reloadReferenceImages()
         updateCommandPreviewLayer()
         updateDragPreviewLayer()
         updateCurvePreview()
@@ -659,26 +632,8 @@ final class DrawingCanvasUIView: UIView {
     // MARK: - Gestures
 
     private func setupGestures() {
-        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
-        pinch.delegate = self
-        addGestureRecognizer(pinch)
-
-        let twoFingerPan = UIPanGestureRecognizer(target: self, action: #selector(handleTwoFingerPan(_:)))
-        twoFingerPan.minimumNumberOfTouches = 2
-        twoFingerPan.maximumNumberOfTouches = 2
-        twoFingerPan.delegate = self
-        addGestureRecognizer(twoFingerPan)
-
-        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
-        twoFingerTap.numberOfTouchesRequired = 2
-        twoFingerTap.delegate = self
-        twoFingerTap.require(toFail: pinch)
-        twoFingerTap.require(toFail: twoFingerPan)
-        addGestureRecognizer(twoFingerTap)
-
         let tap = PreciseTapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.delegate = self
-        tap.require(toFail: twoFingerPan)
         addGestureRecognizer(tap)
 
         let dragDraw = PrecisePanGestureRecognizer(target: self, action: #selector(handleDragDraw(_:)))
@@ -691,52 +646,6 @@ final class DrawingCanvasUIView: UIView {
         curveFinish.numberOfTapsRequired = 2
         curveFinish.delegate = self
         addGestureRecognizer(curveFinish)
-    }
-
-    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        switch gesture.state {
-        case .began:
-            cancelViewportAnimation()
-            pinchStartScale = document.viewport.scale
-            pinchAnchor = gesture.location(in: self)
-        case .changed:
-            let newScale = pinchStartScale * gesture.scale
-            document.viewport.zoom(to: newScale, anchorViewPoint: pinchAnchor)
-            clampViewportToCanvasExtent()
-            refreshViewport()
-            delegate?.canvasDidUpdate(document: document)
-        default:
-            break
-        }
-    }
-
-    @objc private func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
-        let translation = gesture.translation(in: self)
-        switch gesture.state {
-        case .began:
-            cancelViewportAnimation()
-            lastPanLocation = translation
-        case .changed:
-            let delta = CGPoint(
-                x: translation.x - (lastPanLocation?.x ?? 0),
-                y: translation.y - (lastPanLocation?.y ?? 0)
-            )
-            document.viewport.translation.x += delta.x
-            document.viewport.translation.y += delta.y
-            clampViewportToCanvasExtent()
-            lastPanLocation = translation
-            refreshViewport()
-            delegate?.canvasDidUpdate(document: document)
-        case .ended, .cancelled:
-            lastPanLocation = nil
-        default:
-            break
-        }
-    }
-
-    @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
-        guard gesture.state == .ended else { return }
-        onTwoFingerTap?()
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -1334,28 +1243,6 @@ final class DrawingCanvasUIView: UIView {
         dragPreviewShapeType
     }
 
-    private func handleNavigationBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let event, event.allTouches?.count ?? 0 >= 2 {
-            isPanning = true
-            cancelViewportAnimation()
-            if let touch = touches.first {
-                lastPanLocation = touch.location(in: self)
-            }
-        }
-    }
-
-    private func handleNavigationMoved(_ touches: Set<UITouch>) {
-        guard let touch = touches.first, let last = lastPanLocation else { return }
-        let current = touch.location(in: self)
-        let delta = CGPoint(x: current.x - last.x, y: current.y - last.y)
-        document.viewport.translation.x += delta.x
-        document.viewport.translation.y += delta.y
-        clampViewportToCanvasExtent()
-        lastPanLocation = current
-        refreshViewport()
-        delegate?.canvasDidUpdate(document: document)
-    }
-
     private func clampViewportToCanvasExtent() {
         applyViewportIfNeeded {
             $0.clampToCanvasSize(
@@ -1363,11 +1250,6 @@ final class DrawingCanvasUIView: UIView {
                 canvasSize: document.settings.canvasSize
             )
         }
-    }
-
-    private func handleNavigationEnded() {
-        isPanning = false
-        lastPanLocation = nil
     }
 
     private func shouldAcceptDrawingTouch(_ touch: UITouch) -> Bool {

@@ -186,6 +186,8 @@ struct EditorView: View {
                     selectedStrokeID: store.document.selectedStrokeID,
                     selectedTextID: store.document.selectedTextID,
                     selectedStrokeIDs: store.document.selectedStrokeIDs,
+                    referenceImageIDs: store.document.visibleReferenceImages().map(\.id),
+                    referenceImageFrames: store.document.visibleReferenceImages().map(\.frame),
                     visualGridSpacing: UnitConversion.visualGridSpacing(
                         sliderValue: store.document.settings.defaultGridSpacingInUnits,
                         unit: store.document.settings.units
@@ -203,7 +205,6 @@ struct EditorView: View {
                     rectangleVariant: store.document.rectangleVariant,
                     canvasBackgroundColor: Color(hex: canvasColorHex),
                     onCanvasTap: handleCanvasTap,
-                    onTwoFingerTap: handleDesignUndo,
                     onStrokeSelected: { stroke in
                         if let stroke {
                             store.document.selectStrokeConsideringGroups(stroke.id)
@@ -285,6 +286,14 @@ struct EditorView: View {
                 }
                 .ignoresSafeArea()
                 .transaction { $0.animation = nil }
+
+                ViewportNavigationInstaller(
+                    document: store.document,
+                    viewportHandle: designCanvasHandle,
+                    onTwoFingerTap: handleDesignUndo
+                )
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .fillet {
@@ -991,7 +1000,7 @@ struct EditorView: View {
             store.document.selectedStrokeID = nil
             statusMessage = "Tap to place or edit text; drag to move, corners to scale"
         case .delete:
-            if !store.document.selectionIsEmpty {
+            if store.document.hasCanvasSelection {
                 store.document.deleteSelectedElements()
                 store.markDirty()
             } else {
@@ -1072,6 +1081,7 @@ struct EditorView: View {
                 // when returning to the move tool from another tool. Expand to
                 // the parent group when that stroke is a group member.
                 if store.document.selectionIsEmpty,
+                   !store.document.isReferenceImageSelected,
                    let lastID = store.document.lastSelectedStrokeID,
                    store.document.stroke(with: lastID)?.layerID == store.document.activeLayerID {
                     store.document.selectStrokeConsideringGroups(lastID)
@@ -1082,6 +1092,8 @@ struct EditorView: View {
                     statusMessage = "Drag to move the group; tap to add or remove"
                 } else if store.document.selectedTextID != nil {
                     statusMessage = "Drag to move the text"
+                } else if store.document.isReferenceImageSelected {
+                    statusMessage = "Drag to move the image; corners to scale"
                 } else if store.document.selectedStrokeID == nil {
                     statusMessage = "Tap a shape to select; drag empty space to marquee-select"
                 } else {
@@ -1407,8 +1419,14 @@ struct EditorView: View {
                 store.markDirty()
                 return
             }
-            // 5. Fall back to the current selection.
-            if !store.document.selectionIsEmpty {
+            // 5. Imported raster behind the vectors.
+            if let image = store.document.referenceImageHit(at: documentPoint) {
+                store.document.removeReferenceImage(id: image.id)
+                store.markDirty()
+                return
+            }
+            // 6. Fall back to the current selection.
+            if store.document.hasCanvasSelection {
                 store.document.deleteSelectedElements()
                 store.markDirty()
             }
@@ -1435,6 +1453,8 @@ struct EditorView: View {
             store.document.selectStrokeConsideringGroups(id)
         case .text(let id):
             store.document.selectTextConsideringGroups(id)
+        case .referenceImage(let id):
+            store.document.selectReferenceImage(id: id)
         case .none:
             if let groupHit {
                 store.document.selectGroup(groupHit)
@@ -1692,7 +1712,10 @@ struct EditorView: View {
                     let noun = count == 1 ? "item" : "items"
                     statusMessage = "Imported \(count) \(noun)"
                 } else {
-                    statusMessage = "Imported reference image"
+                    statusMessage = "Imported image — drag to move, corners to scale"
+                    if store.document.isReferenceImageSelected {
+                        store.document.engageMoveTool()
+                    }
                 }
             } catch {
                 errorMessage = error.localizedDescription

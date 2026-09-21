@@ -80,9 +80,11 @@ enum DocumentRenderer {
             )
         }
 
-        if let data = snapshot.referenceImageData,
-           let image = UIImage(data: data) {
-            let frame = snapshot.referenceImageFrame ?? defaultReferenceFrame(for: image)
+        for item in snapshot.visibleReferenceImages() {
+            guard let image = UIImage(data: item.data) else { continue }
+            let frame = item.frame.width > 0 && item.frame.height > 0
+                ? item.frame
+                : defaultReferenceFrame(for: image)
             let viewFrame = CGRect(
                 origin: viewport.documentToView(frame.origin),
                 size: CGSize(
@@ -90,7 +92,10 @@ enum DocumentRenderer {
                     height: viewport.documentToView(distance: frame.height)
                 )
             )
+            context.saveGState()
+            context.setAlpha(snapshot.opacity(forLayerID: item.layerID) * 0.85)
             image.draw(in: viewFrame)
+            context.restoreGState()
         }
 
         for stroke in snapshot.visibleStrokes() {
@@ -155,6 +160,9 @@ enum DocumentRenderer {
         var points = snapshot.visibleStrokes().flatMap { ShapeGeometry.renderPoints(for: $0) }
         for element in snapshot.visibleTextElements() {
             points.append(contentsOf: element.corners())
+        }
+        for image in snapshot.visibleReferenceImages() {
+            points.append(contentsOf: image.corners())
         }
         return points
     }

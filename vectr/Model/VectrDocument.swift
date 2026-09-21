@@ -36,6 +36,7 @@ final class VectrDocument {
                 selectedStrokeIDs = [id]
                 selectedTextID = nil
                 selectedTextIDs = []
+                selectedReferenceImageID = nil
             } else {
                 selectedStrokeIDs = []
             }
@@ -101,6 +102,7 @@ final class VectrDocument {
                 selectedTextIDs = [id]
                 selectedStrokeID = nil
                 selectedStrokeIDs = []
+                selectedReferenceImageID = nil
             } else {
                 selectedTextIDs = []
             }
@@ -111,8 +113,8 @@ final class VectrDocument {
     /// Defaults applied to the next text placed with the Type tool.
     var activeTextIsOutline = false
     var activeTextStrokeWidth: CGFloat = TextElement.defaultStrokeWidth
-    var referenceImageData: Data?
-    var referenceImageFrame: CGRect?
+    var referenceImages: [ReferenceImage] = []
+    var selectedReferenceImageID: UUID?
 
     var printLayout: PrintLayoutSettings = PrintLayoutSettings()
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
@@ -130,6 +132,9 @@ final class VectrDocument {
     private var undoStack: [DocumentSnapshot] = []
     private var redoStack: [DocumentSnapshot] = []
     private let undoLimit = 50
+    /// Live raster bytes by image id. Undo snapshots omit payloads; this map
+    /// reattaches them so add/remove/move stay undoable without 50× copies.
+    private var referenceImagePayloads: [UUID: Data] = [:]
     /// Bumped when undo/redo stacks change to keep toolbar state in sync.
     var undoRevision = 0
 
@@ -172,8 +177,8 @@ final class VectrDocument {
         strokeWidth = snapshot.strokeWidth
         strokeColor = snapshot.strokeColor
         selectedStrokeID = snapshot.selectedStrokeID
-        referenceImageData = snapshot.referenceImageData
-        referenceImageFrame = snapshot.referenceImageFrame
+        referenceImages = snapshot.resolvedReferenceImages()
+        rememberReferenceImagePayloads(referenceImages)
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
         printPieces = snapshot.printPieces
@@ -210,6 +215,10 @@ final class VectrDocument {
         isSelectableLayer(text.layerID)
     }
 
+    func isSelectableReferenceImage(_ image: ReferenceImage) -> Bool {
+        isSelectableLayer(image.layerID)
+    }
+
     /// Active layer that is visible and unlocked.
     func isSelectableLayer(_ layerID: UUID) -> Bool {
         guard layerID == activeLayerID,
@@ -230,6 +239,26 @@ final class VectrDocument {
         let order = layerIndexByID()
         let activeIndex = order[activeLayerID] ?? 0
         return visibleTextElements().filter { (order[$0.layerID] ?? 0) >= activeIndex }
+    }
+
+    /// Rasters rebound onto a known layer so hide/opacity/hit-testing match strokes.
+    func resolvedReferenceImages() -> [ReferenceImage] {
+        DocumentQueries.bindReferenceImages(referenceImages, layers: layers, fallback: activeLayerID)
+    }
+
+    func visibleReferenceImages() -> [ReferenceImage] {
+        DocumentQueries.visibleReferenceImages(layers: layers, images: resolvedReferenceImages())
+    }
+
+    func referenceImages(for layerID: UUID) -> [ReferenceImage] {
+        resolvedReferenceImages().filter { $0.layerID == layerID }
+    }
+
+    /// Visible images on the active layer and any layers stacked in front of it.
+    func occupyingReferenceImages() -> [ReferenceImage] {
+        let order = layerIndexByID()
+        let activeIndex = order[activeLayerID] ?? 0
+        return visibleReferenceImages().filter { (order[$0.layerID] ?? 0) >= activeIndex }
     }
 
     /// Geometry that editing tools, snaps, and constraints may interact with.
@@ -292,12 +321,16 @@ final class VectrDocument {
         layers.remove(at: index)
         strokes.removeAll { $0.layerID == id }
         textElements.removeAll { $0.layerID == id }
+        referenceImages.removeAll { $0.layerID == id }
         pruneGroups()
         if let selected = selectedStrokeID, stroke(with: selected) == nil {
             selectedStrokeID = nil
         }
         if let selectedText = selectedTextID, textElement(with: selectedText) == nil {
             selectedTextID = nil
+        }
+        if let selectedImage = selectedReferenceImageID, referenceImage(with: selectedImage) == nil {
+            selectedReferenceImageID = nil
         }
         if activeLayerID == id {
             activeLayerID = layers[min(index, layers.count - 1)].id
@@ -319,6 +352,11 @@ final class VectrDocument {
         guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
         pushUndo()
         layers[index].isVisible.toggle()
+        if !layers[index].isVisible,
+           let selected = selectedReferenceImage,
+           selected.layerID == id {
+            selectedReferenceImageID = nil
+        }
         geometryRevision += 1
     }
 
@@ -358,6 +396,9 @@ final class VectrDocument {
         let selectedTextOnActive = selectedTextIDs.filter { textElement(with: $0)?.layerID == id }
         if selectedOnActive.count != selectedStrokeIDs.count || selectedTextOnActive.count != selectedTextIDs.count {
             setElementSelection(strokeIDs: selectedOnActive, textIDs: selectedTextOnActive)
+        } else if let imageID = selectedReferenceImageID,
+                  referenceImage(with: imageID)?.layerID != id {
+            selectedReferenceImageID = nil
         }
     }
 
@@ -523,11 +564,16 @@ final class VectrDocument {
                                                layerID: { $0.layerID }, setLayerID: { $0.layerID = $1 })
         textElements = mergedContentPreservingOrder(textElements, mergedIDs: mergedIDs, targetID: targetID, order: order,
                                                     layerID: { $0.layerID }, setLayerID: { $0.layerID = $1 })
+        referenceImages = mergedContentPreservingOrder(referenceImages, mergedIDs: mergedIDs, targetID: targetID, order: order,
+                                                       layerID: { $0.layerID }, setLayerID: { $0.layerID = $1 })
 
         layers.removeAll { mergedIDs.contains($0.id) && $0.id != targetID }
         pruneGroups()
         if let selected = selectedStrokeID, stroke(with: selected) == nil { selectedStrokeID = nil }
         if let selectedText = selectedTextID, textElement(with: selectedText) == nil { selectedTextID = nil }
+        if let selectedImage = selectedReferenceImageID, referenceImage(with: selectedImage) == nil {
+            selectedReferenceImageID = nil
+        }
         if mergedIDs.contains(activeLayerID) { activeLayerID = targetID }
         normalizeLayerGrouping()
         geometryRevision += 1
@@ -643,6 +689,120 @@ final class VectrDocument {
         if recordUndo { pushUndo() }
         textElements[index].position = position
         geometryRevision += 1
+    }
+
+    // MARK: - Reference image
+
+    private static let minReferenceImageDimension: CGFloat = 8
+    private static let additionalImageStagger: CGFloat = 36
+
+    var hasReferenceImage: Bool { !referenceImages.isEmpty }
+
+    var isReferenceImageSelected: Bool { selectedReferenceImageID != nil }
+
+    /// Combined stroke/text selection plus the imported image, used by move/scale chrome.
+    var hasCanvasSelection: Bool {
+        !selectionIsEmpty || isReferenceImageSelected
+    }
+
+    var selectedReferenceImage: ReferenceImage? {
+        guard let id = selectedReferenceImageID else { return nil }
+        return referenceImage(with: id)
+    }
+
+    var resolvedReferenceImageFrame: CGRect? {
+        guard let frame = selectedReferenceImage?.frame ?? referenceImages.last?.frame,
+              frame.width > 0, frame.height > 0 else {
+            return nil
+        }
+        return frame
+    }
+
+    func referenceImage(with id: UUID) -> ReferenceImage? {
+        referenceImages.first { $0.id == id }
+    }
+
+    /// Front-most occupying imported image under `point` (last in the array is on top).
+    func referenceImageHit(at point: CGPoint) -> ReferenceImage? {
+        occupyingReferenceImages().reversed().first { $0.contains(point) }
+    }
+
+    func referenceImageContains(_ point: CGPoint) -> Bool {
+        referenceImageHit(at: point) != nil
+    }
+
+    func referenceImageCorners() -> [CGPoint]? {
+        guard let frame = resolvedReferenceImageFrame else { return nil }
+        return [
+            CGPoint(x: frame.minX, y: frame.minY),
+            CGPoint(x: frame.maxX, y: frame.minY),
+            CGPoint(x: frame.maxX, y: frame.maxY),
+            CGPoint(x: frame.minX, y: frame.maxY)
+        ]
+    }
+
+    func selectReferenceImage() {
+        guard let id = selectedReferenceImageID ?? referenceImages.last?.id,
+              referenceImage(with: id) != nil else {
+            selectedReferenceImageID = nil
+            return
+        }
+        selectReferenceImage(id: id)
+    }
+
+    func selectReferenceImage(id: UUID) {
+        guard referenceImage(with: id) != nil else {
+            selectedReferenceImageID = nil
+            return
+        }
+        setElementSelection(strokeIDs: [], textIDs: [])
+        selectedReferenceImageID = id
+    }
+
+    func setReferenceImageFrame(_ frame: CGRect, id: UUID? = nil, recordUndo: Bool = false) {
+        guard let index = targetReferenceImageIndex(id: id) else { return }
+        if recordUndo { pushUndo() }
+        let width = max(abs(frame.width), Self.minReferenceImageDimension)
+        let height = max(abs(frame.height), Self.minReferenceImageDimension)
+        referenceImages[index].frame = CGRect(x: frame.minX, y: frame.minY, width: width, height: height)
+    }
+
+    func scaleReferenceImage(factorX: CGFloat, factorY: CGFloat, about center: CGPoint, id: UUID? = nil) {
+        guard let index = targetReferenceImageIndex(id: id) else { return }
+        let frame = referenceImages[index].frame
+        let width = max(abs(frame.width * factorX), Self.minReferenceImageDimension)
+        let height = max(abs(frame.height * factorY), Self.minReferenceImageDimension)
+        setReferenceImageFrame(
+            CGRect(
+                x: center.x - width / 2,
+                y: center.y - height / 2,
+                width: width,
+                height: height
+            ),
+            id: referenceImages[index].id,
+            recordUndo: false
+        )
+    }
+
+    func removeReferenceImage(id: UUID? = nil, recordUndo: Bool = true) {
+        let targetID = id ?? selectedReferenceImageID ?? referenceImages.last?.id
+        guard let targetID, referenceImages.contains(where: { $0.id == targetID }) else { return }
+        if recordUndo { pushUndo() }
+        referenceImages.removeAll { $0.id == targetID }
+        if selectedReferenceImageID == targetID {
+            selectedReferenceImageID = nil
+        }
+        geometryRevision += 1
+    }
+
+    private func targetReferenceImageIndex(id: UUID?) -> Int? {
+        if let id {
+            return referenceImages.firstIndex { $0.id == id }
+        }
+        if let selected = selectedReferenceImageID {
+            return referenceImages.firstIndex { $0.id == selected }
+        }
+        return referenceImages.indices.last
     }
 
     func setTextRotation(id: UUID, radians: CGFloat, recordUndo: Bool = false) {
@@ -767,11 +927,11 @@ final class VectrDocument {
     }
 
     /// Merges imported artwork into the active layer. Vector items get new IDs;
-    /// a reference image replaces any existing one. `offset` is added in document space.
+    /// rasters are appended on the active layer. `offset` is added in document space.
     @discardableResult
     func importContent(_ content: ImportRouter.ImportedContent, offset: CGPoint = .zero) throws -> Int {
         let hasVectors = content.hasVectorContent
-        if hasVectors && activeLayer?.isLocked == true {
+        if (hasVectors || content.hasReferenceImage) && activeLayer?.isLocked == true {
             throw ImportRouter.ImportError.layerLocked
         }
         guard hasVectors || content.hasReferenceImage else {
@@ -797,18 +957,20 @@ final class VectrDocument {
             textElements.append(copy)
             newTextIDs.insert(copy.id)
         }
-        if let data = content.referenceImageData {
-            referenceImageData = data
-            if let frame = content.referenceImageFrame {
-                referenceImageFrame = frame.offsetBy(dx: offset.x, dy: offset.y)
-            } else {
-                referenceImageFrame = nil
-            }
+        for image in content.referenceImages {
+            let stagger = CGFloat(referenceImages.count) * Self.additionalImageStagger
+            var copy = image
+            copy.id = UUID()
+            copy.layerID = activeLayerID
+            copy.frame = copy.frame.offsetBy(dx: offset.x + stagger, dy: offset.y + stagger)
+            referenceImages.append(copy)
         }
 
         geometryRevision += 1
         if !newStrokeIDs.isEmpty || !newTextIDs.isEmpty {
             setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs, compactAnchors: false)
+        } else if let lastImage = referenceImages.last, content.hasReferenceImage {
+            selectReferenceImage(id: lastImage.id)
         }
         return newStrokeIDs.count + newTextIDs.count
     }
@@ -1506,6 +1668,7 @@ final class VectrDocument {
             selectedTextID = nil
         }
         isSyncingSelection = false
+        selectedReferenceImageID = nil
         clearAnchorSelection()
         if compactAnchors {
             compactCircularAnchors(for: strokeIDs)
@@ -1577,7 +1740,7 @@ final class VectrDocument {
         return isSelectableStroke(hit) ? hit : nil
     }
 
-    /// Non-mutating topmost element hit (text preferred over strokes).
+    /// Non-mutating topmost element hit (text preferred over strokes, image behind both).
     func elementHit(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
         switch occupyingElementHit(near: documentPoint, threshold: threshold) {
         case .text(let id):
@@ -1586,18 +1749,25 @@ final class VectrDocument {
         case .stroke(let id):
             guard let stroke = stroke(with: id), isSelectableStroke(stroke) else { return .none }
             return .stroke(id)
+        case .referenceImage(let id):
+            guard let image = referenceImage(with: id), isSelectableReferenceImage(image) else { return .none }
+            return .referenceImage(id)
         case .none:
             return .none
         }
     }
 
-    /// Front-most text or stroke on the active layer or stacked in front of it.
+    /// Front-most text or stroke on the active layer or stacked in front of it;
+    /// imported images are hit only when nothing vector is on top of the point.
     func occupyingElementHit(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
         if let text = occupyingTextElements().reversed().first(where: { $0.contains(documentPoint) }) {
             return .text(text.id)
         }
         if let stroke = topmostOccupyingStroke(near: documentPoint, threshold: threshold) {
             return .stroke(stroke.id)
+        }
+        if let image = occupyingReferenceImages().reversed().first(where: { $0.contains(documentPoint) }) {
+            return .referenceImage(image.id)
         }
         return .none
     }
@@ -1613,6 +1783,8 @@ final class VectrDocument {
             return stroke(with: id).map { !isSelectableStroke($0) } ?? false
         case .text(let id):
             return textElement(with: id).map { !isSelectableText($0) } ?? false
+        case .referenceImage(let id):
+            return referenceImage(with: id).map { !isSelectableReferenceImage($0) } ?? false
         }
     }
 
@@ -1628,6 +1800,9 @@ final class VectrDocument {
             if let text = textElement(with: id), text.contains(point) {
                 return true
             }
+        }
+        if let selected = selectedReferenceImage, selected.contains(point) {
+            return true
         }
         return false
     }
@@ -1645,6 +1820,13 @@ final class VectrDocument {
             if Self.rectsOverlap(text.boundingBox(), rect) {
                 textIDs.insert(text.id)
             }
+        }
+        if strokeIDs.isEmpty, textIDs.isEmpty,
+           let image = occupyingReferenceImages().reversed().first(where: {
+               isSelectableReferenceImage($0) && Self.rectsOverlap($0.frame, rect)
+           }) {
+            selectReferenceImage(id: image.id)
+            return
         }
         let expanded = expandedSelectionForGroups(strokeIDs: strokeIDs, textIDs: textIDs)
         setElementSelection(strokeIDs: expanded.strokeIDs, textIDs: expanded.textIDs)
@@ -1821,6 +2003,10 @@ final class VectrDocument {
 
     /// Deletes every selected stroke and text element in one undoable step.
     func deleteSelectedElements() {
+        if isReferenceImageSelected && selectionIsEmpty {
+            removeReferenceImage()
+            return
+        }
         expandSelectionToGroupsIfNeeded()
         guard !selectionIsEmpty else { return }
         pushUndo()
@@ -1835,6 +2021,7 @@ final class VectrDocument {
         selectedStrokeID = nil
         selectedTextID = nil
         isSyncingSelection = false
+        selectedReferenceImageID = nil
         clearAnchorSelection()
         geometryRevision += 1
     }
@@ -3146,7 +3333,7 @@ final class VectrDocument {
         }
     }
 
-    /// Full snapshot including `referenceImageData`; used by the codec, exporters, and last-saved tracking.
+    /// Full snapshot including raster bytes; used by the codec, exporters, and last-saved tracking.
     func makeSnapshot() -> DocumentSnapshot {
         DocumentSnapshot(
             layers: layers,
@@ -3161,8 +3348,12 @@ final class VectrDocument {
             strokeWidth: strokeWidth,
             strokeColor: strokeColor,
             selectedStrokeID: selectedStrokeID,
-            referenceImageData: referenceImageData,
-            referenceImageFrame: referenceImageFrame,
+            referenceImages: {
+                let images = resolvedReferenceImages()
+                return images.isEmpty ? nil : images
+            }(),
+            referenceImageData: nil,
+            referenceImageFrame: nil,
             printLayout: printLayout,
             printStrokeTransforms: printStrokeTransforms,
             printPieces: printPieces,
@@ -3172,10 +3363,13 @@ final class VectrDocument {
         )
     }
 
-    /// Undo/redo snapshot. Omits `referenceImageData`; codec and last-saved still include it.
+    /// Undo/redo snapshot. Omits raster bytes; codec and last-saved still include them.
     private func currentSnapshot() -> DocumentSnapshot {
+        rememberReferenceImagePayloads(referenceImages)
         var snapshot = makeSnapshot()
+        snapshot.referenceImages = snapshot.referenceImages?.map { $0.omittingPayload() }
         snapshot.referenceImageData = nil
+        snapshot.referenceImageFrame = nil
         return snapshot
     }
 
@@ -3191,8 +3385,7 @@ final class VectrDocument {
         strokeWidth = snapshot.strokeWidth
         strokeColor = snapshot.strokeColor
         selectedStrokeID = snapshot.selectedStrokeID
-        // Undo snapshots omit image bytes; keep the live document's data.
-        referenceImageFrame = snapshot.referenceImageFrame
+        applyReferenceImages(from: snapshot)
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
         printPieces = snapshot.printPieces
@@ -3203,10 +3396,39 @@ final class VectrDocument {
         printLayoutRevision += 1
     }
 
-    /// Bytes of `referenceImageData` held by undo/redo snapshots. Always 0.
+    private func rememberReferenceImagePayloads(_ images: [ReferenceImage]) {
+        for image in images where !image.data.isEmpty {
+            referenceImagePayloads[image.id] = image.data
+        }
+    }
+
+    /// Restore image ids/frames/layers from the snapshot; reattach live bytes by id.
+    private func applyReferenceImages(from snapshot: DocumentSnapshot) {
+        rememberReferenceImagePayloads(referenceImages)
+        let restored = snapshot.resolvedReferenceImages()
+        rememberReferenceImagePayloads(restored)
+        referenceImages = restored.map { image in
+            guard image.data.isEmpty, let cached = referenceImagePayloads[image.id] else {
+                return image
+            }
+            var copy = image
+            copy.data = cached
+            return copy
+        }
+        if let selected = selectedReferenceImageID,
+           !referenceImages.contains(where: { $0.id == selected }) {
+            selectedReferenceImageID = nil
+        }
+    }
+
+    /// Bytes of raster payloads held by undo/redo snapshots. Always 0.
     var undoRetainedReferenceImageBytes: Int {
-        undoStack.reduce(0) { $0 + ($1.referenceImageData?.count ?? 0) }
-            + redoStack.reduce(0) { $0 + ($1.referenceImageData?.count ?? 0) }
+        func retainedBytes(_ snapshot: DocumentSnapshot) -> Int {
+            let imageBytes = (snapshot.referenceImages ?? []).reduce(0) { $0 + $1.data.count }
+            return imageBytes + (snapshot.referenceImageData?.count ?? 0)
+        }
+        return undoStack.reduce(0) { $0 + retainedBytes($1) }
+            + redoStack.reduce(0) { $0 + retainedBytes($1) }
     }
 }
 
@@ -3223,6 +3445,10 @@ nonisolated struct DocumentSnapshot: Codable, Sendable {
     var strokeWidth: CGFloat
     var strokeColor: CodableColor
     var selectedStrokeID: UUID?
+    /// Current persisted rasters. Optional so documents saved before multiple-image
+    /// support still decode; missing key becomes nil rather than a throw.
+    var referenceImages: [ReferenceImage]?
+    /// Legacy single-image payload. Used only when `referenceImages` is empty.
     var referenceImageData: Data?
     var referenceImageFrame: CGRect?
     var printLayout: PrintLayoutSettings = PrintLayoutSettings()
