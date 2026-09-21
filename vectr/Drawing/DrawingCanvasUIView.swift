@@ -92,7 +92,6 @@ final class DrawingCanvasUIView: UIView {
     private var rankLayers: [CAShapeLayer] = []
     private let axisXLayer = CAShapeLayer()
     private let axisYLayer = CAShapeLayer()
-    private let boundaryLayer = CAShapeLayer()
     private var cachedGridCoverage: CGRect = .null
     private var cachedGridSubdiv: Int = -1
     private var cachedGridMajor: CGFloat = -1
@@ -408,12 +407,9 @@ final class DrawingCanvasUIView: UIView {
 
         configureGridShapeLayer(axisXLayer, color: GridRenderer.axisXColor, width: GridRenderer.axisLineWidth)
         configureGridShapeLayer(axisYLayer, color: GridRenderer.axisYColor, width: GridRenderer.axisLineWidth)
-        configureGridShapeLayer(boundaryLayer, color: GridRenderer.boundaryColor, width: GridRenderer.boundaryLineWidth)
-        boundaryLayer.lineDashPattern = GridRenderer.boundaryDash as [NSNumber]
 
         clipLayer.addSublayer(axisXLayer)
         clipLayer.addSublayer(axisYLayer)
-        worldLayer.addSublayer(boundaryLayer)
         sheetLayer.backgroundColor = canvasFillColor.resolvedColor(with: traitCollection).cgColor
     }
 
@@ -432,8 +428,8 @@ final class DrawingCanvasUIView: UIView {
     /// or the visible region walk off the cached padded coverage.
     private func updateGridPresentation(forcePathRebuild: Bool = false) {
         // Grid lines and axes honor the document's visibility toggle so thin
-        // strokes can be inspected on a clean sheet. The boundary layer and
-        // canvas sheet live outside `clipLayer`, so the sheet extent stays visible.
+        // strokes can be inspected on a clean sheet. The canvas sheet lives
+        // outside `clipLayer`, so the sheet extent stays visible.
         let gridHidden = !document.grid.isVisible
         clipLayer.isHidden = gridHidden
         if gridHidden {
@@ -511,8 +507,6 @@ final class DrawingCanvasUIView: UIView {
 
         axisXLayer.path = paths.axisX
         axisYLayer.path = paths.axisY
-        boundaryLayer.path = paths.boundary
-        boundaryLayer.isHidden = paths.boundary == nil
 
         applyGridColors()
         applyWorldTransform()
@@ -551,8 +545,6 @@ final class DrawingCanvasUIView: UIView {
         }
         axisXLayer.lineWidth = GridRenderer.axisLineWidth * inv
         axisYLayer.lineWidth = GridRenderer.axisLineWidth * inv
-        boundaryLayer.lineWidth = GridRenderer.boundaryLineWidth * inv
-        boundaryLayer.lineDashPattern = GridRenderer.boundaryDash.map { $0 * inv as NSNumber }
     }
 
     private func updateSheetFrame() {
@@ -578,7 +570,6 @@ final class DrawingCanvasUIView: UIView {
         }
         axisXLayer.strokeColor = GridRenderer.axisXColor.resolvedColor(with: traitCollection).cgColor
         axisYLayer.strokeColor = GridRenderer.axisYColor.resolvedColor(with: traitCollection).cgColor
-        boundaryLayer.strokeColor = GridRenderer.boundaryColor.resolvedColor(with: traitCollection).cgColor
     }
 
     private func performWithoutLayerAnimation(_ updates: () -> Void) {
