@@ -47,6 +47,11 @@ struct CanvasOverlayView: View {
     @State private var textRotatePivot: CGPoint = .zero
     @State private var textRotatePreviousAngle: CGFloat = 0
     @State private var textRotateAccumulated: CGFloat = 0
+    @State private var imageMoveOrigin: CGRect?
+    @State private var imageScaleOrigin: CGRect?
+    @State private var imageScaleOriginCenter: CGPoint = .zero
+    @State private var imageScaleOriginCorner: CGPoint = .zero
+    @State private var imageScaleOriginCornerDist: CGFloat = 1
 
     // Object snapping (endpoints/midpoints) for the Move tool. Shares the same decoupled
     // engine as the drawing canvas; the lock session + haptics + indicator are per-overlay.
@@ -95,6 +100,8 @@ struct CanvasOverlayView: View {
                     emptyToolDismissOverlay
                     if document.selectedTextID != nil {
                         textScaleOverlay
+                    } else if document.isReferenceImageSelected {
+                        imageScaleOverlay
                     } else {
                         scaleHandles
                     }
@@ -372,6 +379,8 @@ struct CanvasOverlayView: View {
                 multiSelectionMoveOverlay
             } else if document.selectedTextID != nil {
                 textMoveOverlay
+            } else if document.isReferenceImageSelected {
+                imageMoveOverlay
             } else if document.selectedStrokeID != nil {
                 strokeMoveOverlay
             } else {
@@ -705,7 +714,7 @@ struct CanvasOverlayView: View {
                 if dragIsMarquee {
                     if let rect = marqueeDocRect(start: value.startLocation, current: value.location) {
                         document.selectElements(in: rect)
-                        if !document.selectionIsEmpty {
+                        if document.hasCanvasSelection {
                             document.isMoveToolHighlighted = true
                         }
                     }
@@ -748,6 +757,11 @@ struct CanvasOverlayView: View {
             } else {
                 document.toggleTextSelection(id)
             }
+        case .referenceImage(let id):
+            if document.selectedReferenceImageID == id {
+                break
+            }
+            document.selectReferenceImage(id: id)
         case .none:
             if let group = document.group(at: documentPoint) {
                 document.selectGroup(group)
@@ -755,7 +769,7 @@ struct CanvasOverlayView: View {
                 document.clearElementSelection()
             }
         }
-        document.isMoveToolHighlighted = !document.selectionIsEmpty
+        document.isMoveToolHighlighted = document.hasCanvasSelection
         onChanged()
     }
 
@@ -1578,6 +1592,134 @@ struct CanvasOverlayView: View {
                     .highPriorityGesture(textScaleDrag(id: id, cornerIndex: index))
             }
         }
+    }
+
+    // MARK: - Reference image (move / scale)
+
+    @ViewBuilder
+    private var imageMoveOverlay: some View {
+        if document.isReferenceImageSelected,
+           let corners = document.referenceImageCorners() {
+            let viewCorners = corners.map { document.viewport.documentToView($0) }
+
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(
+                    backgroundDrag(
+                        canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
+                        onMoveBegan: {
+                            imageMoveOrigin = document.resolvedReferenceImageFrame
+                            document.beginInteractiveEdit()
+                        },
+                        onMoveChanged: { value in
+                            guard let origin = imageMoveOrigin else { return }
+                            let delta = documentDelta(from: value.translation)
+                            document.setReferenceImageFrame(
+                                origin.offsetBy(dx: delta.x, dy: delta.y),
+                                recordUndo: false
+                            )
+                            onChanged()
+                        },
+                        onMoveEnded: {
+                            imageMoveOrigin = nil
+                            onChanged()
+                        }
+                    )
+                )
+                .simultaneousGesture(
+                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
+                        .onEnded { value in
+                            handleMoveTap(at: value.location)
+                        }
+                )
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                .allowsHitTesting(false)
+
+            ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
+                handleView(style: .edit)
+                    .position(corner)
+                    .highPriorityGesture(imageScaleDrag(cornerIndex: index))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var imageScaleOverlay: some View {
+        if document.isReferenceImageSelected,
+           let corners = document.referenceImageCorners() {
+            let viewCorners = corners.map { document.viewport.documentToView($0) }
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .allowsHitTesting(false)
+
+            ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
+                handleView(style: .edit)
+                    .position(corner)
+                    .highPriorityGesture(imageScaleDrag(cornerIndex: index))
+            }
+        }
+    }
+
+    private func imageScaleDrag(cornerIndex: Int) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if imageScaleOrigin == nil {
+                    guard let frame = document.resolvedReferenceImageFrame else { return }
+                    imageScaleOrigin = frame
+                    imageScaleOriginCenter = CGPoint(x: frame.midX, y: frame.midY)
+                    let corners = [
+                        CGPoint(x: frame.minX, y: frame.minY),
+                        CGPoint(x: frame.maxX, y: frame.minY),
+                        CGPoint(x: frame.maxX, y: frame.maxY),
+                        CGPoint(x: frame.minX, y: frame.maxY)
+                    ]
+                    let corner = corners[cornerIndex]
+                    imageScaleOriginCorner = corner
+                    imageScaleOriginCornerDist = max(
+                        hypot(corner.x - frame.midX, corner.y - frame.midY),
+                        0.001
+                    )
+                    document.beginInteractiveEdit()
+                }
+                guard let origin = imageScaleOrigin else { return }
+                let center = imageScaleOriginCenter
+                let dragPoint = document.viewport.viewToDocument(value.location)
+                let corner = imageScaleOriginCorner
+                let sx: CGFloat
+                let sy: CGFloat
+                if document.scaleUniform {
+                    let newDist = hypot(dragPoint.x - center.x, dragPoint.y - center.y)
+                    let factor = newDist / imageScaleOriginCornerDist
+                    sx = factor
+                    sy = factor
+                } else {
+                    sx = abs(corner.x - center.x) > 0.001
+                        ? (dragPoint.x - center.x) / (corner.x - center.x)
+                        : 1
+                    sy = abs(corner.y - center.y) > 0.001
+                        ? (dragPoint.y - center.y) / (corner.y - center.y)
+                        : 1
+                }
+                let width = abs(origin.width * sx)
+                let height = abs(origin.height * sy)
+                document.setReferenceImageFrame(
+                    CGRect(
+                        x: center.x - width / 2,
+                        y: center.y - height / 2,
+                        width: width,
+                        height: height
+                    ),
+                    recordUndo: false
+                )
+                onChanged()
+            }
+            .onEnded { _ in
+                imageScaleOrigin = nil
+                onChanged()
+            }
     }
 
     private func boxPath(_ corners: [CGPoint]) -> Path {
