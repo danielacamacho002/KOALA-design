@@ -397,12 +397,11 @@ struct CanvasOverlayView: View {
     /// on empty grid leaves the tool; a tap on another shape retargets it.
     @ViewBuilder
     private var emptyToolDismissOverlay: some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .simultaneousGesture(
-                SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
-                    .onEnded { value in handleToolDismissTap(at: value.location) }
-            )
+        SingleTouchCanvasCatcher(
+            allowsDrag: false,
+            onTap: { handleToolDismissTap(at: $0) }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func handleToolDismissTap(at viewPoint: CGPoint) {
@@ -424,20 +423,13 @@ struct CanvasOverlayView: View {
     /// a tap selects (or toggles) the element underneath.
     @ViewBuilder
     private var emptyMoveOverlay: some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .gesture(
-                backgroundDrag(
-                    canMove: { _ in false },
-                    onMoveBegan: {},
-                    onMoveChanged: { _ in },
-                    onMoveEnded: {}
-                )
-            )
-            .simultaneousGesture(
-                SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
-                    .onEnded { value in handleMoveTap(at: value.location) }
-            )
+        canvasCatcher(
+            onTap: { handleMoveTap(at: $0) },
+            canMove: { _ in false },
+            onMoveBegan: {},
+            onMoveChanged: { _ in },
+            onMoveEnded: {}
+        )
     }
 
     // MARK: - Multi-selection group transform
@@ -453,10 +445,11 @@ struct CanvasOverlayView: View {
                 CGPoint(x: bbox.minX, y: bbox.maxY)
             ].map { document.viewport.documentToView($0) }
 
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(
-                    backgroundDrag(
+            SingleTouchCanvasCatcher(
+                onTap: { handleMoveTap(at: $0) },
+                onDragChanged: { value in
+                    handleBackgroundDragChanged(
+                        value,
                         canMove: { point in
                             document.selectionContains(point: point, threshold: moveHitThreshold)
                                 || (document.selectedGroup != nil
@@ -465,14 +458,14 @@ struct CanvasOverlayView: View {
                         onMoveBegan: { beginGroupMove() },
                         onMoveChanged: { value in
                             applyGroupMove(delta: documentDelta(from: value.translation))
-                        },
-                        onMoveEnded: { finishGroupMove() }
+                        }
                     )
-                )
-                .simultaneousGesture(
-                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
-                        .onEnded { value in handleMoveTap(at: value.location) }
-                )
+                },
+                onDragEnded: { value in
+                    handleBackgroundDragEnded(value, onMoveEnded: { finishGroupMove() })
+                }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             boxPath(viewCorners)
                 .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
@@ -683,50 +676,78 @@ struct CanvasOverlayView: View {
             .allowsHitTesting(false)
     }
 
-    /// Shared background drag that either moves the current selection (when the
-    /// drag starts over it) or draws a marquee (when it starts on empty canvas).
-    private func backgroundDrag(
+    /// Full-canvas 1-finger catcher used by the Move tool. A second finger fails
+    /// this pan immediately so pinch-zoom on the parent can begin.
+    @ViewBuilder
+    private func canvasCatcher(
+        onTap: @escaping (CGPoint) -> Void,
         canMove: @escaping (CGPoint) -> Bool,
         onMoveBegan: @escaping () -> Void,
-        onMoveChanged: @escaping (DragGesture.Value) -> Void,
+        onMoveChanged: @escaping (OverlayPointerValue) -> Void,
         onMoveEnded: @escaping () -> Void
-    ) -> some Gesture {
-        DragGesture(minimumDistance: 2, coordinateSpace: .named(coordinateSpaceName))
-            .onChanged { value in
-                if !dragDecided {
-                    dragDecided = true
-                    let startDoc = document.viewport.viewToDocument(value.startLocation)
-                    dragIsMarquee = !canMove(startDoc)
-                    if dragIsMarquee {
-                        marqueeStart = value.startLocation
-                    } else {
-                        onMoveBegan()
-                    }
-                }
-                if dragIsMarquee {
-                    marqueeCurrent = value.location
-                    onChanged()
-                } else {
-                    onMoveChanged(value)
+    ) -> some View {
+        SingleTouchCanvasCatcher(
+            onTap: onTap,
+            onDragChanged: { value in
+                handleBackgroundDragChanged(
+                    value,
+                    canMove: canMove,
+                    onMoveBegan: onMoveBegan,
+                    onMoveChanged: onMoveChanged
+                )
+            },
+            onDragEnded: { value in
+                handleBackgroundDragEnded(value, onMoveEnded: onMoveEnded)
+            }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Shared background drag that either moves the current selection (when the
+    /// drag starts over it) or draws a marquee (when it starts on empty canvas).
+    private func handleBackgroundDragChanged(
+        _ value: OverlayPointerValue,
+        canMove: (CGPoint) -> Bool,
+        onMoveBegan: () -> Void,
+        onMoveChanged: (OverlayPointerValue) -> Void
+    ) {
+        if !dragDecided {
+            dragDecided = true
+            let startDoc = document.viewport.viewToDocument(value.startLocation)
+            dragIsMarquee = !canMove(startDoc)
+            if dragIsMarquee {
+                marqueeStart = value.startLocation
+            } else {
+                onMoveBegan()
+            }
+        }
+        if dragIsMarquee {
+            marqueeCurrent = value.location
+            onChanged()
+        } else {
+            onMoveChanged(value)
+        }
+    }
+
+    private func handleBackgroundDragEnded(
+        _ value: OverlayPointerValue,
+        onMoveEnded: () -> Void
+    ) {
+        if dragIsMarquee {
+            if let rect = marqueeDocRect(start: value.startLocation, current: value.location) {
+                document.selectElements(in: rect)
+                if document.hasCanvasSelection {
+                    document.isMoveToolHighlighted = true
                 }
             }
-            .onEnded { value in
-                if dragIsMarquee {
-                    if let rect = marqueeDocRect(start: value.startLocation, current: value.location) {
-                        document.selectElements(in: rect)
-                        if document.hasCanvasSelection {
-                            document.isMoveToolHighlighted = true
-                        }
-                    }
-                    marqueeStart = nil
-                    marqueeCurrent = nil
-                } else {
-                    onMoveEnded()
-                }
-                dragDecided = false
-                dragIsMarquee = false
-                onChanged()
-            }
+            marqueeStart = nil
+            marqueeCurrent = nil
+        } else {
+            onMoveEnded()
+        }
+        dragDecided = false
+        dragIsMarquee = false
+        onChanged()
     }
 
     /// Move-tool tap: toggles the element under the tap in/out of the selection,
@@ -786,29 +807,20 @@ struct CanvasOverlayView: View {
             )
             let pivot = rotateDragOriginStroke != nil ? rotateDragPivot : computedPivot
 
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(
-                    backgroundDrag(
-                        canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
-                        onMoveBegan: {},
-                        onMoveChanged: { value in
-                            handleMoveDragChanged(
-                                strokeID: strokeID,
-                                stroke: stroke,
-                                value: value,
-                                anchorIndex: nil
-                            )
-                        },
-                        onMoveEnded: { finishMoveDrag(strokeID: strokeID) }
+            canvasCatcher(
+                onTap: { handleMoveTap(at: $0) },
+                canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
+                onMoveBegan: {},
+                onMoveChanged: { value in
+                    handleMoveDragChanged(
+                        strokeID: strokeID,
+                        stroke: stroke,
+                        value: value,
+                        anchorIndex: nil
                     )
-                )
-                .simultaneousGesture(
-                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
-                        .onEnded { value in
-                            handleMoveTap(at: value.location)
-                        }
-                )
+                },
+                onMoveEnded: { finishMoveDrag(strokeID: strokeID) }
+            )
 
             if let pivot, document.isMoveRotateMode {
                 pivotMarker(at: pivot)
@@ -1005,7 +1017,11 @@ struct CanvasOverlayView: View {
                 handleMoveDragChanged(
                     strokeID: strokeID,
                     stroke: stroke,
-                    value: value,
+                    value: OverlayPointerValue(
+                        startLocation: value.startLocation,
+                        location: value.location,
+                        translation: value.translation
+                    ),
                     anchorIndex: anchorIndex
                 )
             }
@@ -1017,7 +1033,7 @@ struct CanvasOverlayView: View {
     private func handleMoveDragChanged(
         strokeID: UUID,
         stroke: VectorStroke,
-        value: DragGesture.Value,
+        value: OverlayPointerValue,
         anchorIndex: Int?
     ) {
         if moveDragOriginPoints.isEmpty {
@@ -1532,37 +1548,28 @@ struct CanvasOverlayView: View {
             let viewCorners = element.corners().map { document.viewport.documentToView($0) }
             let viewCenter = document.viewport.documentToView(element.center)
 
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(
-                    backgroundDrag(
-                        canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
-                        onMoveBegan: {
-                            textMoveOrigin = document.textElement(with: id)?.position
-                            document.beginInteractiveEdit()
-                        },
-                        onMoveChanged: { value in
-                            guard let origin = textMoveOrigin else { return }
-                            let delta = documentDelta(from: value.translation)
-                            document.setTextPosition(
-                                id: id,
-                                position: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y),
-                                recordUndo: false
-                            )
-                            onChanged()
-                        },
-                        onMoveEnded: {
-                            textMoveOrigin = nil
-                            onChanged()
-                        }
+            canvasCatcher(
+                onTap: { handleMoveTap(at: $0) },
+                canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
+                onMoveBegan: {
+                    textMoveOrigin = document.textElement(with: id)?.position
+                    document.beginInteractiveEdit()
+                },
+                onMoveChanged: { value in
+                    guard let origin = textMoveOrigin else { return }
+                    let delta = documentDelta(from: value.translation)
+                    document.setTextPosition(
+                        id: id,
+                        position: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y),
+                        recordUndo: false
                     )
-                )
-                .simultaneousGesture(
-                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
-                        .onEnded { value in
-                            handleMoveTap(at: value.location)
-                        }
-                )
+                    onChanged()
+                },
+                onMoveEnded: {
+                    textMoveOrigin = nil
+                    onChanged()
+                }
+            )
 
             boxPath(viewCorners)
                 .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
@@ -1602,36 +1609,27 @@ struct CanvasOverlayView: View {
            let corners = document.referenceImageCorners() {
             let viewCorners = corners.map { document.viewport.documentToView($0) }
 
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(
-                    backgroundDrag(
-                        canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
-                        onMoveBegan: {
-                            imageMoveOrigin = document.resolvedReferenceImageFrame
-                            document.beginInteractiveEdit()
-                        },
-                        onMoveChanged: { value in
-                            guard let origin = imageMoveOrigin else { return }
-                            let delta = documentDelta(from: value.translation)
-                            document.setReferenceImageFrame(
-                                origin.offsetBy(dx: delta.x, dy: delta.y),
-                                recordUndo: false
-                            )
-                            onChanged()
-                        },
-                        onMoveEnded: {
-                            imageMoveOrigin = nil
-                            onChanged()
-                        }
+            canvasCatcher(
+                onTap: { handleMoveTap(at: $0) },
+                canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
+                onMoveBegan: {
+                    imageMoveOrigin = document.resolvedReferenceImageFrame
+                    document.beginInteractiveEdit()
+                },
+                onMoveChanged: { value in
+                    guard let origin = imageMoveOrigin else { return }
+                    let delta = documentDelta(from: value.translation)
+                    document.setReferenceImageFrame(
+                        origin.offsetBy(dx: delta.x, dy: delta.y),
+                        recordUndo: false
                     )
-                )
-                .simultaneousGesture(
-                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
-                        .onEnded { value in
-                            handleMoveTap(at: value.location)
-                        }
-                )
+                    onChanged()
+                },
+                onMoveEnded: {
+                    imageMoveOrigin = nil
+                    onChanged()
+                }
+            )
 
             boxPath(viewCorners)
                 .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))

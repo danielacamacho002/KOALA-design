@@ -56,8 +56,6 @@ final class DrawingCanvasUIView: UIView {
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
     var onCanvasTap: ((CGPoint) -> Void)?
-    /// Two-finger tap — same as the toolbar undo button (Procreate-style).
-    var onTwoFingerTap: (() -> Void)?
     var onDragDrawBegan: ((CGPoint) -> Void)?
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
@@ -81,10 +79,6 @@ final class DrawingCanvasUIView: UIView {
     private var commandPreviewLayer: CAShapeLayer?
     private var dragPreviewLayer: CAShapeLayer?
     private var commandPointLayers: [CAShapeLayer] = []
-    private var isPanning = false
-    private var lastPanLocation: CGPoint?
-    private var pinchStartScale: CGFloat = 1
-    private var pinchAnchor: CGPoint = .zero
     private var dragDrawStart: CGPoint?
     private var dragDrawCurrent: CGPoint?
     private var curveDragStart: CGPoint?
@@ -182,29 +176,6 @@ final class DrawingCanvasUIView: UIView {
             applyGridColors()
             sheetLayer.backgroundColor = canvasFillColor.resolvedColor(with: traitCollection).cgColor
         }
-    }
-
-    // MARK: - Touch navigation
-
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        handleNavigationBegan(touches, with: event)
-    }
-
-    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if isPanning {
-            handleNavigationMoved(touches)
-        }
-    }
-
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if isPanning {
-            handleNavigationEnded()
-        }
-    }
-
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        isPanning = false
-        lastPanLocation = nil
     }
 
     func handleSelection(at viewPoint: CGPoint) {
@@ -661,26 +632,8 @@ final class DrawingCanvasUIView: UIView {
     // MARK: - Gestures
 
     private func setupGestures() {
-        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
-        pinch.delegate = self
-        addGestureRecognizer(pinch)
-
-        let twoFingerPan = UIPanGestureRecognizer(target: self, action: #selector(handleTwoFingerPan(_:)))
-        twoFingerPan.minimumNumberOfTouches = 2
-        twoFingerPan.maximumNumberOfTouches = 2
-        twoFingerPan.delegate = self
-        addGestureRecognizer(twoFingerPan)
-
-        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
-        twoFingerTap.numberOfTouchesRequired = 2
-        twoFingerTap.delegate = self
-        twoFingerTap.require(toFail: pinch)
-        twoFingerTap.require(toFail: twoFingerPan)
-        addGestureRecognizer(twoFingerTap)
-
         let tap = PreciseTapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.delegate = self
-        tap.require(toFail: twoFingerPan)
         addGestureRecognizer(tap)
 
         let dragDraw = PrecisePanGestureRecognizer(target: self, action: #selector(handleDragDraw(_:)))
@@ -693,52 +646,6 @@ final class DrawingCanvasUIView: UIView {
         curveFinish.numberOfTapsRequired = 2
         curveFinish.delegate = self
         addGestureRecognizer(curveFinish)
-    }
-
-    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        switch gesture.state {
-        case .began:
-            cancelViewportAnimation()
-            pinchStartScale = document.viewport.scale
-            pinchAnchor = gesture.location(in: self)
-        case .changed:
-            let newScale = pinchStartScale * gesture.scale
-            document.viewport.zoom(to: newScale, anchorViewPoint: pinchAnchor)
-            clampViewportToCanvasExtent()
-            refreshViewport()
-            delegate?.canvasDidUpdate(document: document)
-        default:
-            break
-        }
-    }
-
-    @objc private func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
-        let translation = gesture.translation(in: self)
-        switch gesture.state {
-        case .began:
-            cancelViewportAnimation()
-            lastPanLocation = translation
-        case .changed:
-            let delta = CGPoint(
-                x: translation.x - (lastPanLocation?.x ?? 0),
-                y: translation.y - (lastPanLocation?.y ?? 0)
-            )
-            document.viewport.translation.x += delta.x
-            document.viewport.translation.y += delta.y
-            clampViewportToCanvasExtent()
-            lastPanLocation = translation
-            refreshViewport()
-            delegate?.canvasDidUpdate(document: document)
-        case .ended, .cancelled:
-            lastPanLocation = nil
-        default:
-            break
-        }
-    }
-
-    @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
-        guard gesture.state == .ended else { return }
-        onTwoFingerTap?()
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -1336,28 +1243,6 @@ final class DrawingCanvasUIView: UIView {
         dragPreviewShapeType
     }
 
-    private func handleNavigationBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let event, event.allTouches?.count ?? 0 >= 2 {
-            isPanning = true
-            cancelViewportAnimation()
-            if let touch = touches.first {
-                lastPanLocation = touch.location(in: self)
-            }
-        }
-    }
-
-    private func handleNavigationMoved(_ touches: Set<UITouch>) {
-        guard let touch = touches.first, let last = lastPanLocation else { return }
-        let current = touch.location(in: self)
-        let delta = CGPoint(x: current.x - last.x, y: current.y - last.y)
-        document.viewport.translation.x += delta.x
-        document.viewport.translation.y += delta.y
-        clampViewportToCanvasExtent()
-        lastPanLocation = current
-        refreshViewport()
-        delegate?.canvasDidUpdate(document: document)
-    }
-
     private func clampViewportToCanvasExtent() {
         applyViewportIfNeeded {
             $0.clampToCanvasSize(
@@ -1365,11 +1250,6 @@ final class DrawingCanvasUIView: UIView {
                 canvasSize: document.settings.canvasSize
             )
         }
-    }
-
-    private func handleNavigationEnded() {
-        isPanning = false
-        lastPanLocation = nil
     }
 
     private func shouldAcceptDrawingTouch(_ touch: UITouch) -> Bool {

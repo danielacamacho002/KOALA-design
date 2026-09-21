@@ -11,7 +11,6 @@ final class PrintLayoutCanvasUIView: UIView {
     }
 
     var onCanvasTap: ((CGPoint) -> Void)?
-    var onTwoFingerTap: (() -> Void)?
 
     private let sheetsLayer = CALayer()
     private let artworkLayer = CALayer()
@@ -25,8 +24,6 @@ final class PrintLayoutCanvasUIView: UIView {
     private var dimOverlayLayer: CAShapeLayer?
     private var marginGuideLayer: CAShapeLayer?
 
-    private var pinchStartScale: CGFloat = 1
-    private var pinchAnchor: CGPoint = .zero
     private var lastLaidOutSize: CGSize = .zero
 
     init(document: VectrDocument) {
@@ -336,53 +333,10 @@ final class PrintLayoutCanvasUIView: UIView {
     private func setupGestures() {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         addGestureRecognizer(tap)
-
-        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
-        addGestureRecognizer(pinch)
-
-        let twoFingerPan = UIPanGestureRecognizer(target: self, action: #selector(handleTwoFingerPan(_:)))
-        twoFingerPan.minimumNumberOfTouches = 2
-        twoFingerPan.maximumNumberOfTouches = 2
-        addGestureRecognizer(twoFingerPan)
-
-        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
-        twoFingerTap.numberOfTouchesRequired = 2
-        twoFingerTap.require(toFail: pinch)
-        twoFingerTap.require(toFail: twoFingerPan)
-        addGestureRecognizer(twoFingerTap)
-    }
-
-    @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
-        guard gesture.state == .ended else { return }
-        onTwoFingerTap?()
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         let viewPoint = gesture.location(in: self)
         onCanvasTap?(viewPoint)
-    }
-
-    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        switch gesture.state {
-        case .began:
-            pinchStartScale = document.viewport.scale
-            pinchAnchor = gesture.location(in: self)
-        case .changed:
-            let newScale = pinchStartScale * gesture.scale
-            document.viewport.zoom(to: newScale, anchorViewPoint: pinchAnchor)
-            refreshViewport()
-        default:
-            break
-        }
-    }
-
-    @objc private func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
-        let translation = gesture.translation(in: self)
-        if gesture.state == .changed {
-            document.viewport.translation.x += translation.x
-            document.viewport.translation.y += translation.y
-            gesture.setTranslation(.zero, in: self)
-            refreshViewport()
-        }
     }
 }
