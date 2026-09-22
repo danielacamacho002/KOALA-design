@@ -132,6 +132,9 @@ final class VectrDocument {
     private var undoStack: [DocumentSnapshot] = []
     private var redoStack: [DocumentSnapshot] = []
     private let undoLimit = 50
+    /// Live raster bytes by image id. Undo snapshots omit payloads; this map
+    /// reattaches them so add/remove/move stay undoable without 50× copies.
+    private var referenceImagePayloads: [UUID: Data] = [:]
     /// Bumped when undo/redo stacks change to keep toolbar state in sync.
     var undoRevision = 0
 
@@ -175,6 +178,7 @@ final class VectrDocument {
         strokeColor = snapshot.strokeColor
         selectedStrokeID = snapshot.selectedStrokeID
         referenceImages = snapshot.resolvedReferenceImages()
+        rememberReferenceImagePayloads(referenceImages)
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
         printPieces = snapshot.printPieces
@@ -3293,7 +3297,7 @@ final class VectrDocument {
     func undo() {
         guard let snapshot = undoStack.popLast() else { return }
         let preservedViewport = viewport
-        redoStack.append(makeSnapshot())
+        redoStack.append(currentSnapshot())
         apply(snapshot)
         viewport = preservedViewport
         undoRevision += 1
@@ -3304,7 +3308,7 @@ final class VectrDocument {
     func redo() {
         guard let snapshot = redoStack.popLast() else { return }
         let preservedViewport = viewport
-        undoStack.append(makeSnapshot())
+        undoStack.append(currentSnapshot())
         apply(snapshot)
         viewport = preservedViewport
         undoRevision += 1
@@ -3313,7 +3317,7 @@ final class VectrDocument {
     }
 
     private func pushUndo() {
-        undoStack.append(makeSnapshot())
+        undoStack.append(currentSnapshot())
         if undoStack.count > undoLimit {
             undoStack.removeFirst()
         }
@@ -3329,6 +3333,7 @@ final class VectrDocument {
         }
     }
 
+    /// Full snapshot including raster bytes; used by the codec, exporters, and last-saved tracking.
     func makeSnapshot() -> DocumentSnapshot {
         DocumentSnapshot(
             layers: layers,
@@ -3358,6 +3363,16 @@ final class VectrDocument {
         )
     }
 
+    /// Undo/redo snapshot. Omits raster bytes; codec and last-saved still include them.
+    private func currentSnapshot() -> DocumentSnapshot {
+        rememberReferenceImagePayloads(referenceImages)
+        var snapshot = makeSnapshot()
+        snapshot.referenceImages = snapshot.referenceImages?.map { $0.omittingPayload() }
+        snapshot.referenceImageData = nil
+        snapshot.referenceImageFrame = nil
+        return snapshot
+    }
+
     private func apply(_ snapshot: DocumentSnapshot) {
         layers = snapshot.layers
         strokes = snapshot.strokes
@@ -3370,11 +3385,7 @@ final class VectrDocument {
         strokeWidth = snapshot.strokeWidth
         strokeColor = snapshot.strokeColor
         selectedStrokeID = snapshot.selectedStrokeID
-        referenceImages = snapshot.resolvedReferenceImages()
-        if let selected = selectedReferenceImageID,
-           !referenceImages.contains(where: { $0.id == selected }) {
-            selectedReferenceImageID = nil
-        }
+        applyReferenceImages(from: snapshot)
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
         printPieces = snapshot.printPieces
@@ -3383,6 +3394,41 @@ final class VectrDocument {
         dimensionLocks = snapshot.dimensionLocks ?? []
         syncGridFromSettings()
         printLayoutRevision += 1
+    }
+
+    private func rememberReferenceImagePayloads(_ images: [ReferenceImage]) {
+        for image in images where !image.data.isEmpty {
+            referenceImagePayloads[image.id] = image.data
+        }
+    }
+
+    /// Restore image ids/frames/layers from the snapshot; reattach live bytes by id.
+    private func applyReferenceImages(from snapshot: DocumentSnapshot) {
+        rememberReferenceImagePayloads(referenceImages)
+        let restored = snapshot.resolvedReferenceImages()
+        rememberReferenceImagePayloads(restored)
+        referenceImages = restored.map { image in
+            guard image.data.isEmpty, let cached = referenceImagePayloads[image.id] else {
+                return image
+            }
+            var copy = image
+            copy.data = cached
+            return copy
+        }
+        if let selected = selectedReferenceImageID,
+           !referenceImages.contains(where: { $0.id == selected }) {
+            selectedReferenceImageID = nil
+        }
+    }
+
+    /// Bytes of raster payloads held by undo/redo snapshots. Always 0.
+    var undoRetainedReferenceImageBytes: Int {
+        func retainedBytes(_ snapshot: DocumentSnapshot) -> Int {
+            let imageBytes = (snapshot.referenceImages ?? []).reduce(0) { $0 + $1.data.count }
+            return imageBytes + (snapshot.referenceImageData?.count ?? 0)
+        }
+        return undoStack.reduce(0) { $0 + retainedBytes($1) }
+            + redoStack.reduce(0) { $0 + retainedBytes($1) }
     }
 }
 

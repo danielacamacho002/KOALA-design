@@ -24,6 +24,13 @@ nonisolated struct ReferenceImage: Identifiable, Codable, Equatable, Sendable {
         frame.width > 0 && frame.height > 0 && frame.contains(point)
     }
 
+    /// Undo snapshots keep id, layer, and frame without copying raster bytes.
+    func omittingPayload() -> ReferenceImage {
+        var copy = self
+        copy.data = Data()
+        return copy
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id, layerID, data, frame
     }

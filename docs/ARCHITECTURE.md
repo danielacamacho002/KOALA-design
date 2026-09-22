@@ -46,7 +46,7 @@ These counters mean different things. Mixing them is the usual bug.
 | `DocumentStore.contentRevision` / `markDirty()` | File is unsaved; SwiftUI + auto-save. **Not** a canvas redraw |
 | `EditorView.refreshCanvas()` | **Only** `markDirty()`. Does not refresh the UIKit canvas |
 
-`pushUndo()` copies a full `DocumentSnapshot` (including every `referenceImages` payload). New persisted fields must be added in `currentSnapshot()`, `apply()`, `DocumentCodec.encode`, and `EditorView.snapshotFromStore()`. Legacy files with `referenceImageData` / `referenceImageFrame` still decode into a one-item `referenceImages` array. Each raster has a `layerID` (unknown IDs rebind to the active layer on load); hide, opacity, and z-order follow that layer.
+`pushUndo()` copies a `DocumentSnapshot` but omits `referenceImages` raster bytes; undo restores ids/frames/layers and reattaches live payloads by id. Codec, export, and last-saved still use `makeSnapshot()` with bytes. New persisted fields must be added in `currentSnapshot()`, `apply()`, `DocumentCodec.encode`, and `EditorView.snapshotFromStore()`. Legacy files with `referenceImageData` / `referenceImageFrame` still decode into a one-item `referenceImages` array. Each raster has a `layerID` (unknown IDs rebind to the active layer on load); hide, opacity, and z-order follow that layer.
 
 ## Canvas updates
 
@@ -67,7 +67,6 @@ Print-layout features often need a **second** panel/canvas path. Do not assume d
 ## Perf debt (2026-09)
 
 - Export, save, thumbnails, and project load run on the main thread
-- Undo snapshots can duplicate `referenceImages` payloads up to 50×
 - Font registration in `FontLibrary.prepareAtLaunch()` is sync disk + Core Text (once per launch)
 - `refreshCanvas()` over-marks dirty (including recenter animation steps)
 - Layer thumbnails regenerate on every `geometryRevision` (including live drag)
