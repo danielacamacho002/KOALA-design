@@ -28,7 +28,7 @@ iPad vector editor: design on a canvas, then arrange artwork for tiled print. iP
 - `vectr/Model/VectrDocument.swift` — source of truth
 - `vectr/Persistence/DocumentStore.swift` — file, dirty, `contentRevision`
 - `vectr/UI/EditorView.swift` — editor orchestration
-- `vectr/Drawing/DrawingCanvasView.swift` + `DrawingCanvasUIView.swift`
+- `vectr/Drawing/DrawingCanvasView.swift` + `DrawingCanvasUIView.swift` + `ViewportNavigationInstaller.swift`
 - `vectr/UI/PrintLayout/PrintLayoutCanvasView.swift` + `Rendering/PrintLayout/PrintLayoutCanvasUIView.swift`
 - `vectr/Persistence/DocumentCodec.swift`
 
@@ -40,17 +40,17 @@ These counters mean different things. Mixing them is the usual bug.
 
 | Signal | Meaning |
 |--------|---------|
-| `geometryRevision` | Design canvas should reload stroke/text layers |
+| `geometryRevision` | Design canvas should reload stroke/text/raster layers |
 | `printLayoutRevision` | Print layout structure/transforms changed |
 | `undoRevision` | Undo/redo stack changed (undo UI) |
 | `DocumentStore.contentRevision` / `markDirty()` | File is unsaved; SwiftUI + auto-save. **Not** a canvas redraw |
 | `EditorView.refreshCanvas()` | **Only** `markDirty()`. Does not refresh the UIKit canvas |
 
-`pushUndo()` copies a full `DocumentSnapshot` (including `referenceImageData`). New persisted fields must be added in `currentSnapshot()`, `apply()`, `DocumentCodec.encode`, and `EditorView.snapshotFromStore()`.
+`pushUndo()` copies a `DocumentSnapshot` but omits `referenceImages` raster bytes; undo restores ids/frames/layers and reattaches live payloads by id. Codec, export, and last-saved still use `makeSnapshot()` with bytes. New persisted fields must be added in `currentSnapshot()`, `apply()`, `DocumentCodec.encode`, and `EditorView.snapshotFromStore()`. Legacy files with `referenceImageData` / `referenceImageFrame` still decode into a one-item `referenceImages` array. Each raster has a `layerID` (unknown IDs rebind to the active layer on load); hide, opacity, and z-order follow that layer.
 
 ## Canvas updates
 
-**Design** (`DrawingCanvasView.Coordinator`): diff viewport vs geometry vs selection vs command preview. Pan/zoom should transform existing layers, not rebuild every stroke.
+**Design** (`DrawingCanvasView.Coordinator`): diff viewport vs geometry vs selection vs command preview. Pan/zoom should transform existing layers, not rebuild every stroke. Pinch / two-finger pan / two-finger tap live on `ViewportNavigationInstaller` (a parent of the canvas and SwiftUI overlay) so Move/Scale cannot swallow zoom.
 
 **Print** (`PrintLayoutCanvasView.updateUIView`): today calls `reloadAll()` on almost every SwiftUI update; `printLayoutRevision` / `geometryRevision` are passed in and ignored. Match design-canvas diffing when touching this path.
 
@@ -67,7 +67,6 @@ Print-layout features often need a **second** panel/canvas path. Do not assume d
 ## Perf debt (2026-09)
 
 - Export, save, thumbnails, and project load run on the main thread
-- Undo snapshots can duplicate `referenceImageData` up to 50×
 - Font registration in `FontLibrary.prepareAtLaunch()` is sync disk + Core Text (once per launch)
 - `refreshCanvas()` over-marks dirty (including recenter animation steps)
 - Layer thumbnails regenerate on every `geometryRevision` (including live drag)

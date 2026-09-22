@@ -46,13 +46,12 @@ struct PrintLayoutOverlayView: View {
         GeometryReader { geo in
             ZStack {
                 if document.printLayout.activeTool == .select {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .gesture(backgroundDrag())
-                        .simultaneousGesture(
-                            SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
-                                .onEnded { value in handleSelectTap(at: value.location) }
-                        )
+                    SingleTouchCanvasCatcher(
+                        onTap: { handleSelectTap(at: $0) },
+                        onDragChanged: { handleBackgroundDragChanged($0) },
+                        onDragEnded: { handleBackgroundDragEnded($0) }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                     if let rect = marqueeViewRect {
                         marqueeBox(rect)
@@ -125,40 +124,40 @@ struct PrintLayoutOverlayView: View {
         document.handlePrintSelectTap(near: documentPoint, threshold: threshold)
     }
 
-    private func backgroundDrag() -> some Gesture {
-        DragGesture(minimumDistance: 2, coordinateSpace: .named(coordinateSpaceName))
-            .onChanged { value in
-                if !dragDecided {
-                    dragDecided = true
-                    let startDoc = document.viewport.viewToDocument(value.startLocation)
-                    let threshold = document.viewport.viewToDocument(distance: 12)
-                    dragIsMarquee = !document.printSelectionContains(point: startDoc, threshold: threshold)
-                    if dragIsMarquee {
-                        marqueeStart = value.startLocation
-                    } else {
-                        beginMoveDrag()
-                    }
-                }
-                if dragIsMarquee {
-                    marqueeCurrent = value.location
-                } else {
-                    applyMoveDrag(value)
-                }
+    /// Background drag that either moves the current selection (when it starts over
+    /// it) or draws a marquee (when it starts on empty grid).
+    private func handleBackgroundDragChanged(_ value: OverlayPointerValue) {
+        if !dragDecided {
+            dragDecided = true
+            let startDoc = document.viewport.viewToDocument(value.startLocation)
+            let threshold = document.viewport.viewToDocument(distance: 12)
+            dragIsMarquee = !document.printSelectionContains(point: startDoc, threshold: threshold)
+            if dragIsMarquee {
+                marqueeStart = value.startLocation
+            } else {
+                beginMoveDrag()
             }
-            .onEnded { value in
-                if dragIsMarquee {
-                    if let rect = marqueeDocRect(start: value.startLocation, current: value.location) {
-                        document.selectPrintElements(in: rect)
-                    }
-                    marqueeStart = nil
-                    marqueeCurrent = nil
-                } else {
-                    finishMoveDrag()
-                }
-                dragDecided = false
-                dragIsMarquee = false
-                onChanged()
+        }
+        if dragIsMarquee {
+            marqueeCurrent = value.location
+        } else {
+            applyMoveDrag(value)
+        }
+    }
+
+    private func handleBackgroundDragEnded(_ value: OverlayPointerValue) {
+        if dragIsMarquee {
+            if let rect = marqueeDocRect(start: value.startLocation, current: value.location) {
+                document.selectPrintElements(in: rect)
             }
+            marqueeStart = nil
+            marqueeCurrent = nil
+        } else {
+            finishMoveDrag()
+        }
+        dragDecided = false
+        dragIsMarquee = false
+        onChanged()
     }
 
     private func beginMoveDrag() {
@@ -171,7 +170,7 @@ struct PrintLayoutOverlayView: View {
         document.beginInteractiveEdit()
     }
 
-    private func applyMoveDrag(_ value: DragGesture.Value) {
+    private func applyMoveDrag(_ value: OverlayPointerValue) {
         if axisLockEnabled, dragAxis == .free {
             let moved = value.translation
             if hypot(moved.width, moved.height) > axisLockThreshold {

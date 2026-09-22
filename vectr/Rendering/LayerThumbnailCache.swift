@@ -9,7 +9,7 @@ import UIKit
 /// Memoizes `LayerThumbnailRenderer` output so the layers panel only rasterizes
 /// a preview when that layer's own content actually changed.
 ///
-/// `VectorStroke` and `TextElement` are `Equatable` but not `Hashable`, so the
+/// `VectorStroke`, `TextElement`, and `ReferenceImage` are `Equatable` but not `Hashable`, so the
 /// cache keeps the exact inputs it last drew and compares them instead of
 /// hashing. Equality short-circuits on the first difference, making the
 /// unchanged-layer path far cheaper than a redraw.
@@ -20,6 +20,7 @@ final class LayerThumbnailCache {
     private struct Entry {
         var strokes: [VectorStroke]
         var texts: [TextElement]
+        var images: [ReferenceImage]
         var size: CGSize
         var isDark: Bool
         var image: UIImage?
@@ -40,12 +41,14 @@ final class LayerThumbnailCache {
     ) -> UIImage? {
         let strokes = document.strokes(for: layerID).filter { !$0.isHiddenFromCanvas }
         let texts = document.textElements.filter { $0.layerID == layerID && !$0.isHidden }
+        let images = document.referenceImages(for: layerID)
 
         if let cached = entries[layerID],
            cached.size == size,
            cached.isDark == isDark,
            cached.strokes == strokes,
-           cached.texts == texts {
+           cached.texts == texts,
+           cached.images == images {
             return cached.image
         }
 
@@ -61,6 +64,7 @@ final class LayerThumbnailCache {
         entries[layerID] = Entry(
             strokes: strokes,
             texts: texts,
+            images: images,
             size: size,
             isDark: isDark,
             image: rendered

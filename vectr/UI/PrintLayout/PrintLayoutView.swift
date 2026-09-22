@@ -44,8 +44,7 @@ struct PrintLayoutView: View {
                     printLayoutRevision: document.printLayoutRevision,
                     geometryRevision: document.geometryRevision,
                     viewportHandle: viewportHandle,
-                    onCanvasTap: handleCanvasTap,
-                    onTwoFingerTap: onUndo
+                    onCanvasTap: handleCanvasTap
                 )
                 .ignoresSafeArea()
                 .transaction { $0.animation = nil }
@@ -63,6 +62,14 @@ struct PrintLayoutView: View {
                 .ignoresSafeArea()
                 .allowsHitTesting(document.printLayout.activeTool == .select)
                 .transaction { $0.animation = nil }
+
+                ViewportNavigationInstaller(
+                    document: document,
+                    viewportHandle: viewportHandle,
+                    onTwoFingerTap: onUndo
+                )
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
             }
             .overlay(alignment: .topLeading) {
                 if showPaperPanel {

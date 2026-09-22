@@ -11,7 +11,6 @@ final class PrintLayoutCanvasUIView: UIView {
     }
 
     var onCanvasTap: ((CGPoint) -> Void)?
-    var onTwoFingerTap: (() -> Void)?
 
     private let sheetsLayer = CALayer()
     private let artworkLayer = CALayer()
@@ -25,8 +24,6 @@ final class PrintLayoutCanvasUIView: UIView {
     private var dimOverlayLayer: CAShapeLayer?
     private var marginGuideLayer: CAShapeLayer?
 
-    private var pinchStartScale: CGFloat = 1
-    private var pinchAnchor: CGPoint = .zero
     private var lastLaidOutSize: CGSize = .zero
 
     init(document: VectrDocument) {
@@ -334,73 +331,12 @@ final class PrintLayoutCanvasUIView: UIView {
     // MARK: - Gestures
 
     private func setupGestures() {
-        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
-        pinch.delegate = self
-        addGestureRecognizer(pinch)
-
-        let twoFingerPan = UIPanGestureRecognizer(target: self, action: #selector(handleTwoFingerPan(_:)))
-        twoFingerPan.minimumNumberOfTouches = 2
-        twoFingerPan.maximumNumberOfTouches = 2
-        twoFingerPan.delegate = self
-        addGestureRecognizer(twoFingerPan)
-
-        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
-        twoFingerTap.numberOfTouchesRequired = 2
-        twoFingerTap.delegate = self
-        twoFingerTap.require(toFail: pinch)
-        twoFingerTap.require(toFail: twoFingerPan)
-        addGestureRecognizer(twoFingerTap)
-
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        tap.delegate = self
-        tap.require(toFail: twoFingerPan)
         addGestureRecognizer(tap)
-    }
-
-    @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
-        guard gesture.state == .ended else { return }
-        onTwoFingerTap?()
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         let viewPoint = gesture.location(in: self)
         onCanvasTap?(viewPoint)
-    }
-
-    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        switch gesture.state {
-        case .began:
-            pinchStartScale = document.viewport.scale
-            pinchAnchor = gesture.location(in: self)
-        case .changed:
-            let newScale = pinchStartScale * gesture.scale
-            document.viewport.zoom(to: newScale, anchorViewPoint: pinchAnchor)
-            refreshViewport()
-        default:
-            break
-        }
-    }
-
-    @objc private func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
-        let translation = gesture.translation(in: self)
-        if gesture.state == .changed {
-            document.viewport.translation.x += translation.x
-            document.viewport.translation.y += translation.y
-            gesture.setTranslation(.zero, in: self)
-            refreshViewport()
-        }
-    }
-}
-
-extension PrintLayoutCanvasUIView: UIGestureRecognizerDelegate {
-    /// The overlay's marquee and move drags are SwiftUI gestures, which are recognizers
-    /// on the hosting view above this one. Without granting simultaneous recognition
-    /// these canvas recognizers block them and the drags never begin, so print layout
-    /// would lose marquee multi-select. Matches `DrawingCanvasUIView`.
-    func gestureRecognizer(
-        _ gestureRecognizer: UIGestureRecognizer,
-        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
-    ) -> Bool {
-        true
     }
 }

@@ -11,6 +11,10 @@ enum DocumentRenderer {
         var size: CGSize = CGSize(width: 400, height: 300)
         var drawGrid: Bool = false
         var padding: CGFloat = 24
+        /// When true, plane fills are drawn opaque. Canvas fill-opacity is a
+        /// preview overlay; PDF transparency survives in Illustrator and turns
+        /// a black recolor grey.
+        var opaqueFills: Bool = false
     }
 
     static func renderImage(document: VectrDocument, options: Options = Options()) -> UIImage? {
@@ -76,9 +80,11 @@ enum DocumentRenderer {
             )
         }
 
-        if let data = snapshot.referenceImageData,
-           let image = UIImage(data: data) {
-            let frame = snapshot.referenceImageFrame ?? defaultReferenceFrame(for: image)
+        for item in snapshot.visibleReferenceImages() {
+            guard let image = UIImage(data: item.data) else { continue }
+            let frame = item.frame.width > 0 && item.frame.height > 0
+                ? item.frame
+                : defaultReferenceFrame(for: image)
             let viewFrame = CGRect(
                 origin: viewport.documentToView(frame.origin),
                 size: CGSize(
@@ -86,7 +92,10 @@ enum DocumentRenderer {
                     height: viewport.documentToView(distance: frame.height)
                 )
             )
+            context.saveGState()
+            context.setAlpha(snapshot.opacity(forLayerID: item.layerID) * 0.85)
             image.draw(in: viewFrame)
+            context.restoreGState()
         }
 
         for stroke in snapshot.visibleStrokes() {
@@ -94,8 +103,8 @@ enum DocumentRenderer {
             context.setAlpha(snapshot.opacity(forLayerID: stroke.layerID))
             if stroke.isClosed, !stroke.isConstruction {
                 context.addPath(StrokeRenderer.path(for: stroke, viewport: viewport).cgPath)
-                context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
-                context.fillPath(using: stroke.cutoutPoints.isEmpty ? .winding : .evenOdd)
+                context.setFillColor(exportFillColor(for: stroke, options: options))
+                context.fillPath(using: stroke.resolvedCGFillRule)
             }
             context.addPath(StrokeRenderer.outlinePath(for: stroke, viewport: viewport).cgPath)
             context.setStrokeColor(strokeColor(for: stroke))
@@ -152,6 +161,9 @@ enum DocumentRenderer {
         for element in snapshot.visibleTextElements() {
             points.append(contentsOf: element.corners())
         }
+        for image in snapshot.visibleReferenceImages() {
+            points.append(contentsOf: image.corners())
+        }
         return points
     }
 
@@ -159,6 +171,12 @@ enum DocumentRenderer {
         let width = CGFloat(image.size.width)
         let height = CGFloat(image.size.height)
         return CGRect(x: -width / 2, y: -height / 2, width: width, height: height)
+    }
+
+    private nonisolated static func exportFillColor(for stroke: VectorStroke, options: Options) -> CGColor {
+        let fill = stroke.resolvedFillCGColor
+        guard options.opaqueFills, fill.alpha > 0.0001 else { return fill }
+        return fill.copy(alpha: 1) ?? fill
     }
 
     private nonisolated static func strokeColor(for stroke: VectorStroke) -> CGColor {

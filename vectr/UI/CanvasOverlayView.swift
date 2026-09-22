@@ -15,6 +15,7 @@ struct CanvasOverlayView: View {
     var onDismissTool: () -> Void = {}
 
     @State private var nodeDragOriginPoints: [CGPoint] = []
+    @State private var nodeDragOriginStroke: VectorStroke?
     @State private var curveHandleDragActive = false
     @State private var moveDragOriginPoints: [CGPoint] = []
     @State private var moveDragOriginStroke: VectorStroke?
@@ -46,6 +47,11 @@ struct CanvasOverlayView: View {
     @State private var textRotatePivot: CGPoint = .zero
     @State private var textRotatePreviousAngle: CGFloat = 0
     @State private var textRotateAccumulated: CGFloat = 0
+    @State private var imageMoveOrigin: CGRect?
+    @State private var imageScaleOrigin: CGRect?
+    @State private var imageScaleOriginCenter: CGPoint = .zero
+    @State private var imageScaleOriginCorner: CGPoint = .zero
+    @State private var imageScaleOriginCornerDist: CGFloat = 1
 
     // Object snapping (endpoints/midpoints) for the Move tool. Shares the same decoupled
     // engine as the drawing canvas; the lock session + haptics + indicator are per-overlay.
@@ -94,6 +100,8 @@ struct CanvasOverlayView: View {
                     emptyToolDismissOverlay
                     if document.selectedTextID != nil {
                         textScaleOverlay
+                    } else if document.isReferenceImageSelected {
+                        imageScaleOverlay
                     } else {
                         scaleHandles
                     }
@@ -323,11 +331,15 @@ struct CanvasOverlayView: View {
             .onChanged { value in
                 if nodeDragOriginPoints.isEmpty {
                     document.beginInteractiveEdit()
-                    nodeDragOriginPoints = document.stroke(with: strokeID).map {
+                    nodeDragOriginStroke = document.stroke(with: strokeID)
+                    nodeDragOriginPoints = nodeDragOriginStroke.map {
                         ShapeGeometry.handlePoints(for: $0)
                     } ?? []
                 }
-                guard let stroke = document.stroke(with: strokeID),
+                // Edit the geometry captured at drag start. A parametric shape rewrites its
+                // anchor set on every edit, so re-reading the live stroke would let `index`
+                // land on a different anchor (or out of bounds) part-way through the drag.
+                guard let stroke = nodeDragOriginStroke ?? document.stroke(with: strokeID),
                       stroke.points.indices.contains(index) else { return }
                 let rawPoint = document.viewport.viewToDocument(value.location)
                 let moved = ShapeGeometry.applyingMovedAnchor(
@@ -335,8 +347,6 @@ struct CanvasOverlayView: View {
                     at: index,
                     to: resolveNodeSnap(
                         rawPoint: rawPoint,
-                        stroke: stroke,
-                        index: index,
                         strokeID: strokeID
                     )
                 )
@@ -346,6 +356,7 @@ struct CanvasOverlayView: View {
             .onEnded { _ in
                 let didEdit = !nodeDragOriginPoints.isEmpty
                 nodeDragOriginPoints = []
+                nodeDragOriginStroke = nil
                 clearMoveSnap()
                 guard didEdit else { return }
                 document.reconcileIntersectionAnchors(around: [strokeID])
@@ -353,14 +364,10 @@ struct CanvasOverlayView: View {
             }
     }
 
-    /// Snaps a node-edit vertex to nearby object geometry (endpoints/center/quadrant/intersection),
-    /// and for straight segmented paths lets it go tangent to circles/arcs using the vertex's
-    /// stationary neighbors as the tangent anchors. Returns the raw point when nothing snaps.
-    private func resolveNodeSnap(rawPoint: CGPoint, stroke: VectorStroke, index: Int, strokeID: UUID) -> CGPoint {
-        let references: [CGPoint] = (stroke.shapeType == .polyline || stroke.shapeType == .construction)
-            ? neighborReferenceStarts(movingAnchor: index, points: nodeDragOriginPoints, isClosed: stroke.isClosed)
-            : []
-        return resolveMoveSnap(reference: rawPoint, excluding: strokeID, referenceStarts: references)
+    /// Snaps a node-edit vertex to nearby object geometry (endpoints/center/on-rim/intersection).
+    /// Returns the raw point when nothing snaps.
+    private func resolveNodeSnap(rawPoint: CGPoint, strokeID: UUID) -> CGPoint {
+        resolveMoveSnap(reference: rawPoint, excluding: strokeID)
     }
 
     // MARK: - Move tool routing
@@ -372,6 +379,8 @@ struct CanvasOverlayView: View {
                 multiSelectionMoveOverlay
             } else if document.selectedTextID != nil {
                 textMoveOverlay
+            } else if document.isReferenceImageSelected {
+                imageMoveOverlay
             } else if document.selectedStrokeID != nil {
                 strokeMoveOverlay
             } else {
@@ -388,12 +397,11 @@ struct CanvasOverlayView: View {
     /// on empty grid leaves the tool; a tap on another shape retargets it.
     @ViewBuilder
     private var emptyToolDismissOverlay: some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .simultaneousGesture(
-                SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
-                    .onEnded { value in handleToolDismissTap(at: value.location) }
-            )
+        SingleTouchCanvasCatcher(
+            allowsDrag: false,
+            onTap: { handleToolDismissTap(at: $0) }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func handleToolDismissTap(at viewPoint: CGPoint) {
@@ -415,20 +423,13 @@ struct CanvasOverlayView: View {
     /// a tap selects (or toggles) the element underneath.
     @ViewBuilder
     private var emptyMoveOverlay: some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .gesture(
-                backgroundDrag(
-                    canMove: { _ in false },
-                    onMoveBegan: {},
-                    onMoveChanged: { _ in },
-                    onMoveEnded: {}
-                )
-            )
-            .simultaneousGesture(
-                SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
-                    .onEnded { value in handleMoveTap(at: value.location) }
-            )
+        canvasCatcher(
+            onTap: { handleMoveTap(at: $0) },
+            canMove: { _ in false },
+            onMoveBegan: {},
+            onMoveChanged: { _ in },
+            onMoveEnded: {}
+        )
     }
 
     // MARK: - Multi-selection group transform
@@ -444,10 +445,11 @@ struct CanvasOverlayView: View {
                 CGPoint(x: bbox.minX, y: bbox.maxY)
             ].map { document.viewport.documentToView($0) }
 
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(
-                    backgroundDrag(
+            SingleTouchCanvasCatcher(
+                onTap: { handleMoveTap(at: $0) },
+                onDragChanged: { value in
+                    handleBackgroundDragChanged(
+                        value,
                         canMove: { point in
                             document.selectionContains(point: point, threshold: moveHitThreshold)
                                 || (document.selectedGroup != nil
@@ -456,21 +458,23 @@ struct CanvasOverlayView: View {
                         onMoveBegan: { beginGroupMove() },
                         onMoveChanged: { value in
                             applyGroupMove(delta: documentDelta(from: value.translation))
-                        },
-                        onMoveEnded: { finishGroupMove() }
+                        }
                     )
-                )
-                .simultaneousGesture(
-                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
-                        .onEnded { value in handleMoveTap(at: value.location) }
-                )
+                },
+                onDragEnded: { value in
+                    handleBackgroundDragEnded(value, onMoveEnded: { finishGroupMove() })
+                }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             boxPath(viewCorners)
                 .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
                 .allowsHitTesting(false)
 
-            pivotMarker(at: center)
-            groupRotationHandle(pivot: center)
+            if document.isMoveRotateMode {
+                pivotMarker(at: center)
+                groupRotationHandle(pivot: center)
+            }
 
             if let activeSnap {
                 snapMarker(activeSnap)
@@ -672,50 +676,78 @@ struct CanvasOverlayView: View {
             .allowsHitTesting(false)
     }
 
-    /// Shared background drag that either moves the current selection (when the
-    /// drag starts over it) or draws a marquee (when it starts on empty canvas).
-    private func backgroundDrag(
+    /// Full-canvas 1-finger catcher used by the Move tool. A second finger fails
+    /// this pan immediately so pinch-zoom on the parent can begin.
+    @ViewBuilder
+    private func canvasCatcher(
+        onTap: @escaping (CGPoint) -> Void,
         canMove: @escaping (CGPoint) -> Bool,
         onMoveBegan: @escaping () -> Void,
-        onMoveChanged: @escaping (DragGesture.Value) -> Void,
+        onMoveChanged: @escaping (OverlayPointerValue) -> Void,
         onMoveEnded: @escaping () -> Void
-    ) -> some Gesture {
-        DragGesture(minimumDistance: 2, coordinateSpace: .named(coordinateSpaceName))
-            .onChanged { value in
-                if !dragDecided {
-                    dragDecided = true
-                    let startDoc = document.viewport.viewToDocument(value.startLocation)
-                    dragIsMarquee = !canMove(startDoc)
-                    if dragIsMarquee {
-                        marqueeStart = value.startLocation
-                    } else {
-                        onMoveBegan()
-                    }
-                }
-                if dragIsMarquee {
-                    marqueeCurrent = value.location
-                    onChanged()
-                } else {
-                    onMoveChanged(value)
+    ) -> some View {
+        SingleTouchCanvasCatcher(
+            onTap: onTap,
+            onDragChanged: { value in
+                handleBackgroundDragChanged(
+                    value,
+                    canMove: canMove,
+                    onMoveBegan: onMoveBegan,
+                    onMoveChanged: onMoveChanged
+                )
+            },
+            onDragEnded: { value in
+                handleBackgroundDragEnded(value, onMoveEnded: onMoveEnded)
+            }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Shared background drag that either moves the current selection (when the
+    /// drag starts over it) or draws a marquee (when it starts on empty canvas).
+    private func handleBackgroundDragChanged(
+        _ value: OverlayPointerValue,
+        canMove: (CGPoint) -> Bool,
+        onMoveBegan: () -> Void,
+        onMoveChanged: (OverlayPointerValue) -> Void
+    ) {
+        if !dragDecided {
+            dragDecided = true
+            let startDoc = document.viewport.viewToDocument(value.startLocation)
+            dragIsMarquee = !canMove(startDoc)
+            if dragIsMarquee {
+                marqueeStart = value.startLocation
+            } else {
+                onMoveBegan()
+            }
+        }
+        if dragIsMarquee {
+            marqueeCurrent = value.location
+            onChanged()
+        } else {
+            onMoveChanged(value)
+        }
+    }
+
+    private func handleBackgroundDragEnded(
+        _ value: OverlayPointerValue,
+        onMoveEnded: () -> Void
+    ) {
+        if dragIsMarquee {
+            if let rect = marqueeDocRect(start: value.startLocation, current: value.location) {
+                document.selectElements(in: rect)
+                if document.hasCanvasSelection {
+                    document.isMoveToolHighlighted = true
                 }
             }
-            .onEnded { value in
-                if dragIsMarquee {
-                    if let rect = marqueeDocRect(start: value.startLocation, current: value.location) {
-                        document.selectElements(in: rect)
-                        if !document.selectionIsEmpty {
-                            document.isMoveToolHighlighted = true
-                        }
-                    }
-                    marqueeStart = nil
-                    marqueeCurrent = nil
-                } else {
-                    onMoveEnded()
-                }
-                dragDecided = false
-                dragIsMarquee = false
-                onChanged()
-            }
+            marqueeStart = nil
+            marqueeCurrent = nil
+        } else {
+            onMoveEnded()
+        }
+        dragDecided = false
+        dragIsMarquee = false
+        onChanged()
     }
 
     /// Move-tool tap: toggles the element under the tap in/out of the selection,
@@ -746,6 +778,11 @@ struct CanvasOverlayView: View {
             } else {
                 document.toggleTextSelection(id)
             }
+        case .referenceImage(let id):
+            if document.selectedReferenceImageID == id {
+                break
+            }
+            document.selectReferenceImage(id: id)
         case .none:
             if let group = document.group(at: documentPoint) {
                 document.selectGroup(group)
@@ -753,7 +790,7 @@ struct CanvasOverlayView: View {
                 document.clearElementSelection()
             }
         }
-        document.isMoveToolHighlighted = !document.selectionIsEmpty
+        document.isMoveToolHighlighted = document.hasCanvasSelection
         onChanged()
     }
 
@@ -770,38 +807,30 @@ struct CanvasOverlayView: View {
             )
             let pivot = rotateDragOriginStroke != nil ? rotateDragPivot : computedPivot
 
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(
-                    backgroundDrag(
-                        canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
-                        onMoveBegan: {},
-                        onMoveChanged: { value in
-                            handleMoveDragChanged(
-                                strokeID: strokeID,
-                                stroke: stroke,
-                                value: value,
-                                anchorIndex: nil
-                            )
-                        },
-                        onMoveEnded: { finishMoveDrag(strokeID: strokeID) }
+            canvasCatcher(
+                onTap: { handleMoveTap(at: $0) },
+                canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
+                onMoveBegan: {},
+                onMoveChanged: { value in
+                    handleMoveDragChanged(
+                        strokeID: strokeID,
+                        stroke: stroke,
+                        value: value,
+                        anchorIndex: nil
                     )
-                )
-                .simultaneousGesture(
-                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
-                        .onEnded { value in
-                            handleMoveTap(at: value.location)
-                        }
-                )
+                },
+                onMoveEnded: { finishMoveDrag(strokeID: strokeID) }
+            )
 
-            if let pivot {
+            if let pivot, document.isMoveRotateMode {
                 pivotMarker(at: pivot)
                 rotationHandle(strokeID: strokeID, pivot: pivot)
             }
 
             ForEach(Array(handles.enumerated()), id: \.offset) { index, point in
                 let selected = document.selectedAnchorIndices.contains(index)
-                let isPivot = document.moveRotationPivotAnchorIndex == index
+                let isPivot = document.isMoveRotateMode
+                    && document.moveRotationPivotAnchorIndex == index
                 ZStack {
                     handleView(style: selected ? .selectedAnchor : .move)
                     if isPivot {
@@ -873,10 +902,6 @@ struct CanvasOverlayView: View {
                 SnapDiamond()
                     .fill(Color.pink.opacity(0.95))
                     .overlay(SnapDiamond().stroke(Color.white, lineWidth: 1.5))
-                    .frame(width: size, height: size)
-            case .tangent:
-                SnapTangent()
-                    .fill(Color.pink.opacity(0.95))
                     .frame(width: size, height: size)
             }
         }
@@ -955,9 +980,13 @@ struct CanvasOverlayView: View {
             }
     }
 
-    private func applyMove(strokeID: UUID, stroke: VectorStroke, delta: CGPoint) {
+    private func applyMove(strokeID: UUID, stroke: VectorStroke, delta: CGPoint, anchorIndex: Int?) {
         guard !moveDragOriginPoints.isEmpty else { return }
-        let indices = document.selectedAnchorIndices
+        // Only a drag that began on an anchor handle edits nodes. Dragging the body
+        // translates the whole object even while anchors are selected — otherwise a
+        // leftover anchor selection turns a move into a reshape, which flattens the
+        // curvature a Bézier keeps in `curveHandles`.
+        let indices = anchorIndex == nil ? [] : document.selectedAnchorIndices
 
         if indices.isEmpty {
             let origin = moveDragOriginStroke ?? stroke
@@ -965,17 +994,21 @@ struct CanvasOverlayView: View {
             return
         }
 
-        var updated = document.stroke(with: strokeID) ?? moveDragOriginStroke ?? stroke
-        for index in indices.sorted() where moveDragOriginPoints.indices.contains(index) {
-            let origin = moveDragOriginPoints[index]
-            guard updated.points.indices.contains(index) else { continue }
-            updated = ShapeGeometry.applyingMovedAnchor(
-                updated,
-                at: index,
-                to: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y)
-            )
+        // Re-apply from the geometry captured at drag start, not from last frame's result:
+        // parametric shapes re-derive their anchors on every edit (an arc re-emits a
+        // different number of them as its sweep changes), so accumulating would let the
+        // dragged index drift onto a different anchor part-way through the drag.
+        let origin = moveDragOriginStroke ?? document.stroke(with: strokeID) ?? stroke
+        var moves: [Int: CGPoint] = [:]
+        for index in indices where moveDragOriginPoints.indices.contains(index) {
+            let anchor = moveDragOriginPoints[index]
+            moves[index] = CGPoint(x: anchor.x + delta.x, y: anchor.y + delta.y)
         }
-        document.updateStroke(updated, recordUndo: false)
+        guard !moves.isEmpty else { return }
+        document.updateStroke(
+            ShapeGeometry.applyingMovedAnchors(origin, moves: moves),
+            recordUndo: false
+        )
     }
 
     private func anchorMoveDrag(strokeID: UUID, stroke: VectorStroke, anchorIndex: Int) -> some Gesture {
@@ -984,7 +1017,11 @@ struct CanvasOverlayView: View {
                 handleMoveDragChanged(
                     strokeID: strokeID,
                     stroke: stroke,
-                    value: value,
+                    value: OverlayPointerValue(
+                        startLocation: value.startLocation,
+                        location: value.location,
+                        translation: value.translation
+                    ),
                     anchorIndex: anchorIndex
                 )
             }
@@ -996,7 +1033,7 @@ struct CanvasOverlayView: View {
     private func handleMoveDragChanged(
         strokeID: UUID,
         stroke: VectorStroke,
-        value: DragGesture.Value,
+        value: OverlayPointerValue,
         anchorIndex: Int?
     ) {
         if moveDragOriginPoints.isEmpty {
@@ -1017,7 +1054,7 @@ struct CanvasOverlayView: View {
             anchorIndex: anchorIndex,
             cursorViewPoint: value.location
         )
-        applyMove(strokeID: strokeID, stroke: stroke, delta: delta)
+        applyMove(strokeID: strokeID, stroke: stroke, delta: delta, anchorIndex: anchorIndex)
         onChanged()
     }
 
@@ -1038,9 +1075,9 @@ struct CanvasOverlayView: View {
     /// is disabled, unsupported, or nothing is in range.
     ///
     /// Reference point selection:
+    /// - whole-object body drag → every anchor plus the shape center,
     /// - dragging a single anchor handle → that anchor,
-    /// - dragging with a multi-anchor selection → the first selected anchor,
-    /// - whole-object background drag → the pencil/cursor position.
+    /// - anchor drag whose index is out of range → the first selected anchor.
     private func snapAdjustedDelta(
         strokeID: UUID,
         stroke: VectorStroke,
@@ -1055,7 +1092,7 @@ struct CanvasOverlayView: View {
 
         // Whole-object move: snap using every anchor (plus center) as a reference so the shape
         // locks on when any of its own points lands on other geometry.
-        if anchorIndex == nil, document.selectedAnchorIndices.isEmpty {
+        if anchorIndex == nil {
             let center = ShapeGeometry.shapeCenter(for: stroke)
             var origins = moveDragOriginPoints
             if let center { origins.append(center) }
@@ -1081,54 +1118,9 @@ struct CanvasOverlayView: View {
 
         let snapped = resolveMoveSnap(
             reference: raw,
-            excluding: strokeID,
-            referenceStarts: tangentReferenceStarts(stroke: stroke, movingAnchor: anchorIndex)
+            excluding: strokeID
         )
         return CGPoint(x: rawDelta.x + (snapped.x - raw.x), y: rawDelta.y + (snapped.y - raw.y))
-    }
-
-    /// Fixed neighbor anchor(s) of the vertex being dragged, used as tangent anchors. A dragged
-    /// endpoint has one stationary neighbor; a dragged middle anchor has two, so its adjacent
-    /// segments can each go tangent. Only straight segmented paths qualify, and only neighbors
-    /// that are themselves stationary (not part of the same multi-anchor move) are included.
-    private func tangentReferenceStarts(stroke: VectorStroke, movingAnchor: Int?) -> [CGPoint] {
-        guard let movingAnchor,
-              stroke.points.count >= 2,
-              stroke.shapeType == .polyline || stroke.shapeType == .construction else { return [] }
-        return neighborReferenceStarts(
-            movingAnchor: movingAnchor,
-            points: moveDragOriginPoints,
-            isClosed: stroke.isClosed
-        )
-    }
-
-    /// Shared neighbor lookup: the stationary anchors adjacent to `movingAnchor` in `points`.
-    /// Skips neighbors also included in the current anchor selection so a tangent reference is
-    /// always a truly fixed point.
-    private func neighborReferenceStarts(
-        movingAnchor: Int,
-        points: [CGPoint],
-        isClosed: Bool
-    ) -> [CGPoint] {
-        guard points.indices.contains(movingAnchor) else { return [] }
-        let count = points.count
-        var neighborIndices: [Int] = []
-        if movingAnchor - 1 >= 0 {
-            neighborIndices.append(movingAnchor - 1)
-        } else if isClosed {
-            neighborIndices.append(count - 1)
-        }
-        if movingAnchor + 1 < count {
-            neighborIndices.append(movingAnchor + 1)
-        } else if isClosed {
-            neighborIndices.append(0)
-        }
-        return neighborIndices.compactMap { index in
-            guard index != movingAnchor,
-                  points.indices.contains(index),
-                  !document.selectedAnchorIndices.contains(index) else { return nil }
-            return points[index]
-        }
     }
 
     /// Radius handles on circles/ellipses move radially rather than translating, so absolute
@@ -1145,8 +1137,7 @@ struct CanvasOverlayView: View {
     /// and haptics. Returns the locked point (or the raw point when nothing snaps).
     private func resolveMoveSnap(
         reference raw: CGPoint,
-        excluding strokeID: UUID,
-        referenceStarts: [CGPoint] = []
+        excluding strokeID: UUID
     ) -> CGPoint {
         let scale = max(document.viewport.scale, 0.0001)
         let update = snapSession.update(
@@ -1157,8 +1148,7 @@ struct CanvasOverlayView: View {
             snapRadius: SnapTuning.snapRadiusPoints / scale,
             breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
             breakawayVelocity: SnapTuning.breakawayVelocityPoints / scale,
-            excludedStrokeID: strokeID,
-            referenceStarts: referenceStarts
+            excludedStrokeID: strokeID
         )
         if let candidate = update.candidate {
             activeSnap = candidate
@@ -1230,7 +1220,7 @@ struct CanvasOverlayView: View {
             ForEach(patternPreviewStrokes) { stroke in
                 patternPreviewPath(for: stroke)
                     .stroke(
-                        Color.accentColor.opacity(0.45),
+                        Color.accentColor.opacity(0.65),
                         style: StrokeStyle(
                             lineWidth: max(stroke.strokeWidth * document.viewport.scale, 1),
                             dash: [6, 4]
@@ -1558,43 +1548,36 @@ struct CanvasOverlayView: View {
             let viewCorners = element.corners().map { document.viewport.documentToView($0) }
             let viewCenter = document.viewport.documentToView(element.center)
 
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(
-                    backgroundDrag(
-                        canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
-                        onMoveBegan: {
-                            textMoveOrigin = document.textElement(with: id)?.position
-                            document.beginInteractiveEdit()
-                        },
-                        onMoveChanged: { value in
-                            guard let origin = textMoveOrigin else { return }
-                            let delta = documentDelta(from: value.translation)
-                            document.setTextPosition(
-                                id: id,
-                                position: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y),
-                                recordUndo: false
-                            )
-                            onChanged()
-                        },
-                        onMoveEnded: {
-                            textMoveOrigin = nil
-                            onChanged()
-                        }
+            canvasCatcher(
+                onTap: { handleMoveTap(at: $0) },
+                canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
+                onMoveBegan: {
+                    textMoveOrigin = document.textElement(with: id)?.position
+                    document.beginInteractiveEdit()
+                },
+                onMoveChanged: { value in
+                    guard let origin = textMoveOrigin else { return }
+                    let delta = documentDelta(from: value.translation)
+                    document.setTextPosition(
+                        id: id,
+                        position: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y),
+                        recordUndo: false
                     )
-                )
-                .simultaneousGesture(
-                    SpatialTapGesture(coordinateSpace: .named(coordinateSpaceName))
-                        .onEnded { value in
-                            handleMoveTap(at: value.location)
-                        }
-                )
+                    onChanged()
+                },
+                onMoveEnded: {
+                    textMoveOrigin = nil
+                    onChanged()
+                }
+            )
 
             boxPath(viewCorners)
                 .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
                 .allowsHitTesting(false)
 
-            textRotationHandle(id: id, viewCorners: viewCorners, viewCenter: viewCenter)
+            if document.isMoveRotateMode {
+                textRotationHandle(id: id, viewCorners: viewCorners, viewCenter: viewCenter)
+            }
         }
     }
 
@@ -1616,6 +1599,125 @@ struct CanvasOverlayView: View {
                     .highPriorityGesture(textScaleDrag(id: id, cornerIndex: index))
             }
         }
+    }
+
+    // MARK: - Reference image (move / scale)
+
+    @ViewBuilder
+    private var imageMoveOverlay: some View {
+        if document.isReferenceImageSelected,
+           let corners = document.referenceImageCorners() {
+            let viewCorners = corners.map { document.viewport.documentToView($0) }
+
+            canvasCatcher(
+                onTap: { handleMoveTap(at: $0) },
+                canMove: { document.selectionContains(point: $0, threshold: moveHitThreshold) },
+                onMoveBegan: {
+                    imageMoveOrigin = document.resolvedReferenceImageFrame
+                    document.beginInteractiveEdit()
+                },
+                onMoveChanged: { value in
+                    guard let origin = imageMoveOrigin else { return }
+                    let delta = documentDelta(from: value.translation)
+                    document.setReferenceImageFrame(
+                        origin.offsetBy(dx: delta.x, dy: delta.y),
+                        recordUndo: false
+                    )
+                    onChanged()
+                },
+                onMoveEnded: {
+                    imageMoveOrigin = nil
+                    onChanged()
+                }
+            )
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                .allowsHitTesting(false)
+
+            ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
+                handleView(style: .edit)
+                    .position(corner)
+                    .highPriorityGesture(imageScaleDrag(cornerIndex: index))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var imageScaleOverlay: some View {
+        if document.isReferenceImageSelected,
+           let corners = document.referenceImageCorners() {
+            let viewCorners = corners.map { document.viewport.documentToView($0) }
+
+            boxPath(viewCorners)
+                .stroke(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .allowsHitTesting(false)
+
+            ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
+                handleView(style: .edit)
+                    .position(corner)
+                    .highPriorityGesture(imageScaleDrag(cornerIndex: index))
+            }
+        }
+    }
+
+    private func imageScaleDrag(cornerIndex: Int) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if imageScaleOrigin == nil {
+                    guard let frame = document.resolvedReferenceImageFrame else { return }
+                    imageScaleOrigin = frame
+                    imageScaleOriginCenter = CGPoint(x: frame.midX, y: frame.midY)
+                    let corners = [
+                        CGPoint(x: frame.minX, y: frame.minY),
+                        CGPoint(x: frame.maxX, y: frame.minY),
+                        CGPoint(x: frame.maxX, y: frame.maxY),
+                        CGPoint(x: frame.minX, y: frame.maxY)
+                    ]
+                    let corner = corners[cornerIndex]
+                    imageScaleOriginCorner = corner
+                    imageScaleOriginCornerDist = max(
+                        hypot(corner.x - frame.midX, corner.y - frame.midY),
+                        0.001
+                    )
+                    document.beginInteractiveEdit()
+                }
+                guard let origin = imageScaleOrigin else { return }
+                let center = imageScaleOriginCenter
+                let dragPoint = document.viewport.viewToDocument(value.location)
+                let corner = imageScaleOriginCorner
+                let sx: CGFloat
+                let sy: CGFloat
+                if document.scaleUniform {
+                    let newDist = hypot(dragPoint.x - center.x, dragPoint.y - center.y)
+                    let factor = newDist / imageScaleOriginCornerDist
+                    sx = factor
+                    sy = factor
+                } else {
+                    sx = abs(corner.x - center.x) > 0.001
+                        ? (dragPoint.x - center.x) / (corner.x - center.x)
+                        : 1
+                    sy = abs(corner.y - center.y) > 0.001
+                        ? (dragPoint.y - center.y) / (corner.y - center.y)
+                        : 1
+                }
+                let width = abs(origin.width * sx)
+                let height = abs(origin.height * sy)
+                document.setReferenceImageFrame(
+                    CGRect(
+                        x: center.x - width / 2,
+                        y: center.y - height / 2,
+                        width: width,
+                        height: height
+                    ),
+                    recordUndo: false
+                )
+                onChanged()
+            }
+            .onEnded { _ in
+                imageScaleOrigin = nil
+                onChanged()
+            }
     }
 
     private func boxPath(_ corners: [CGPoint]) -> Path {
@@ -1836,27 +1938,6 @@ private struct SnapDiamond: Shape {
         path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
         path.addLine(to: CGPoint(x: rect.minX, y: rect.midY))
         path.closeSubpath()
-        return path
-    }
-}
-
-/// A disc with a line kissing its top edge, used for the tangent snap indicator.
-private struct SnapTangent: Shape {
-    func path(in rect: CGRect) -> Path {
-        let size = min(rect.width, rect.height)
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let discRadius = size * 0.36
-        let discCenterY = center.y + size * 0.12
-        var path = Path()
-        path.addEllipse(in: CGRect(
-            x: center.x - discRadius,
-            y: discCenterY - discRadius,
-            width: discRadius * 2,
-            height: discRadius * 2
-        ))
-        let barHeight: CGFloat = 2.4
-        let barY = discCenterY - discRadius - barHeight / 2
-        path.addRect(CGRect(x: center.x - size / 2, y: barY, width: size, height: barHeight))
         return path
     }
 }

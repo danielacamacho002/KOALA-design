@@ -16,6 +16,14 @@ enum TrimEngine {
         var strokeID: UUID
         /// When trimming the middle of an open path splits it in two.
         var additionalStroke: VectorStroke?
+        /// The span this trim drops, for the pre-cut highlight.
+        var removedSegment: RemovedSegmentGeometry?
+    }
+
+    /// The about-to-be-removed span as a flattened open polyline in document space.
+    struct RemovedSegmentGeometry {
+        var points: [CGPoint]
+        var strokeWidth: CGFloat
     }
 
     private struct ContourHit {
@@ -53,7 +61,17 @@ enum TrimEngine {
             segmentIndex: match.segmentIndex,
             t: match.t
         ) {
-            return TrimResult(stroke: opened, strokeID: match.stroke.id, additionalStroke: nil)
+            // The removed span is the chord itself: last sample back to the first.
+            let chord = RemovedSegmentGeometry(
+                points: [match.renderPoints[match.renderPoints.count - 1], match.renderPoints[0]],
+                strokeWidth: match.stroke.strokeWidth
+            )
+            return TrimResult(
+                stroke: opened,
+                strokeID: match.stroke.id,
+                additionalStroke: nil,
+                removedSegment: chord
+            )
         }
 
         let others = strokes.filter { $0.id != match.stroke.id }
@@ -96,6 +114,15 @@ enum TrimEngine {
             return nil
         }
 
+        // Mirror of the kept span below: prev → next is what goes away.
+        let removed = removedGeometry(
+            target,
+            from: bounds.prev,
+            to: bounds.next,
+            renderPoints: renderPoints,
+            closed: true
+        )
+
         // Prefer circular arc result so curvature survives quadrant trims.
         // Skip when the closed contour is a pie (arc + chord): length ratios are not
         // a circle sweep, and snapping the chord onto the circle invents geometry.
@@ -107,7 +134,12 @@ enum TrimEngine {
             to: bounds.prev,
             totalLength: totalLength
         ) {
-            return TrimResult(stroke: arcStroke, strokeID: target.id, additionalStroke: nil)
+            return TrimResult(
+                stroke: arcStroke,
+                strokeID: target.id,
+                additionalStroke: nil,
+                removedSegment: removed
+            )
         }
 
         let kept = extractSpan(
@@ -130,8 +162,29 @@ enum TrimEngine {
         return TrimResult(
             stroke: ShapeGeometry.withCompactedCircularAnchors(draft),
             strokeID: target.id,
-            additionalStroke: nil
+            additionalStroke: nil,
+            removedSegment: removed
         )
+    }
+
+    /// The span between two bounding cuts, flattened for the pre-cut highlight.
+    private static func removedGeometry(
+        _ target: VectorStroke,
+        from prev: Cut,
+        to next: Cut,
+        renderPoints: [CGPoint],
+        closed: Bool
+    ) -> RemovedSegmentGeometry? {
+        let points = extractSpan(
+            from: prev.distance,
+            to: next.distance,
+            points: renderPoints,
+            closed: closed,
+            startPoint: prev.point,
+            endPoint: next.point
+        )
+        guard points.count >= 2 else { return nil }
+        return RemovedSegmentGeometry(points: points, strokeWidth: target.strokeWidth)
     }
 
     /// Opens a closed arc (pie) when the tap lands on the implied closing chord.
@@ -207,6 +260,14 @@ enum TrimEngine {
 
         guard let bounds = boundingCutsOpen(around: tapDistance, cuts: ordered) else { return nil }
 
+        let removed = removedGeometry(
+            target,
+            from: bounds.prev,
+            to: bounds.next,
+            renderPoints: renderPoints,
+            closed: false
+        )
+
         let left = extractSpan(
             from: 0,
             to: bounds.prev.distance,
@@ -241,7 +302,12 @@ enum TrimEngine {
                 shapeType: demotedShapeType(target)
             )
             secondary.id = UUID()
-            return TrimResult(stroke: primary, strokeID: target.id, additionalStroke: secondary)
+            return TrimResult(
+                stroke: primary,
+                strokeID: target.id,
+                additionalStroke: secondary,
+                removedSegment: removed
+            )
         }
 
         let kept = leftValid ? left : right
@@ -252,7 +318,8 @@ enum TrimEngine {
                 shapeType: demotedShapeType(target)
             ),
             strokeID: target.id,
-            additionalStroke: nil
+            additionalStroke: nil,
+            removedSegment: removed
         )
     }
 
