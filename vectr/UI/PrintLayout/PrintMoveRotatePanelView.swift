@@ -120,25 +120,43 @@ struct PrintMoveRotatePanelView: View {
     }
 
     private func setRotation(toDegrees value: Double) {
-        guard let id = selectedID else { return }
+        let ids = document.printSelectedIDs
+        guard !ids.isEmpty else { return }
         document.beginInteractiveEdit()
-        var transform = document.printTransform(for: id)
-        transform.rotation = CGFloat(value * .pi / 180)
-        document.setPrintTransform(transform, for: id, recordUndo: false)
+        let target = CGFloat(value * .pi / 180)
+        if ids.count == 1, let id = ids.first {
+            var transform = document.printTransform(for: id)
+            transform.rotation = target
+            document.setPrintTransform(transform, for: id, recordUndo: false)
+        } else if let bbox = document.printSelectionBoundingBox(),
+                  let primary = document.printSelectedStrokeID ?? document.printSelectedTextID {
+            let delta = target - document.printTransform(for: primary).rotation
+            let origins = Dictionary(
+                uniqueKeysWithValues: ids.map { ($0, document.printTransform(for: $0)) }
+            )
+            let centers = Dictionary(
+                uniqueKeysWithValues: ids.compactMap { id -> (UUID, CGPoint)? in
+                    let bounds = document.printBounds(for: id)
+                    guard !bounds.isNull else { return nil }
+                    return (id, CGPoint(x: bounds.midX, y: bounds.midY))
+                }
+            )
+            document.rotatePrintSelection(
+                by: delta,
+                around: CGPoint(x: bbox.midX, y: bbox.midY),
+                originTransforms: origins,
+                originCenters: centers,
+                recordUndo: false
+            )
+        }
         syncDegreesField()
         onChanged()
     }
 
     private func toggleFlip(horizontal: Bool) {
-        guard let id = selectedID else { return }
+        guard !document.printSelectionIsEmpty else { return }
         document.beginInteractiveEdit()
-        var transform = document.printTransform(for: id)
-        if horizontal {
-            transform.flipHorizontal.toggle()
-        } else {
-            transform.flipVertical.toggle()
-        }
-        document.setPrintTransform(transform, for: id, recordUndo: false)
+        document.flipPrintSelection(horizontal: horizontal)
         onChanged()
     }
 }

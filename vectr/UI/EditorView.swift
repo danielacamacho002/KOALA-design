@@ -483,8 +483,7 @@ struct EditorView: View {
     private func switchToPrintLayoutMode() {
         savedDesignViewport = store.document.viewport
         editorMode = .printLayout
-        store.document.printSelectedStrokeID = nil
-        store.document.printSelectedTextID = nil
+        store.document.clearPrintSelection()
         store.document.autoPositionDesignOnPrintGrid()
         printLayoutNeedsInitialFit = true
         fitPrintLayoutToGrid()

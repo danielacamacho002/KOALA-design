@@ -196,7 +196,7 @@ final class PrintLayoutCanvasUIView: UIView {
                 for: transformed,
                 settings: document.printLayout
             )
-            let isSelected = stroke.id == document.printSelectedStrokeID
+            let isSelected = document.printSelectedStrokeIDs.contains(stroke.id)
             let opacity = document.opacity(forLayerID: stroke.layerID) * (isSelected ? 1 : cutOpacity)
 
             if let layer = strokeLayers[stroke.id] {
@@ -242,7 +242,7 @@ final class PrintLayoutCanvasUIView: UIView {
                 .concatenating(documentToView)
             let viewPath = TextOutline.path(for: element).copy(using: &transform)
 
-            let isSelected = element.id == document.printSelectedTextID
+            let isSelected = document.printSelectedTextIDs.contains(element.id)
             let cutOpacity = isSelected ? 1 : textOpacity(for: element, transform: printTransform)
             let opacity = document.opacity(forLayerID: element.layerID) * cutOpacity
             let lineWidth = document.viewport.documentToView(distance: element.strokeWidth)

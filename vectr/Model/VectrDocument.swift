@@ -120,6 +120,11 @@ final class VectrDocument {
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
     var printSelectedStrokeID: UUID?
     var printSelectedTextID: UUID?
+    /// Full print-layout stroke selection. Always includes `printSelectedStrokeID`
+    /// when a print stroke is selected.
+    var printSelectedStrokeIDs: Set<UUID> = []
+    /// Full print-layout text selection, kept in sync with `printSelectedTextID`.
+    var printSelectedTextIDs: Set<UUID> = []
     var printLayoutRevision = 0
     /// Print-layout-only sliced fragments produced by the Cut tool. Each is a fresh
     /// polyline in base (design) space; laid over the design strokes and never
@@ -128,6 +133,8 @@ final class VectrDocument {
     /// Original design strokes that have been cut and are hidden in Print Layout
     /// (replaced by their `printPieces`). They remain fully intact in Design mode.
     var printHiddenStrokeIDs: Set<UUID> = []
+    /// Piece ID → original design stroke ID, so join/delete can prune cut fragments.
+    var printPieceSourceIDs: [UUID: UUID] = [:]
 
     private var undoStack: [DocumentSnapshot] = []
     private var redoStack: [DocumentSnapshot] = []
@@ -183,6 +190,7 @@ final class VectrDocument {
         printStrokeTransforms = snapshot.printStrokeTransforms
         printPieces = snapshot.printPieces
         printHiddenStrokeIDs = snapshot.printHiddenStrokeIDs
+        printPieceSourceIDs = snapshot.printPieceSourceIDs ?? [:]
         dimensionOffsets = snapshot.dimensionOffsets
         dimensionLocks = snapshot.dimensionLocks ?? []
         syncGridFromSettings()
@@ -318,11 +326,14 @@ final class VectrDocument {
         guard layers.count > 1,
               let index = layers.firstIndex(where: { $0.id == id }) else { return }
         pushUndo()
+        let removedStrokeIDs = Set(strokes.filter { $0.layerID == id }.map(\.id))
+        let removedTextIDs = Set(textElements.filter { $0.layerID == id }.map(\.id))
         layers.remove(at: index)
         strokes.removeAll { $0.layerID == id }
         textElements.removeAll { $0.layerID == id }
         referenceImages.removeAll { $0.layerID == id }
         pruneGroups()
+        retireDesignStrokeIDs(removedStrokeIDs, textIDs: removedTextIDs, droppedLayerID: id)
         if let selected = selectedStrokeID, stroke(with: selected) == nil {
             selectedStrokeID = nil
         }
@@ -1908,10 +1919,18 @@ final class VectrDocument {
         }
         pushUndo()
         let removeIDs = Set(selected.map(\.id))
+        let sharedTransform = sharedPrintTransform(for: removeIDs)
         strokes.removeAll { removeIDs.contains($0.id) }
         strokes.append(contentsOf: joined)
         pruneGroups()
         let joinedIDs = Set(joined.map(\.id))
+        retireDesignStrokeIDs(removeIDs.subtracting(joinedIDs))
+        if let sharedTransform, sharedTransform != .identity {
+            for stroke in joined where !removeIDs.contains(stroke.id) {
+                printStrokeTransforms[stroke.id] = sharedTransform
+            }
+            printLayoutRevision += 1
+        }
         reconcileIntersectionAnchors(around: joinedIDs)
         geometryRevision += 1
         setElementSelection(strokeIDs: joinedIDs, textIDs: [])
@@ -2031,6 +2050,7 @@ final class VectrDocument {
         strokes.removeAll { strokeIDs.contains($0.id) }
         textElements.removeAll { textIDs.contains($0.id) }
         pruneGroups()
+        retireDesignStrokeIDs(strokeIDs, textIDs: textIDs)
         isSyncingSelection = true
         selectedStrokeIDs = []
         selectedTextIDs = []
@@ -2756,11 +2776,13 @@ final class VectrDocument {
         pushUndo()
         strokes.removeAll { $0.id == id }
         pruneGroups()
+        retireDesignStrokeIDs([id])
         if selectedStrokeID == id {
             clearToolSelections()
             selectedStrokeID = nil
         }
         pruneRevealedDimensions(forElementID: id)
+        geometryRevision += 1
     }
 
     /// Interior fill tap for the Delete tool: when the topmost filled shape under
@@ -2816,6 +2838,7 @@ final class VectrDocument {
             )
             strokes.removeAll { $0.id == target.id }
             pruneGroups()
+            retireDesignStrokeIDs([target.id])
             deselectStrokeAfterMutation(target.id)
             geometryRevision += 1
             return true
@@ -3082,24 +3105,133 @@ final class VectrDocument {
 
     // MARK: - Print Layout
 
+    var printSelectionCount: Int {
+        printSelectedStrokeIDs.count + printSelectedTextIDs.count
+    }
+
+    var printSelectionIsEmpty: Bool {
+        printSelectedStrokeIDs.isEmpty && printSelectedTextIDs.isEmpty
+    }
+
+    var printSelectedIDs: Set<UUID> {
+        printSelectedStrokeIDs.union(printSelectedTextIDs)
+    }
+
     func printTransform(for strokeID: UUID) -> PrintStrokeTransform {
         printStrokeTransforms[strokeID] ?? .identity
     }
 
     func setPrintTransform(_ transform: PrintStrokeTransform, for strokeID: UUID, recordUndo: Bool = true) {
+        setPrintTransforms([strokeID: transform], recordUndo: recordUndo)
+    }
+
+    func setPrintTransforms(_ transforms: [UUID: PrintStrokeTransform], recordUndo: Bool = true) {
+        guard !transforms.isEmpty else { return }
         if recordUndo { pushUndo() }
-        if transform == .identity {
-            printStrokeTransforms.removeValue(forKey: strokeID)
-        } else {
-            printStrokeTransforms[strokeID] = transform
+        for (id, transform) in transforms {
+            if transform == .identity {
+                printStrokeTransforms.removeValue(forKey: id)
+            } else {
+                printStrokeTransforms[id] = transform
+            }
         }
         printLayoutRevision += 1
     }
 
-    func clearPrintSelection() {
-        printSelectedStrokeID = nil
-        printSelectedTextID = nil
+    func setPrintSelection(strokeIDs: Set<UUID>, textIDs: Set<UUID>) {
+        let validStrokeIDs = Set(strokeIDs.filter { printLayoutStroke(with: $0) != nil })
+        let validTextIDs = Set(textIDs.filter { textElement(with: $0) != nil })
+        printSelectedStrokeIDs = validStrokeIDs
+        printSelectedTextIDs = validTextIDs
+        if let current = printSelectedStrokeID, validStrokeIDs.contains(current) {
+            printSelectedStrokeID = current
+        } else {
+            printSelectedStrokeID = validStrokeIDs.first
+        }
+        if let current = printSelectedTextID, validTextIDs.contains(current) {
+            printSelectedTextID = current
+        } else {
+            printSelectedTextID = validTextIDs.first
+        }
         printLayoutRevision += 1
+    }
+
+    func togglePrintStrokeSelection(_ id: UUID) {
+        var next = printSelectedStrokeIDs
+        if next.contains(id) { next.remove(id) } else { next.insert(id) }
+        setPrintSelection(strokeIDs: next, textIDs: printSelectedTextIDs)
+    }
+
+    func togglePrintTextSelection(_ id: UUID) {
+        var next = printSelectedTextIDs
+        if next.contains(id) { next.remove(id) } else { next.insert(id) }
+        setPrintSelection(strokeIDs: printSelectedStrokeIDs, textIDs: next)
+    }
+
+    func clearPrintSelection() {
+        setPrintSelection(strokeIDs: [], textIDs: [])
+    }
+
+    func rotatePrintSelection(
+        by radians: CGFloat,
+        around pivot: CGPoint,
+        originTransforms: [UUID: PrintStrokeTransform],
+        originCenters: [UUID: CGPoint],
+        recordUndo: Bool = false
+    ) {
+        guard abs(radians) > 1e-12 else { return }
+        let cosR = cos(radians)
+        let sinR = sin(radians)
+        var updates: [UUID: PrintStrokeTransform] = [:]
+        for id in printSelectedIDs {
+            guard var transform = originTransforms[id], let center = originCenters[id] else { continue }
+            let dx = center.x - pivot.x
+            let dy = center.y - pivot.y
+            let newCenter = CGPoint(
+                x: pivot.x + dx * cosR - dy * sinR,
+                y: pivot.y + dx * sinR + dy * cosR
+            )
+            transform.rotation += radians
+            transform.translation.x += newCenter.x - center.x
+            transform.translation.y += newCenter.y - center.y
+            updates[id] = transform
+        }
+        setPrintTransforms(updates, recordUndo: recordUndo)
+    }
+
+    /// Mirrors the print selection. A lone element flips in place; a multi-selection
+    /// mirrors about its group bounding box so the arrangement mirrors too, matching
+    /// how `rotatePrintSelection` pivots.
+    func flipPrintSelection(horizontal: Bool) {
+        let ids = printSelectedIDs
+        guard !ids.isEmpty else { return }
+        let pivot: CGPoint? = ids.count > 1
+            ? printSelectionBoundingBox().map { CGPoint(x: $0.midX, y: $0.midY) }
+            : nil
+
+        var updates: [UUID: PrintStrokeTransform] = [:]
+        for id in ids {
+            var transform = printTransform(for: id)
+            let before = printBounds(for: id)
+            if horizontal {
+                transform.flipHorizontal.toggle()
+            } else {
+                transform.flipVertical.toggle()
+            }
+            if let pivot, !before.isNull {
+                let after = printBounds(for: id, storedTransform: transform)
+                if !after.isNull {
+                    let target = CGPoint(
+                        x: horizontal ? 2 * pivot.x - before.midX : before.midX,
+                        y: horizontal ? before.midY : 2 * pivot.y - before.midY
+                    )
+                    transform.translation.x += target.x - after.midX
+                    transform.translation.y += target.y - after.midY
+                }
+            }
+            updates[id] = transform
+        }
+        setPrintTransforms(updates, recordUndo: false)
     }
 
     func effectivePrintTransform(for strokeID: UUID) -> PrintStrokeTransform {
@@ -3144,35 +3276,51 @@ final class VectrDocument {
     }
 
     #if canImport(UIKit)
-    /// Unified print-layout selection: prefers a hit text element, otherwise
-    /// falls back to stroke hit testing. Text and strokes each keep their own
-    /// print selection slot; selecting one kind clears the other.
-    @discardableResult
-    func selectPrintElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
+    /// Topmost print-layout hit without changing selection. Text is preferred over strokes.
+    func hitPrintElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
         for element in visibleTextElements().reversed() {
             let transform = effectivePrintTransform(for: element.id)
             let affine = PrintLayoutCoordinateSpace.textPrintTransform(for: element, transform: transform)
             let local = documentPoint.applying(affine.inverted())
             if element.contains(local) {
-                printSelectedTextID = element.id
-                printSelectedStrokeID = nil
                 return .text(element.id)
             }
         }
-        if let stroke = selectPrintStroke(near: documentPoint, threshold: threshold) {
-            printSelectedTextID = nil
+        if let stroke = printStrokeHit(near: documentPoint, threshold: threshold) {
             return .stroke(stroke.id)
         }
-        printSelectedTextID = nil
         return .none
     }
+
+    /// Tap-to-toggle print selection, matching design-canvas Move: add on a new
+    /// hit, toggle off a member of a multi-selection, keep a lone selection, clear
+    /// on empty canvas.
+    func handlePrintSelectTap(near documentPoint: CGPoint, threshold: CGFloat) {
+        switch hitPrintElement(near: documentPoint, threshold: threshold) {
+        case .stroke(let id):
+            if printSelectedStrokeIDs.contains(id) {
+                if printSelectionCount > 1 { togglePrintStrokeSelection(id) }
+            } else {
+                togglePrintStrokeSelection(id)
+            }
+        case .text(let id):
+            if printSelectedTextIDs.contains(id) {
+                if printSelectionCount > 1 { togglePrintTextSelection(id) }
+            } else {
+                togglePrintTextSelection(id)
+            }
+        case .referenceImage, .none:
+            // Print layout never hit-tests reference images, so this is a miss.
+            clearPrintSelection()
+        }
+    }
+
     #endif
 
-    func selectPrintStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
+    func printStrokeHit(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
         for stroke in printLayoutStrokes().reversed() {
             let transformed = transformedPrintStroke(stroke)
             if transformed.contains(documentPoint) {
-                printSelectedStrokeID = stroke.id
                 return stroke
             }
         }
@@ -3187,8 +3335,93 @@ final class VectrDocument {
                 best = stroke
             }
         }
-        printSelectedStrokeID = best?.id
         return best
+    }
+
+    func selectPrintElements(in rect: CGRect) {
+        var strokeIDs: Set<UUID> = []
+        var textIDs: Set<UUID> = []
+        for stroke in printLayoutStrokes() {
+            let points = ShapeGeometry.renderPoints(for: transformedPrintStroke(stroke))
+            let bbox = PrintLayoutCoordinateSpace.boundingRect(for: points)
+            if !bbox.isNull, Self.rectsOverlap(bbox, rect) {
+                strokeIDs.insert(stroke.id)
+            }
+        }
+        for element in visibleTextElements() {
+            let corners = PrintLayoutCoordinateSpace.transformedTextCorners(
+                element,
+                transform: effectivePrintTransform(for: element.id)
+            )
+            let bbox = PrintLayoutCoordinateSpace.boundingRect(for: corners)
+            if !bbox.isNull, Self.rectsOverlap(bbox, rect) {
+                textIDs.insert(element.id)
+            }
+        }
+        setPrintSelection(strokeIDs: strokeIDs, textIDs: textIDs)
+    }
+
+    func printBounds(for id: UUID) -> CGRect {
+        printBounds(for: id, storedTransform: printTransform(for: id))
+    }
+
+    /// Bounds under an arbitrary stored transform, so a candidate placement can be
+    /// measured before it is committed.
+    func printBounds(for id: UUID, storedTransform: PrintStrokeTransform) -> CGRect {
+        var effective = storedTransform
+        effective.translation = CGPoint(
+            x: effective.translation.x + printLayout.contentOffset.x,
+            y: effective.translation.y + printLayout.contentOffset.y
+        )
+        if let stroke = printLayoutStroke(with: id) {
+            let transformed = PrintLayoutCoordinateSpace.transformedStroke(stroke, transform: effective)
+            let points = ShapeGeometry.renderPoints(for: transformed)
+            return PrintLayoutCoordinateSpace.boundingRect(for: points)
+        }
+        if let element = textElement(with: id) {
+            let corners = PrintLayoutCoordinateSpace.transformedTextCorners(element, transform: effective)
+            return PrintLayoutCoordinateSpace.boundingRect(for: corners)
+        }
+        return .null
+    }
+
+    func printSelectionBoundingBox() -> CGRect? {
+        var rect: CGRect?
+        for id in printSelectedIDs {
+            let bbox = printBounds(for: id)
+            guard !bbox.isNull else { continue }
+            rect = rect.map { $0.union(bbox) } ?? bbox
+        }
+        return rect
+    }
+
+    /// True when `point` lands on the print selection, so a drag there moves it
+    /// instead of starting a marquee. Tested per element: the union bounding box of
+    /// a multi-selection would swallow the empty gaps between the shapes.
+    func printSelectionContains(point: CGPoint, threshold: CGFloat) -> Bool {
+        for id in printSelectedStrokeIDs {
+            guard let stroke = printLayoutStroke(with: id) else { continue }
+            let transformed = transformedPrintStroke(stroke)
+            if transformed.contains(point) || transformed.distance(to: point) <= threshold {
+                return true
+            }
+        }
+        for id in printSelectedTextIDs {
+            guard let element = textElement(with: id) else { continue }
+            let affine = PrintLayoutCoordinateSpace.textPrintTransform(
+                for: element,
+                transform: effectivePrintTransform(for: id)
+            )
+            if element.contains(point.applying(affine.inverted())) {
+                return true
+            }
+        }
+        // A lone selection keeps its whole bounding box draggable, so hollow and
+        // thin shapes stay easy to grab.
+        if printSelectionCount == 1, let bbox = printSelectionBoundingBox() {
+            return bbox.insetBy(dx: -threshold, dy: -threshold).contains(point)
+        }
+        return false
     }
 
     func updatePrintLayout(_ settings: PrintLayoutSettings, recordUndo: Bool = true) {
@@ -3216,9 +3449,53 @@ final class VectrDocument {
         return points
     }
 
-    /// Cut tool: slices every print-layout stroke that crosses the printable-margin
-    /// line nearest `point` (in document/print-grid space) into independent pieces.
-    /// Print-layout-only — the underlying design strokes are hidden, not mutated.
+    /// Drops print-layout copies and transforms for design strokes that no longer exist.
+    func retireDesignStrokeIDs(
+        _ strokeIDs: Set<UUID>,
+        textIDs: Set<UUID> = [],
+        droppedLayerID: UUID? = nil
+    ) {
+        guard !strokeIDs.isEmpty || !textIDs.isEmpty || droppedLayerID != nil else { return }
+
+        printHiddenStrokeIDs.subtract(strokeIDs)
+        for id in strokeIDs { printStrokeTransforms.removeValue(forKey: id) }
+        for id in textIDs { printStrokeTransforms.removeValue(forKey: id) }
+
+        let pieceIDsToRemove = Set(printPieces.compactMap { piece -> UUID? in
+            if let layerID = droppedLayerID, piece.layerID == layerID { return piece.id }
+            if strokeIDs.contains(piece.id) { return piece.id }
+            if let source = printPieceSourceIDs[piece.id], strokeIDs.contains(source) { return piece.id }
+            return nil
+        })
+        if !pieceIDsToRemove.isEmpty {
+            printPieces.removeAll { pieceIDsToRemove.contains($0.id) }
+            for id in pieceIDsToRemove {
+                printStrokeTransforms.removeValue(forKey: id)
+                printPieceSourceIDs.removeValue(forKey: id)
+            }
+        }
+        printPieceSourceIDs = printPieceSourceIDs.filter { !strokeIDs.contains($0.value) }
+
+        // Selection settles last, and its own revision bump covers the pruning above.
+        let retired = strokeIDs.union(textIDs).union(pieceIDsToRemove)
+        setPrintSelection(
+            strokeIDs: printSelectedStrokeIDs.subtracting(retired),
+            textIDs: printSelectedTextIDs.subtracting(retired)
+        )
+    }
+
+    private func sharedPrintTransform(for ids: Set<UUID>) -> PrintStrokeTransform? {
+        guard let firstID = ids.first else { return nil }
+        let first = printTransform(for: firstID)
+        for id in ids where printTransform(for: id) != first {
+            return nil
+        }
+        return first
+    }
+
+    /// Cut tool: slices the print-layout stroke nearest `point` that crosses the
+    /// printable-margin line nearest the tap. Print-layout-only — design strokes
+    /// are hidden, not mutated.
     @discardableResult
     func cutAlongNearestPrintBorder(near point: CGPoint, threshold: CGFloat) -> Bool {
         let rects = PrintPageGridEngine.printableRects(for: printLayout)
@@ -3252,38 +3529,54 @@ final class VectrDocument {
         guard let axis = bestAxis else { return false }
         let coordinate = bestCoordinate
 
-        var newPieces: [VectorStroke] = []
-        var hideIDs: [UUID] = []
-        var removePieceIDs: [UUID] = []
-
+        var bestStroke: VectorStroke?
+        var bestStrokeDistance = threshold
         for stroke in printLayoutStrokes() {
             let strokeInP = transformedPrintStroke(stroke)
-            guard let fragments = PrintSliceEngine.slice(strokeInP, axis: axis, coordinate: coordinate) else {
+            guard PrintSliceEngine.crosses(strokeInP, axis: axis, coordinate: coordinate) else {
                 continue
             }
-            // Convert each fragment from print-grid space back to base space so that
-            // `effectivePrintTransform` (identity per-piece + contentOffset) re-places it
-            // exactly where the sliced portion was — no visual jump.
-            let offset = printLayout.contentOffset
-            let basePieces = fragments.map { piece -> VectorStroke in
-                var copy = piece
-                copy.points = piece.points.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
-                if !copy.cutoutPoints.isEmpty {
-                    copy.cutoutPoints = copy.cutoutPoints.map { contour in
-                        contour.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
-                    }
+            let distance = strokeInP.contains(point) ? 0 : strokeInP.distance(to: point)
+            if distance < bestStrokeDistance {
+                bestStrokeDistance = distance
+                bestStroke = stroke
+            }
+        }
+        guard let stroke = bestStroke else { return false }
+
+        let strokeInP = transformedPrintStroke(stroke)
+        guard let fragments = PrintSliceEngine.slice(
+            strokeInP,
+            axis: axis,
+            coordinate: coordinate,
+            nearestCrossingTo: point
+        ) else { return false }
+
+        // Convert each fragment from print-grid space back to base space so that
+        // `effectivePrintTransform` (identity per-piece + contentOffset) re-places it
+        // exactly where the sliced portion was — no visual jump.
+        let offset = printLayout.contentOffset
+        let basePieces = fragments.map { piece -> VectorStroke in
+            var copy = piece
+            copy.points = piece.points.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
+            if !copy.cutoutPoints.isEmpty {
+                copy.cutoutPoints = copy.cutoutPoints.map { contour in
+                    contour.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
                 }
-                return copy
             }
-            if strokes.contains(where: { $0.id == stroke.id }) {
-                hideIDs.append(stroke.id)
-            } else {
-                removePieceIDs.append(stroke.id)
-            }
-            newPieces.append(contentsOf: basePieces)
+            return copy
         }
 
-        guard !newPieces.isEmpty else { return false }
+        let sourceID: UUID
+        var hideIDs: [UUID] = []
+        var removePieceIDs: [UUID] = []
+        if strokes.contains(where: { $0.id == stroke.id }) {
+            sourceID = stroke.id
+            hideIDs.append(stroke.id)
+        } else {
+            sourceID = printPieceSourceIDs[stroke.id] ?? stroke.id
+            removePieceIDs.append(stroke.id)
+        }
 
         pushUndo()
 
@@ -3295,16 +3588,15 @@ final class VectrDocument {
             printPieces.removeAll { removeSet.contains($0.id) }
             for id in removePieceIDs {
                 printStrokeTransforms.removeValue(forKey: id)
-                if printSelectedStrokeID == id { printSelectedStrokeID = nil }
+                printPieceSourceIDs.removeValue(forKey: id)
             }
         }
-        printPieces.append(contentsOf: newPieces)
+        printPieces.append(contentsOf: basePieces)
+        for piece in basePieces {
+            printPieceSourceIDs[piece.id] = sourceID
+        }
 
-        var settings = printLayout
-        settings.activeTool = .select
-        printLayout = settings
-        printSelectedStrokeID = nil
-        printSelectedTextID = nil
+        setPrintSelection(strokeIDs: Set(basePieces.map(\.id)), textIDs: [])
         printLayoutRevision += 1
         geometryRevision += 1
         return true
@@ -3374,6 +3666,7 @@ final class VectrDocument {
             printStrokeTransforms: printStrokeTransforms,
             printPieces: printPieces,
             printHiddenStrokeIDs: printHiddenStrokeIDs,
+            printPieceSourceIDs: printPieceSourceIDs,
             dimensionOffsets: dimensionOffsets,
             dimensionLocks: dimensionLocks
         )
@@ -3406,6 +3699,7 @@ final class VectrDocument {
         printStrokeTransforms = snapshot.printStrokeTransforms
         printPieces = snapshot.printPieces
         printHiddenStrokeIDs = snapshot.printHiddenStrokeIDs
+        printPieceSourceIDs = snapshot.printPieceSourceIDs ?? [:]
         dimensionOffsets = snapshot.dimensionOffsets
         dimensionLocks = snapshot.dimensionLocks ?? []
         syncGridFromSettings()
@@ -3471,6 +3765,8 @@ nonisolated struct DocumentSnapshot: Codable, Sendable {
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
     var printPieces: [VectorStroke] = []
     var printHiddenStrokeIDs: Set<UUID> = []
+    /// Optional so projects saved before piece lineage shipped still open.
+    var printPieceSourceIDs: [UUID: UUID]?
     var dimensionOffsets: [String: CGPoint] = [:]
     /// Optional rather than defaulted: synthesized Codable throws on a missing key even
     /// when a default exists, so projects saved before locks shipped would fail to open.

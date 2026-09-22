@@ -20,9 +20,39 @@ enum PrintSliceEngine {
     /// Returns fragment strokes (in the same space as `strokeInP`) or `nil` when the
     /// stroke does not actually cross the line, so callers can leave it untouched.
     static func slice(_ strokeInP: VectorStroke, axis: Axis, coordinate: CGFloat) -> [VectorStroke]? {
-        let pts = ShapeGeometry.renderPoints(for: strokeInP)
-        guard pts.count >= 2 else { return nil }
+        slice(strokeInP, axis: axis, coordinate: coordinate, nearestCrossingTo: nil)
+    }
 
+    /// Like `slice`, but for open paths only splits at the crossing nearest `tap`
+    /// instead of every intersection with the infinite line. Closed shapes still
+    /// bisect into two half-planes so each sheet can hold a complete piece.
+    static func slice(
+        _ strokeInP: VectorStroke,
+        axis: Axis,
+        coordinate: CGFloat,
+        nearestCrossingTo tap: CGPoint?
+    ) -> [VectorStroke]? {
+        let pts = ShapeGeometry.renderPoints(for: strokeInP)
+        // Only slice when the rendered points straddle the line.
+        guard straddles(pts, axis: axis, coordinate: coordinate) else { return nil }
+
+        if strokeInP.isClosed {
+            return sliceClosed(strokeInP, pts: pts, axis: axis, coordinate: coordinate)
+        }
+        if let tap {
+            return sliceOpenNearestCrossing(strokeInP, pts: pts, axis: axis, coordinate: coordinate, tap: tap)
+        }
+        return sliceOpen(strokeInP, pts: pts, axis: axis, coordinate: coordinate)
+    }
+
+    /// Whether the stroke would slice at all, without building any fragments. Lets a
+    /// caller pick its target among many strokes before paying for the real cut.
+    static func crosses(_ strokeInP: VectorStroke, axis: Axis, coordinate: CGFloat) -> Bool {
+        straddles(ShapeGeometry.renderPoints(for: strokeInP), axis: axis, coordinate: coordinate)
+    }
+
+    private static func straddles(_ pts: [CGPoint], axis: Axis, coordinate: CGFloat) -> Bool {
+        guard pts.count >= 2 else { return false }
         let epsilon: CGFloat = 0.0001
         var hasNegative = false
         var hasPositive = false
@@ -30,14 +60,9 @@ enum PrintSliceEngine {
             let value = signedValue(point, axis: axis, coordinate: coordinate)
             if value < -epsilon { hasNegative = true }
             if value > epsilon { hasPositive = true }
+            if hasNegative, hasPositive { return true }
         }
-        // Only slice when the rendered points straddle the line.
-        guard hasNegative, hasPositive else { return nil }
-
-        if strokeInP.isClosed {
-            return sliceClosed(strokeInP, pts: pts, axis: axis, coordinate: coordinate)
-        }
-        return sliceOpen(strokeInP, pts: pts, axis: axis, coordinate: coordinate)
+        return false
     }
 
     // MARK: - Open polylines
@@ -72,6 +97,46 @@ enum PrintSliceEngine {
         pieces.append(current)
 
         let result = pieces.compactMap { makePiece($0, from: source, closed: false) }
+        return result.count >= 2 ? result : nil
+    }
+
+    /// Splits an open polyline at the single cut closest to `tap`.
+    private static func sliceOpenNearestCrossing(
+        _ source: VectorStroke,
+        pts: [CGPoint],
+        axis: Axis,
+        coordinate: CGFloat,
+        tap: CGPoint
+    ) -> [VectorStroke]? {
+        let epsilon: CGFloat = 0.0001
+        var bestIndex: Int?
+        var bestCut: CGPoint?
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+
+        for index in 1..<pts.count {
+            let a = pts[index - 1]
+            let b = pts[index]
+            let va = signedValue(a, axis: axis, coordinate: coordinate)
+            let vb = signedValue(b, axis: axis, coordinate: coordinate)
+            let crosses = (va < -epsilon && vb > epsilon) || (va > epsilon && vb < -epsilon)
+            guard crosses else { continue }
+            let t = va / (va - vb)
+            let cut = CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+            let distance = hypot(cut.x - tap.x, cut.y - tap.y)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestIndex = index
+                bestCut = cut
+            }
+        }
+        guard let splitIndex = bestIndex, let cut = bestCut else { return nil }
+
+        var before = Array(pts[0..<splitIndex])
+        before.append(cut)
+        var after = [cut]
+        after.append(contentsOf: pts[splitIndex...])
+
+        let result = [before, after].compactMap { makePiece($0, from: source, closed: false) }
         return result.count >= 2 ? result : nil
     }
 
