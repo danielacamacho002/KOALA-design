@@ -19,6 +19,8 @@ import Foundation
 /// samples from `ShapeGeometry.renderPoints`) rather than a handful of anchor
 /// points, so circles, ellipses, arcs, beziers and baked fillets keep their real
 /// geometry through a join instead of collapsing into a few straight segments.
+/// Open curves keep their Bézier handles; only native arcs are tessellated and
+/// then compacted back to circular anchors.
 enum PathJoinEngine {
     private struct Path {
         var points: [CGPoint]
@@ -101,7 +103,7 @@ enum PathJoinEngine {
         guard components.contains(where: { $0.count >= 2 }) else { return nil }
         let fused = components.map { fuseComponent($0, tolerance: tolerance) }
 
-        return fused.map { stroke(from: $0, base: base) }
+        return fused.map { stroke(from: $0, base: base, rewritingPartialRuns: true) }
     }
 
     private static func isOutlineChainable(_ stroke: VectorStroke) -> Bool {
@@ -148,7 +150,11 @@ enum PathJoinEngine {
         )
     }
 
-    private static func stroke(from path: Path, base: VectorStroke) -> VectorStroke {
+    private static func stroke(
+        from path: Path,
+        base: VectorStroke,
+        rewritingPartialRuns: Bool = true
+    ) -> VectorStroke {
         var result = base
         result.id = UUID()
         result.points = path.points
@@ -163,13 +169,19 @@ enum PathJoinEngine {
         result.cornerRadiiByIndex = nil
         result.smoothCornerIndices = nil
         result.isConstruction = false
-        return ShapeGeometry.withCompactedCircularAnchors(result)
+        return ShapeGeometry.withCompactedCircularAnchors(
+            result,
+            rewritingPartialRuns: rewritingPartialRuns
+        )
     }
 
     // MARK: - Open contour join
 
     /// Walks lines/arcs/curves as chains of exclusive endpoint pairs and
-    /// concatenates each stroke's outline. Points are never moved.
+    /// concatenates stored geometry. Curve handles stay attached so imported
+    /// Béziers do not flatten into tessellated polylines that compaction then
+    /// mistakes for circular arcs. Arcs still use the rendered outline so a
+    /// lobe is not reduced to a few chorded anchors. Points are never moved.
     /// Returns every fused component plus leftover originals that did not join.
     private static func joinOpenContours(
         _ strokes: [VectorStroke],
@@ -179,7 +191,6 @@ enum PathJoinEngine {
         let pairing = outlineEndpointPairing(strokes, tolerance: tolerance)
         guard pairing.pairOf.contains(where: { $0 >= 0 }) else { return nil }
 
-        let contours = pairing.contours
         let endpoints = pairing.endpoints
         let pairOf = pairing.pairOf
         let lengths = pairing.lengths
@@ -205,43 +216,33 @@ enum PathJoinEngine {
 
         func polyline(from ordered: [(stroke: Int, forward: Bool)]) -> VectorStroke? {
             guard ordered.count >= 2 else { return nil }
-            var merged: [CGPoint] = []
+            var merged: Path?
             var previousStroke = -1
             for step in ordered {
-                let contour = contours[step.stroke]
-                let segment = step.forward ? contour : Array(contour.reversed())
-                if merged.isEmpty {
-                    merged.append(contentsOf: segment)
-                } else if let last = merged.last, let first = segment.first {
+                var segment = joinablePath(for: strokes[step.stroke])
+                if !step.forward { segment = reverse(segment) }
+                if let current = merged {
                     let joint = joinGapLimit(
                         lengthA: previousStroke >= 0 ? lengths[previousStroke] : lengths[step.stroke],
                         lengthB: lengths[step.stroke],
                         tolerance: tolerance
                     )
-                    if distance(last, first) <= joint {
-                        merged.append(contentsOf: segment.dropFirst())
-                    } else {
-                        merged.append(contentsOf: segment)
-                    }
+                    merged = append(current, segment, tolerance: joint)
+                } else {
+                    merged = segment
                 }
                 previousStroke = step.stroke
             }
-            guard merged.count >= 2 else { return nil }
-            var closed = false
-            if shouldCloseJoinedContour(merged, tolerance: tolerance) {
-                merged.removeLast()
-                closed = true
-            }
-            guard merged.count >= (closed ? 3 : 2) else { return nil }
-            var path = Path(
-                points: merged,
-                handles: Array(repeating: CurveHandle(), count: merged.count),
-                isClosed: closed,
-                isCurve: false,
-                contour: merged
-            )
+            guard var path = merged, path.points.count >= 2 else { return nil }
+            path = closeJoinedPath(path, tolerance: tolerance)
+            guard path.points.count >= (path.isClosed ? 3 : 2) else { return nil }
             path.cutouts = ordered.flatMap { strokes[$0.stroke].cutoutPoints }
-            return stroke(from: path, base: base)
+            let pieces = ordered.map { strokes[$0.stroke] }
+            return stroke(
+                from: path,
+                base: base,
+                rewritingPartialRuns: shouldRewritePartialCircularRuns(pieces)
+            )
         }
 
         var unused = Set(strokes.indices)
@@ -323,15 +324,76 @@ enum PathJoinEngine {
         return (contours, endpoints, pairOf, lengths)
     }
 
-    /// Polylines join at drawn anchors. Arcs/curves use the rendered outline so
-    /// a lobe stays a curve instead of collapsing to its three handles.
+    /// Polylines and curves join at drawn anchors so Bézier handles can be
+    /// carried through. Arcs use the rendered outline so a lobe is not reduced
+    /// to a handful of chorded handles.
     private static func joinContour(for stroke: VectorStroke) -> [CGPoint] {
         switch stroke.shapeType {
-        case .arc, .curve:
+        case .arc:
             return ShapeGeometry.renderPoints(for: stroke)
         default:
             return stroke.points
         }
+    }
+
+    private static func joinablePath(for stroke: VectorStroke) -> Path {
+        switch stroke.shapeType {
+        case .curve:
+            let handles = stroke.curveHandles?.count == stroke.points.count
+                ? stroke.curveHandles!
+                : Array(repeating: CurveHandle(), count: stroke.points.count)
+            return Path(
+                points: stroke.points,
+                handles: handles,
+                isClosed: stroke.isClosed,
+                isCurve: true,
+                contour: ShapeGeometry.renderPoints(for: stroke),
+                cutouts: stroke.cutoutPoints
+            )
+        case .arc:
+            let contour = ShapeGeometry.renderPoints(for: stroke)
+            return Path(
+                points: contour,
+                handles: Array(repeating: CurveHandle(), count: contour.count),
+                isClosed: false,
+                isCurve: false,
+                contour: contour,
+                cutouts: stroke.cutoutPoints
+            )
+        default:
+            return Path(
+                points: stroke.points,
+                handles: Array(repeating: CurveHandle(), count: stroke.points.count),
+                isClosed: stroke.isClosed,
+                isCurve: false,
+                contour: stroke.points,
+                cutouts: stroke.cutoutPoints
+            )
+        }
+    }
+
+    private static func shouldRewritePartialCircularRuns(_ strokes: [VectorStroke]) -> Bool {
+        strokes.contains { stroke in
+            switch stroke.shapeType {
+            case .arc, .circle, .ellipse:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    private static func closeJoinedPath(_ path: Path, tolerance: CGFloat) -> Path {
+        var path = path
+        guard shouldCloseJoinedContour(path.points, tolerance: tolerance) else { return path }
+        if path.isCurve, let incoming = path.handles.last, !path.handles.isEmpty {
+            path.handles[0].inOffset = incoming.inOffset
+        }
+        path.points.removeLast()
+        if !path.handles.isEmpty { path.handles.removeLast() }
+        path.isClosed = true
+        path.contour = path.points
+        return path
     }
 
     private static func contourLength(_ points: [CGPoint]) -> CGFloat {

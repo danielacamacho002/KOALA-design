@@ -84,7 +84,7 @@ nonisolated enum LineVariant: String, CaseIterable, Codable, Sendable {
         switch self {
         case .line: return "Line"
         case .arc: return "Arc"
-        case .constructionLine: return "Construction"
+        case .constructionLine: return "Const."
         }
     }
 }

@@ -272,8 +272,9 @@ struct SVGImporterTests {
         let height = (rendered.map(\.y).max() ?? 0) - (rendered.map(\.y).min() ?? 0)
         #expect(height < 25)
         #expect(height > 18)
-        #expect(interactive.points.count > 8)
         #expect(interactive.shapeType != .circle)
+        #expect(interactive.shapeType != .arc)
+        #expect(ShapeGeometry.renderPoints(for: interactive).count > 8)
     }
 
     @Test func rotatedEllipseKeepsItsLongAxis() {

@@ -42,6 +42,37 @@ nonisolated enum DocumentQueries: Sendable {
             .map(\.element)
     }
 
+    static func visibleReferenceImages(layers: [Layer], images: [ReferenceImage]) -> [ReferenceImage] {
+        let order = layerIndexByID(layers)
+        let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
+        return images
+            .enumerated()
+            .filter { visibleLayerIDs.contains($0.element.layerID) }
+            .sorted { lhs, rhs in
+                let l = order[lhs.element.layerID] ?? 0
+                let r = order[rhs.element.layerID] ?? 0
+                return l == r ? lhs.offset < rhs.offset : l < r
+            }
+            .map(\.element)
+    }
+
+    /// Images whose `layerID` is missing or unknown are rebound to `fallback`.
+    static func bindReferenceImages(
+        _ images: [ReferenceImage],
+        layers: [Layer],
+        fallback: UUID
+    ) -> [ReferenceImage] {
+        let known = Set(layers.map(\.id))
+        return images.map { image in
+            guard known.contains(image.layerID) else {
+                var copy = image
+                copy.layerID = fallback
+                return copy
+            }
+            return image
+        }
+    }
+
     static func opacity(layers: [Layer], forLayerID id: UUID) -> CGFloat {
         layers.first { $0.id == id }?.resolvedOpacity ?? 1
     }
@@ -80,6 +111,24 @@ extension DocumentSnapshot {
 
     nonisolated func visibleTextElements() -> [TextElement] {
         DocumentQueries.visibleTextElements(layers: layers, textElements: textElements)
+    }
+
+    /// Current rasters, migrating a legacy single-image document when needed.
+    /// Images whose `layerID` is missing or unknown are rebound to `activeLayerID`.
+    nonisolated func resolvedReferenceImages() -> [ReferenceImage] {
+        let unbound: [ReferenceImage]
+        if let images = referenceImages, !images.isEmpty {
+            unbound = images
+        } else if let data = referenceImageData {
+            unbound = [ReferenceImage(data: data, frame: referenceImageFrame ?? .zero)]
+        } else {
+            unbound = []
+        }
+        return DocumentQueries.bindReferenceImages(unbound, layers: layers, fallback: activeLayerID)
+    }
+
+    nonisolated func visibleReferenceImages() -> [ReferenceImage] {
+        DocumentQueries.visibleReferenceImages(layers: layers, images: resolvedReferenceImages())
     }
 
     nonisolated func opacity(forLayerID id: UUID) -> CGFloat {

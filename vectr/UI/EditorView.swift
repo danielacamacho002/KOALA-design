@@ -180,7 +180,6 @@ struct EditorView: View {
 
                 DrawingCanvasView(
                     document: store.document,
-                    isCommandMode: commandSession.isActive,
                     activeCategory: store.document.activeCategory,
                     commandPreviewPoints: commandSession.previewPoints,
                     commandControlPoints: commandSession.displayControlPoints,
@@ -191,6 +190,8 @@ struct EditorView: View {
                     selectedStrokeID: store.document.selectedStrokeID,
                     selectedTextID: store.document.selectedTextID,
                     selectedStrokeIDs: store.document.selectedStrokeIDs,
+                    referenceImageIDs: store.document.visibleReferenceImages().map(\.id),
+                    referenceImageFrames: store.document.visibleReferenceImages().map(\.frame),
                     visualGridSpacing: UnitConversion.visualGridSpacing(
                         sliderValue: store.document.settings.defaultGridSpacingInUnits,
                         unit: store.document.settings.units
@@ -210,7 +211,6 @@ struct EditorView: View {
                     rectangleVariant: store.document.rectangleVariant,
                     canvasBackgroundColor: Color(hex: canvasColorHex),
                     onCanvasTap: handleCanvasTap,
-                    onTwoFingerTap: handleDesignUndo,
                     onStrokeSelected: { stroke in
                         if let stroke {
                             store.document.selectStrokeConsideringGroups(stroke.id)
@@ -261,6 +261,7 @@ struct EditorView: View {
                         start: start,
                         end: end,
                         category: category,
+                        lineVariant: store.document.lineVariant,
                         circleVariant: store.document.circleVariant,
                         rectangleVariant: store.document.rectangleVariant
                     )
@@ -291,6 +292,14 @@ struct EditorView: View {
                 }
                 .ignoresSafeArea()
                 .transaction { $0.animation = nil }
+
+                ViewportNavigationInstaller(
+                    document: store.document,
+                    viewportHandle: designCanvasHandle,
+                    onTwoFingerTap: handleDesignUndo
+                )
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .fillet {
@@ -383,9 +392,15 @@ struct EditorView: View {
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .type && editingTextID == nil {
-                    FontPickerView(document: store.document, library: FontLibrary.shared) {
-                        store.markDirty()
-                    }
+                    FontPickerView(
+                        document: store.document,
+                        library: FontLibrary.shared,
+                        onChanged: { store.markDirty() },
+                        onCancel: {
+                            store.document.clearActiveTool()
+                            updateChromeInsets()
+                        }
+                    )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
@@ -577,11 +592,10 @@ struct EditorView: View {
         store.document.snapEnabled && store.document.grid.snapEnabled
     }
 
-    /// Object snap (endpoints/midpoints) resolved from the committed point, so tap-to-place and
-    /// drag-draw commits land exactly on real geometry. Object snap takes priority over the grid.
+    /// Object snap (endpoints/midpoints/on-rim) resolved from the committed point, so tap-to-place,
+    /// drag-draw, and typed-coordinate commits land exactly on real geometry. Object snap takes priority over the grid.
     private func objectSnappedPoint(
         _ point: CGPoint,
-        referenceStart: CGPoint? = nil,
         alignmentOrigin: CGPoint? = nil,
         alignmentThrough: CGPoint? = nil
     ) -> CGPoint? {
@@ -598,7 +612,6 @@ struct EditorView: View {
             strokes: store.document.interactiveStrokes(),
             excludedStrokeID: commandSession.attachedStrokeID,
             enabledKinds: enabledKinds,
-            referenceStarts: referenceStart.map { [$0] } ?? [],
             alignmentOrigin: alignmentOrigin,
             alignmentThrough: alignmentThrough,
             alignmentTolerance: alignmentTolerance,
@@ -618,7 +631,6 @@ struct EditorView: View {
             objectSnap: { query, alignmentOrigin, alignmentThrough in
                 objectSnappedPoint(
                     query,
-                    referenceStart: referenceStart,
                     alignmentOrigin: alignmentOrigin,
                     alignmentThrough: alignmentThrough
                 )
@@ -628,18 +640,6 @@ struct EditorView: View {
 
     private var shouldAngleSnapDrawnSegment: Bool {
         store.document.activeCategory == .line && store.document.lineVariant != .arc
-    }
-
-    private func snapDrawingControlInput(_ raw: CGPoint, projected: CGPoint) -> CGPoint {
-        if let snapped = objectSnappedPoint(projected) { return snapped }
-        return snapDrawingControlPoint(
-            raw: raw,
-            projected: projected,
-            grid: store.document.grid,
-            settings: store.document.settings,
-            enabled: drawingSnapEnabled,
-            scale: store.document.viewport.scale
-        )
     }
 
     private var canvasOverlayAcceptsHits: Bool {
@@ -662,15 +662,8 @@ struct EditorView: View {
 
     private var allowsDragDraw: Bool {
         switch store.document.activeCategory {
-        case .curve:
+        case .line, .curve:
             return true
-        case .line:
-            switch store.document.lineVariant {
-            case .line, .constructionLine:
-                return true
-            case .arc:
-                return canBeginArcDrag
-            }
         case .circle:
             return store.document.circleVariant == .center
                 || store.document.circleVariant == .edge
@@ -1014,7 +1007,7 @@ struct EditorView: View {
             store.document.selectedStrokeID = nil
             statusMessage = "Tap to place or edit text; drag to move, corners to scale"
         case .delete:
-            if !store.document.selectionIsEmpty {
+            if store.document.hasCanvasSelection {
                 store.document.deleteSelectedElements()
                 store.markDirty()
             } else {
@@ -1041,7 +1034,7 @@ struct EditorView: View {
             commandSession.cancel()
             store.document.clearToolSelections()
             if store.document.selectedStrokeID == nil {
-                statusMessage = "Select a closed shape, then tap an edge or enter total anchor count"
+                statusMessage = "Select a shape or line, then tap an edge or enter total anchor count"
             } else {
                 statusMessage = "Tap an edge to add an anchor, or enter total anchor count"
             }
@@ -1095,6 +1088,7 @@ struct EditorView: View {
                 // when returning to the move tool from another tool. Expand to
                 // the parent group when that stroke is a group member.
                 if store.document.selectionIsEmpty,
+                   !store.document.isReferenceImageSelected,
                    let lastID = store.document.lastSelectedStrokeID,
                    store.document.stroke(with: lastID)?.layerID == store.document.activeLayerID {
                     store.document.selectStrokeConsideringGroups(lastID)
@@ -1102,9 +1096,11 @@ struct EditorView: View {
                     store.document.expandSelectionToGroupsIfNeeded()
                 }
                 if store.document.usesGroupTransform {
-                    statusMessage = "Drag to move the group, or use the handle to rotate; tap to add or remove"
+                    statusMessage = "Drag to move the group; tap to add or remove"
                 } else if store.document.selectedTextID != nil {
-                    statusMessage = "Drag to move the text, or use the handle to rotate"
+                    statusMessage = "Drag to move the text"
+                } else if store.document.isReferenceImageSelected {
+                    statusMessage = "Drag to move the image; corners to scale"
                 } else if store.document.selectedStrokeID == nil {
                     statusMessage = "Tap a shape to select; drag empty space to marquee-select"
                 } else {
@@ -1134,6 +1130,9 @@ struct EditorView: View {
         )
         if let anchor {
             commandSession.addPoint(anchor)
+        }
+        if category == .line, store.document.lineVariant == .arc, commandSession.controlPoints.count < 2 {
+            statusMessage = "Drag from the center to the start, then drag to set the sweep"
         }
         updateChromeInsets()
     }
@@ -1305,46 +1304,17 @@ struct EditorView: View {
             if let hit = store.document.selectTextElement(at: documentPoint) {
                 beginTextEditing(hit.id)
             } else {
-                let element = TextElement(
-                    layerID: store.document.activeLayerID,
-                    text: "",
-                    position: documentPoint,
-                    fontRef: store.document.activeFontRef,
-                    fontSize: store.document.activeFontSize,
-                    color: store.document.strokeColor
-                )
+                let element = store.document.makeTextElement(at: documentPoint)
                 store.document.addTextElement(element)
                 beginTextEditing(element.id)
                 store.markDirty()
             }
         case .line, .circle, .rectangle:
-            guard let category = store.document.activeCategory else { return }
-            if commandSession.isRefiningAttachedStroke {
-                startDrawingSessionIfNeeded()
-            }
-            guard commandSession.isActive else {
+            if isEmptyCanvasTap(at: documentPoint) {
                 dismissActiveTool()
                 return
             }
-            let angleOrigin = shouldAngleSnapDrawnSegment ? commandSession.controlPoints.first : nil
-            let snapped = snapDrawingInput(documentPoint, referenceStart: angleOrigin)
-            if shouldAngleSnapDrawnSegment {
-                commandSession.addPoint(snapped)
-            } else {
-                let projected = ShapeGeometry.projectCommandPoint(
-                    snapped,
-                    controlPoints: commandSession.controlPoints,
-                    category: category,
-                    lineVariant: store.document.lineVariant,
-                    circleVariant: store.document.circleVariant,
-                    rectangleVariant: store.document.rectangleVariant
-                )
-                let final = snapDrawingControlInput(snapped, projected: projected)
-                commandSession.addPoint(final)
-            }
-            if commandSession.canFinish, shouldAutoCommitAfterPoint {
-                commitCommandShape(restart: true)
-            }
+            activateMoveIfHit(at: documentPoint)
         case .trim:
             // Commit any still-flashing cut first, so a fast second tap is measured
             // against the geometry it will actually act on.
@@ -1405,7 +1375,7 @@ struct EditorView: View {
                         statusMessage = "Tap closer to an edge between anchors"
                     }
                 } else {
-                    statusMessage = "Select a closed shape to add anchors"
+                    statusMessage = "Selected shape cannot receive anchors"
                 }
             } else {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
@@ -1499,8 +1469,14 @@ struct EditorView: View {
                 store.markDirty()
                 return
             }
-            // 5. Fall back to the current selection.
-            if !store.document.selectionIsEmpty {
+            // 5. Imported raster behind the vectors.
+            if let image = store.document.referenceImageHit(at: documentPoint) {
+                store.document.removeReferenceImage(id: image.id)
+                store.markDirty()
+                return
+            }
+            // 6. Fall back to the current selection.
+            if store.document.hasCanvasSelection {
                 store.document.deleteSelectedElements()
                 store.markDirty()
             }
@@ -1527,6 +1503,8 @@ struct EditorView: View {
             store.document.selectStrokeConsideringGroups(id)
         case .text(let id):
             store.document.selectTextConsideringGroups(id)
+        case .referenceImage(let id):
+            store.document.selectReferenceImage(id: id)
         case .none:
             if let groupHit {
                 store.document.selectGroup(groupHit)
@@ -1541,7 +1519,7 @@ struct EditorView: View {
         // The start was already resolved during the gesture. Re-running object snap
         // can pull it onto a nearby corner and turn a straight preview into a diagonal.
         let snappedStart = start
-        // Re-snap the end with the start as the axis / tangent reference so a live lock
+        // Re-snap the end with the start as the axis reference so a live lock
         // is preserved on release; without it the free end can be grid-snapped off-axis.
         let snappedEnd = snapDrawingInput(end, referenceStart: snappedStart)
         guard hypot(snappedEnd.x - snappedStart.x, snappedEnd.y - snappedStart.y) > 0.001 else {
@@ -1570,12 +1548,17 @@ struct EditorView: View {
             commandSession.addPoint(point)
         }
 
+        if category == .line, store.document.lineVariant == .arc, !commandSession.canFinish {
+            statusMessage = "Drag to set the sweep"
+            return
+        }
+
         guard commandSession.canFinish else {
             startDrawingSessionIfNeeded()
             return
         }
 
-        // Use the same commit pathway as point-by-point entry.
+        // Use the same commit pathway as typed point-by-point entry.
         commitCommandShape(restart: false)
 
         if store.document.isDrawingToolActive {
@@ -1779,7 +1762,10 @@ struct EditorView: View {
                     let noun = count == 1 ? "item" : "items"
                     statusMessage = "Imported \(count) \(noun)"
                 } else {
-                    statusMessage = "Imported reference image"
+                    statusMessage = "Imported image — drag to move, corners to scale"
+                    if store.document.isReferenceImageSelected {
+                        store.document.engageMoveTool()
+                    }
                 }
             } catch {
                 errorMessage = error.localizedDescription
