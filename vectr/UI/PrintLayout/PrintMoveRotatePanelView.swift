@@ -34,13 +34,8 @@ struct PrintMoveRotatePanelView: View {
                 ToolPanelCancelButton { onClose() }
             }
 
-            Text("Drag the selection to reposition it. Turn on axis lock to constrain movement to X or Y.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
             ToolPanelLabelButton(
-                title: axisLockEnabled ? "Axis locked" : "Lock to axis",
+                title: axisLockEnabled ? "Axis locked" : "Lock to XY axis",
                 prominent: axisLockEnabled,
                 fullWidth: true
             ) {
@@ -49,35 +44,23 @@ struct PrintMoveRotatePanelView: View {
 
             Divider()
 
-            ToolPanelSectionLabel("Rotate")
+            VStack(alignment: .leading, spacing: 4) {
+                ToolPanelSectionLabel("Rotate")
 
-            Text("0° is the original drawn angle. Enter a degree or tap Rotate to drag the handle.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("Current: \(String(format: "%.1f°", currentDegrees))")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-
-            FingerOnlyTextField(
-                placeholder: "Degrees",
-                text: $degreesText,
-                keyboardType: .numbersAndPunctuation,
-                fontSize: 13,
-                cornerRadius: 0,
-                onSubmit: apply
-            )
-            .frame(height: 30)
-
-            HStack(spacing: 4) {
-                ToolPanelLabelButton(title: "Reset to 0°") {
-                    setRotation(toDegrees: 0)
-                }
+                ToolPanelNumericStepper(
+                    text: $degreesText,
+                    placeholder: "0",
+                    unitLabel: "°",
+                    keyboardType: .numbersAndPunctuation,
+                    onMinus: { stepRotation(by: -1) },
+                    onPlus: { stepRotation(by: 1) },
+                    onSubmit: apply
+                )
 
                 ToolPanelLabelButton(
                     title: rotateModeActive ? "Rotating" : "Rotate",
-                    prominent: rotateModeActive
+                    prominent: rotateModeActive,
+                    fullWidth: true
                 ) {
                     rotateModeActive.toggle()
                 }
@@ -86,16 +69,20 @@ struct PrintMoveRotatePanelView: View {
             Divider()
 
             ToolPanelSectionLabel("Flip")
-            HStack(spacing: 4) {
+            HStack(spacing: 0) {
                 ToolPanelLabelButton(title: "Flip H", fullWidth: true) {
                     toggleFlip(horizontal: true)
                 }
+                Rectangle()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(width: 1, height: 16)
                 ToolPanelLabelButton(title: "Flip V", fullWidth: true) {
                     toggleFlip(horizontal: false)
                 }
             }
+            .background(Color.toolPanelButtonFill)
         }
-        .toolPanelChrome(width: 208)
+        .toolPanelChrome(width: 172)
         .onAppear { syncDegreesField() }
         .onChange(of: document.printSelectedStrokeID) { _, _ in syncDegreesField() }
         .onChange(of: document.printSelectedTextID) { _, _ in syncDegreesField() }
@@ -117,6 +104,10 @@ struct PrintMoveRotatePanelView: View {
     private func apply() {
         guard let value = Double(degreesText.trimmingCharacters(in: .whitespaces)) else { return }
         setRotation(toDegrees: value)
+    }
+
+    private func stepRotation(by delta: Double) {
+        setRotation(toDegrees: currentDegrees + delta)
     }
 
     private func setRotation(toDegrees value: Double) {
