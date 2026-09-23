@@ -81,7 +81,6 @@ struct EditorView: View {
                         store.document.redo()
                         store.markDirty()
                     },
-                    onSave: { saveDocumentNow() },
                     onSwitchToDesign: { switchToDesignMode() },
                     onExport: preparePrintExport,
                     onChanged: {

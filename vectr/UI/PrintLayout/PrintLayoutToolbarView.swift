@@ -14,7 +14,6 @@ struct PrintLayoutToolbarView: View {
     var onBack: () -> Void
     var onUndo: () -> Void
     var onRedo: () -> Void
-    var onSave: () -> Void
     var onSwitchToDesign: () -> Void
     var onExport: () -> Void
     var onSettingsChanged: () -> Void
@@ -50,15 +49,14 @@ struct PrintLayoutToolbarView: View {
 
             Spacer(minLength: 8)
 
-            exportMenu
-
             ToolPaletteSeparator()
                 .padding(.horizontal, 8)
 
             HStack(spacing: 4) {
                 toolbarIconButton("arrow.uturn.backward", disabled: !canUndo, action: onUndo)
                 toolbarIconButton("arrow.uturn.forward", disabled: !canRedo, action: onRedo)
-                toolbarIconButton("square.and.arrow.down", action: onSave)
+                toolbarIconButton("square.and.arrow.up", action: onExport)
+                    .accessibilityLabel("Export Tiled PDF")
             }
         }
         .padding(.horizontal, 12)
@@ -132,18 +130,6 @@ struct PrintLayoutToolbarView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.primary.opacity(0.05))
         }
-    }
-
-    private var exportMenu: some View {
-        Button(action: onExport) {
-            Label("Export", systemImage: "square.and.arrow.up")
-                .font(.caption.weight(.semibold))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Export Tiled PDF")
     }
 
     private func toolbarIconButton(_ systemImage: String, disabled: Bool = false, action: @escaping () -> Void) -> some View {

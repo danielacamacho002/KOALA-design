@@ -12,7 +12,6 @@ struct PrintLayoutView: View {
     var onBack: () -> Void
     var onUndo: () -> Void
     var onRedo: () -> Void
-    var onSave: () -> Void
     var onSwitchToDesign: () -> Void
     var onExport: () -> Void
     var onChanged: () -> Void
@@ -147,7 +146,6 @@ struct PrintLayoutView: View {
                 onBack: onBack,
                 onUndo: onUndo,
                 onRedo: onRedo,
-                onSave: onSave,
                 onSwitchToDesign: onSwitchToDesign,
                 onExport: onExport,
                 onSettingsChanged: onChanged
