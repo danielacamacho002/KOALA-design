@@ -1341,7 +1341,16 @@ struct EditorView: View {
                 let usesCADTrim = stroke.shapeType == .circle
                     || stroke.shapeType == .ellipse
                     || (stroke.shapeType == .arc && !stroke.isClosed)
+                // `nearestEdgeIndex` measures the sharp corner edges, which on a filleted
+                // shape run through the empty space the arcs cut away. Require the tap to
+                // be on the outline as drawn so a miss near a rounded corner cannot drop a
+                // whole edge.
+                let onOutline = AnchorPointEngine.roundedOutlineDistance(
+                    from: stroke,
+                    to: documentPoint
+                ) <= threshold
                 if !usesCADTrim,
+                   onOutline,
                    let edgeIndex = StrokeEditor.nearestEdgeIndex(
                        in: stroke,
                        point: documentPoint,

@@ -1445,6 +1445,12 @@ final class VectrDocument {
         guard handles.indices.contains(index) else { return false }
         let handle = handles[index]
         let handleDistance = hypot(handle.x - documentPoint.x, handle.y - documentPoint.y)
+        // A filleted corner's anchor sits outside the outline — the arc cut that corner off —
+        // so a tap out there never landed on the shape. Deleting it would drop both edges the
+        // corner joins, which is how a single trim tap used to flatten a rounded rectangle.
+        guard AnchorPointEngine.roundedOutlineDistance(from: stroke, to: handle) <= 0.01 else {
+            return false
+        }
         let droppingRedundant = PolygonBoolean.isRedundantContourVertex(
             handles,
             index: index,
@@ -1492,11 +1498,11 @@ final class VectrDocument {
 
         pushUndo()
         if let index = strokes.firstIndex(where: { $0.id == result.strokeID }) {
-            strokes[index] = ShapeGeometry.withCompactedCircularAnchors(result.stroke)
+            strokes[index] = compactedTrimLeftover(result.stroke)
         }
         var affected: Set<UUID> = [result.stroke.id]
         if let additional = result.additionalStroke {
-            strokes.append(ShapeGeometry.withCompactedCircularAnchors(additional))
+            strokes.append(compactedTrimLeftover(additional))
             affected.insert(additional.id)
         }
         selectedStrokeID = result.stroke.id
@@ -1505,6 +1511,13 @@ final class VectrDocument {
         DonutDetector.reconcile(document: self)
         geometryRevision += 1
         return true
+    }
+
+    /// A leftover whose fillet arcs are already stored as anchors is finished geometry:
+    /// re-running circular run detection over it fits one wide arc across the straight
+    /// edges between two fillets.
+    private func compactedTrimLeftover(_ stroke: VectorStroke) -> VectorStroke {
+        stroke.hasBakedSmoothCorners ? stroke : ShapeGeometry.withCompactedCircularAnchors(stroke)
     }
 
     /// Geometry of the span `trimAt` would remove at the same point. Read-only: no undo,
