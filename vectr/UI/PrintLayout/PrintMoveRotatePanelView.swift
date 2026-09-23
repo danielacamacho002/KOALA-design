@@ -76,7 +76,7 @@ struct PrintMoveRotatePanelView: View {
                 }
 
                 ToolPanelLabelButton(
-                    title: rotateModeActive ? "Rotating" : "Rotate",
+                    title: "Rotate",
                     prominent: rotateModeActive
                 ) {
                     rotateModeActive.toggle()

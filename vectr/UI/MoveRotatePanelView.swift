@@ -12,6 +12,8 @@ struct MoveRotatePanelView: View {
 
     /// Thickness step in document points so behavior is consistent across measurement units.
     private static let thicknessStepPoints: CGFloat = 0.5
+    /// Fill opacity step as a fraction of fully opaque (5 percentage points).
+    private static let fillOpacityStep: CGFloat = 0.05
 
     /// Font size / stroke weight stepping for the selected text.
     private static let fontSizeStep: CGFloat = 1
@@ -21,7 +23,7 @@ struct MoveRotatePanelView: View {
 
     @State private var degreesText = ""
     @State private var thicknessText = ""
-    @State private var fillOpacity: Double = Double(VectorStroke.defaultFillOpacity)
+    @State private var fillOpacityText = ""
     @State private var showTextFillPicker = false
     @State private var showTextStrokePicker = false
     @State private var showColorPicker = false
@@ -372,29 +374,18 @@ struct MoveRotatePanelView: View {
 
     @ViewBuilder
     private var fillOpacitySection: some View {
-        ToolPanelHeader("Fill opacity")
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Fill opacity")
 
-        HStack(spacing: 4) {
-            Text("Current:")
-            Text(currentFillOpacityText)
-                .fontWeight(.semibold)
-                .monospacedDigit()
+            ToolPanelNumericStepper(
+                text: $fillOpacityText,
+                placeholder: "0",
+                unitLabel: "%",
+                onMinus: { stepFillOpacity(by: -Self.fillOpacityStep) },
+                onPlus: { stepFillOpacity(by: Self.fillOpacityStep) },
+                onSubmit: applyFillOpacity
+            )
         }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-
-        Slider(
-            value: fillOpacityBinding,
-            in: 0...1,
-            onEditingChanged: { editing in
-                if editing {
-                    // Snapshot once at drag start so the whole drag is a single undo step.
-                    document.beginInteractiveEdit()
-                } else {
-                    onApply()
-                }
-            }
-        )
     }
 
     @ViewBuilder
@@ -413,7 +404,7 @@ struct MoveRotatePanelView: View {
             )
 
             ToolPanelLabelButton(
-                title: document.isMoveRotateMode ? "Rotating" : "Rotate",
+                title: "Rotate",
                 prominent: document.isMoveRotateMode,
                 fullWidth: true
             ) {
@@ -457,32 +448,30 @@ struct MoveRotatePanelView: View {
         }
     }
 
-    @ViewBuilder
     private var arrangeSection: some View {
-        HStack(spacing: 4) {
-            ToolPanelLabelButton(title: "Duplicate", fullWidth: true) {
-                let offset = max(document.grid.spacing, 1)
-                document.duplicateSelectedElements(offset: CGPoint(x: offset, y: offset))
-                onApply()
-            }
-
-            ToolPanelLabelButton(title: "Delete", fullWidth: true) {
-                document.deleteSelectedElements()
-                onApply()
-            }
-        }
-
-        HStack(spacing: 4) {
-            ToolPanelLabelButton(title: "Flip H", fullWidth: true) {
-                document.flipSelection(horizontal: true)
-                onApply()
-            }
-
-            ToolPanelLabelButton(title: "Flip V", fullWidth: true) {
-                document.flipSelection(horizontal: false)
-                onApply()
-            }
-        }
+        ToolPanelJoinedActions(rows: [
+            .init([
+                .init(title: "Duplicate") {
+                    let offset = max(document.grid.spacing, 1)
+                    document.duplicateSelectedElements(offset: CGPoint(x: offset, y: offset))
+                    onApply()
+                },
+                .init(title: "Delete") {
+                    document.deleteSelectedElements()
+                    onApply()
+                },
+            ]),
+            .init([
+                .init(title: "Flip H") {
+                    document.flipSelection(horizontal: true)
+                    onApply()
+                },
+                .init(title: "Flip V") {
+                    document.flipSelection(horizontal: false)
+                    onApply()
+                },
+            ]),
+        ])
     }
 
     /// Formats a display-unit value with just enough precision (tiny units like inches need more).
@@ -529,39 +518,38 @@ struct MoveRotatePanelView: View {
         onApply()
     }
 
-    private var currentFillOpacityText: String {
-        switch document.selectedFillOpacitySummary() {
-        case .none:
-            return "—"
-        case .mixed:
-            return "Mixed"
-        case .uniform(let value):
-            return "\(Int((value * 100).rounded()))%"
-        }
-    }
-
-    /// Writing goes through this binding only for user drags; programmatic sync sets the
-    /// `fillOpacity` state directly so it never rewrites the selected shapes.
-    private var fillOpacityBinding: Binding<Double> {
-        Binding(
-            get: { fillOpacity },
-            set: { newValue in
-                fillOpacity = newValue
-                document.setSelectedStrokesFillOpacity(CGFloat(newValue), recordUndo: false)
-                onApply()
-            }
-        )
+    private func fillOpacityDisplayString(_ opacity: CGFloat) -> String {
+        "\(Int((opacity * 100).rounded()))"
     }
 
     private func syncFillOpacity() {
-        switch document.selectedFillOpacitySummary() {
-        case .uniform(let value):
-            fillOpacity = Double(value)
-        case .mixed, .none:
-            if let representative = document.representativeSelectedFillOpacity() {
-                fillOpacity = Double(representative)
-            }
+        if case .uniform(let value) = document.selectedFillOpacitySummary() {
+            fillOpacityText = fillOpacityDisplayString(value)
+        } else if let value = document.representativeSelectedFillOpacity() {
+            fillOpacityText = fillOpacityDisplayString(value)
         }
+    }
+
+    private func applyFillOpacity() {
+        let cleaned = fillOpacityText
+            .replacingOccurrences(of: "%", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let value = Double(cleaned) else {
+            syncFillOpacity()
+            return
+        }
+        let opacity = min(1, max(0, CGFloat(value) / 100))
+        document.setSelectedStrokesFillOpacity(opacity)
+        syncFillOpacity()
+        onApply()
+    }
+
+    private func stepFillOpacity(by delta: CGFloat) {
+        let base = document.representativeSelectedFillOpacity() ?? VectorStroke.defaultFillOpacity
+        let opacity = min(1, max(0, base + delta))
+        document.setSelectedStrokesFillOpacity(opacity)
+        syncFillOpacity()
+        onApply()
     }
 
     private func syncDegreesField() {
