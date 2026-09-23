@@ -53,6 +53,14 @@ struct CanvasOverlayView: View {
     @State private var imageScaleOriginCorner: CGPoint = .zero
     @State private var imageScaleOriginCornerDist: CGFloat = 1
 
+    /// The last tap on an anchor handle, and on a fillet-corner handle. Attaching both a
+    /// `count: 2` and a `count: 1` tap gesture to a handle makes SwiftUI hold the single
+    /// tap until the double-tap window lapses, so selecting a different handle lagged by
+    /// ~0.3s. Instead the single tap applies immediately and a second tap inside the
+    /// window rewinds it — hence the pre-tap selection recorded here.
+    @State private var lastAnchorTap: HandleTap?
+    @State private var lastFilletCornerTap: HandleTap?
+
     // Object snapping (endpoints/midpoints) for the Move tool. Shares the same decoupled
     // engine as the drawing canvas; the lock session + haptics + indicator are per-overlay.
     private let snapEngine = PathSnapEngine.makeDefault()
@@ -88,6 +96,8 @@ struct CanvasOverlayView: View {
     private let anchorTouchTargetSize: CGFloat = 44
     /// Dead-zone before an individual anchor starts dragging, so taps/double-taps never nudge it.
     private let anchorDragThreshold: CGFloat = 6
+    /// Window in which a second tap on the same handle counts as a double-tap.
+    private let handleDoubleTapWindow: TimeInterval = 0.3
 
     var body: some View {
         GeometryReader { _ in
@@ -794,6 +804,66 @@ struct CanvasOverlayView: View {
         onChanged()
     }
 
+    // MARK: - Handle tap selection
+
+    /// One recorded tap on a handle, plus the selection state it replaced.
+    private struct HandleTap {
+        var index: Int
+        var time: Date
+        var priorSelection: Set<Int>
+        var priorPivot: Int?
+    }
+
+    /// The recorded tap this one pairs with as a double-tap: same handle, close enough in time.
+    private func pairedTap(_ previous: HandleTap?, index: Int, now: Date) -> HandleTap? {
+        guard let previous,
+              previous.index == index,
+              now.timeIntervalSince(previous.time) <= handleDoubleTapWindow else { return nil }
+        return previous
+    }
+
+    /// Anchor handle tap. A first tap selects just this anchor right away; a second tap
+    /// inside the double-tap window undoes that and toggles the anchor into whatever was
+    /// selected beforehand, which is the multi-select gesture.
+    private func handleAnchorTap(at index: Int) {
+        let now = Date()
+        if let previous = pairedTap(lastAnchorTap, index: index, now: now) {
+            lastAnchorTap = nil
+            document.selectedAnchorIndices = previous.priorSelection
+            document.moveRotationPivotAnchorIndex = previous.priorPivot
+            document.toggleAnchorSelection(at: index)
+        } else {
+            lastAnchorTap = HandleTap(
+                index: index,
+                time: now,
+                priorSelection: document.selectedAnchorIndices,
+                priorPivot: document.moveRotationPivotAnchorIndex
+            )
+            document.selectSingleAnchor(at: index)
+        }
+        onChanged()
+    }
+
+    /// Fillet-corner handle tap. Same immediate-single / rewinding-double split as
+    /// `handleAnchorTap`, minus the rotation pivot, which corners do not carry.
+    private func handleFilletCornerTap(at index: Int) {
+        let now = Date()
+        if let previous = pairedTap(lastFilletCornerTap, index: index, now: now) {
+            lastFilletCornerTap = nil
+            document.selectedFilletCornerIndices = previous.priorSelection
+            document.toggleFilletCornerSelection(at: index)
+        } else {
+            lastFilletCornerTap = HandleTap(
+                index: index,
+                time: now,
+                priorSelection: document.selectedFilletCornerIndices,
+                priorPivot: nil
+            )
+            document.selectSingleFilletCorner(at: index)
+        }
+        onChanged()
+    }
+
     // MARK: - Move (multi-anchor)
 
     @ViewBuilder
@@ -843,14 +913,7 @@ struct CanvasOverlayView: View {
                 .contentShape(Rectangle())
                 .position(document.viewport.documentToView(point))
                 .highPriorityGesture(anchorMoveDrag(strokeID: strokeID, stroke: stroke, anchorIndex: index))
-                .onTapGesture(count: 2) {
-                    document.toggleAnchorSelection(at: index)
-                    onChanged()
-                }
-                .onTapGesture {
-                    document.selectSingleAnchor(at: index)
-                    onChanged()
-                }
+                .onTapGesture { handleAnchorTap(at: index) }
             }
 
             if stroke.shapeType == .curve,
@@ -1289,14 +1352,7 @@ struct CanvasOverlayView: View {
                             cornerPoint: point
                         )
                     )
-                    .onTapGesture(count: 2) {
-                        document.toggleFilletCornerSelection(at: index)
-                        onChanged()
-                    }
-                    .onTapGesture {
-                        document.selectSingleFilletCorner(at: index)
-                        onChanged()
-                    }
+                    .onTapGesture { handleFilletCornerTap(at: index) }
             }
 
             centerHandle(strokeID: strokeID, stroke: stroke)

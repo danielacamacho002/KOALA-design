@@ -308,8 +308,8 @@ nonisolated enum ShapeGeometry: Sendable {
     }
 
     /// Moves one stored anchor. Circles and ellipses stay parametric (radius /
-    /// axis resize). Adjacent Bézier handles are cleared on leftover curves so
-    /// joined circular segments do not implode from stale tangent offsets.
+    /// axis resize). On a `.curve` the tangent handles ride along with the anchor,
+    /// so reshaping never flattens a Bézier into corners.
     static func applyingMovedAnchor(
         _ stroke: VectorStroke,
         at index: Int,
@@ -330,8 +330,7 @@ nonisolated enum ShapeGeometry: Sendable {
     ) -> VectorStroke {
         guard !moves.isEmpty else { return stroke }
         // Displacing *every* anchor by one delta is a translation, not a reshape. Rewriting
-        // the anchors point-by-point would zero the `curveHandles` below (flattening a
-        // Bézier to straight chords) and refit parametric shapes from scratch, so offset
+        // the anchors point-by-point would refit parametric shapes from scratch, so offset
         // the whole stroke instead and keep its curvature intact.
         if let offset = uniformAnchorTranslation(of: stroke, moves: moves) {
             return stroke.offsettingGeometry(by: offset)
@@ -365,20 +364,8 @@ nonisolated enum ShapeGeometry: Sendable {
         for (index, point) in moves where updated.points.indices.contains(index) {
             updated.points[index] = point
         }
-        guard var handles = updated.curveHandles, handles.count == updated.points.count else {
-            return updated
-        }
-        let count = updated.points.count
-        for index in moves.keys where handles.indices.contains(index) {
-            handles[index] = CurveHandle()
-            if updated.isClosed || index > 0 {
-                handles[(index - 1 + count) % count].outOffset = .zero
-            }
-            if updated.isClosed || index < count - 1 {
-                handles[(index + 1) % count].inOffset = .zero
-            }
-        }
-        updated.curveHandles = handles
+        // `CurveHandle` offsets are relative to their anchor, so leaving them alone makes
+        // the tangents travel with the dragged anchor and the segment stays curved.
         return updated
     }
 
