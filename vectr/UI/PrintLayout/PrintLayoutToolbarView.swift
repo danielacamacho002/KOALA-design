@@ -124,12 +124,6 @@ struct PrintLayoutToolbarView: View {
                 .accessibilityLabel(tool.label)
             }
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 3)
-        .background {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(0.05))
-        }
     }
 
     private func toolbarIconButton(_ systemImage: String, disabled: Bool = false, action: @escaping () -> Void) -> some View {
