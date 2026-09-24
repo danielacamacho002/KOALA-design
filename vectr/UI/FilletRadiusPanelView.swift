@@ -36,10 +36,6 @@ struct FilletRadiusPanelView: View {
                 )
             }
 
-            Text("Selected corners: \(document.selectedFilletCornerIndices.count)")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-
             HStack(spacing: 4) {
                 ToolPanelCancelButton { onCancel() }
 

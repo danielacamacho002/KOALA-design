@@ -282,6 +282,7 @@ struct ToolPanelJoinedActions: View {
 
     struct Item {
         let title: String
+        var prominent: Bool = false
         let action: () -> Void
     }
 
@@ -300,12 +301,13 @@ struct ToolPanelJoinedActions: View {
                         }
                         Button(action: button.action) {
                             Text(button.title)
-                                .font(.system(size: 11))
+                                .font(.system(size: 11, weight: button.prominent ? .semibold : .regular))
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.7)
-                                .foregroundStyle(Color.toolPanelButtonForeground)
+                                .foregroundStyle(button.prominent ? Color.black : Color.toolPanelButtonForeground)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 26)
+                                .background(button.prominent ? Color.accentColor : Color.clear)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)

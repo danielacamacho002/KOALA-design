@@ -32,13 +32,16 @@ struct PatternPanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             ToolPanelHeader("Pattern")
 
-            Picker("Mode", selection: $settings.mode) {
-                ForEach(PatternMode.allCases) { mode in
-                    Text(mode.label).tag(mode)
-                }
-            }
-            .pickerStyle(.menu)
-            .onChange(of: settings.mode) { _, _ in onPreviewChange() }
+            ToolPanelJoinedActions(rows: [
+                .init([
+                    modeButton(.grid),
+                    modeButton(.linear),
+                ]),
+                .init([
+                    modeButton(.radial),
+                    modeButton(.spiral),
+                ]),
+            ])
 
             modeControls
 
@@ -51,8 +54,6 @@ struct PatternPanelView: View {
                     .font(.caption2)
                     .onChange(of: settings.rotateCopies) { _, _ in onPreviewChange() }
             }
-
-            previewSummary
 
             HStack(spacing: 4) {
                 ToolPanelCancelButton { onCancel() }
@@ -71,6 +72,14 @@ struct PatternPanelView: View {
                let stroke = document.stroke(with: id) {
                 settings = PatternSettings.defaults(for: stroke)
             }
+            onPreviewChange()
+        }
+    }
+
+    private func modeButton(_ mode: PatternMode) -> ToolPanelJoinedActions.Item {
+        .init(title: mode.label, prominent: settings.mode == mode) {
+            guard settings.mode != mode else { return }
+            settings.mode = mode
             onPreviewChange()
         }
     }
@@ -184,39 +193,6 @@ struct PatternPanelView: View {
                 onPreviewChange()
             }
         }
-    }
-
-    private var previewSummary: some View {
-        Group {
-            if document.selectedStrokeID == nil {
-                Text("Select a shape first")
-            } else if let stroke = document.selectedStrokeID.flatMap({ document.stroke(with: $0) }),
-                      let layer = document.layers.first(where: { $0.id == stroke.layerID }),
-                      layer.isLocked {
-                Text("Layer is locked")
-            } else if let stroke = document.selectedStrokeID.flatMap({ document.stroke(with: $0) }),
-                      let strokeID = document.selectedStrokeID {
-                let application = PatternEngine.application(
-                    from: stroke,
-                    sourceID: strokeID,
-                    settings: settings
-                )
-                if settings.mode == .radial || settings.mode == .spiral {
-                    if settings.keepOriginal {
-                        let copies = application.newStrokes.count
-                        Text("Preview: \(copies) new cop\(copies == 1 ? "y" : "ies") + original")
-                    } else {
-                        let total = application.newStrokes.count + (application.repositionedSource != nil ? 1 : 0)
-                        Text("Preview: \(total) shape\(total == 1 ? "" : "s") total")
-                    }
-                } else {
-                    let copies = application.newStrokes.count
-                    Text("Preview: \(copies) shape\(copies == 1 ? "" : "s") total")
-                }
-            }
-        }
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(.secondary)
     }
 
     private func apply() {
