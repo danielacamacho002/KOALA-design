@@ -16,9 +16,6 @@ struct PrintMarginPanelView: View {
 
     @State private var thicknessText = ""
 
-    /// Standard printable margin for letter paper (0.25 in), in document points.
-    private static let defaultMargin: CGFloat = 18
-
     private var current: PrintMarginMode {
         document.printLayout.marginMode
     }
@@ -42,48 +39,28 @@ struct PrintMarginPanelView: View {
                 ToolPanelCancelButton { onClose() }
             }
 
-            ToolPanelSectionLabel("Print margin")
-            ForEach(PrintMarginMode.allCases) { mode in
-                ToolPanelLabelButton(
-                    title: mode.label,
-                    prominent: current == mode,
-                    fullWidth: true,
-                    alignment: .leading
-                ) {
-                    select(mode)
-                }
+            ToolPanelSegmentBar(
+                options: PrintMarginMode.allCases.map(\.label),
+                selectedIndex: PrintMarginMode.allCases.firstIndex(of: current) ?? 0
+            ) { index in
+                select(PrintMarginMode.allCases[index])
             }
-
-            Text("Outline is drawn on screen and included in the printed / exported pages.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
             Divider()
 
-            ToolPanelSectionLabel("Margin width (\(units.shortLabel))")
-            HStack(spacing: 4) {
-                ToolPanelIconButton(systemImage: "minus", isDisabled: document.printLayout.printableMargin <= 0) {
-                    setThickness(document.printLayout.printableMargin - stepInPoints)
-                }
-                FingerOnlyTextField(
-                    placeholder: "0.25",
+            VStack(alignment: .leading, spacing: 4) {
+                ToolPanelSectionLabel("Margin width")
+                ToolPanelNumericStepper(
                     text: $thicknessText,
-                    keyboardType: .decimalPad,
-                    fontSize: 13,
-                    cornerRadius: 0,
+                    placeholder: "0.25",
+                    unitLabel: units.shortLabel,
+                    onMinus: { setThickness(document.printLayout.printableMargin - stepInPoints) },
+                    onPlus: { setThickness(document.printLayout.printableMargin + stepInPoints) },
                     onSubmit: applyThickness
                 )
-                .frame(height: 28)
-                ToolPanelIconButton(systemImage: "plus") {
-                    setThickness(document.printLayout.printableMargin + stepInPoints)
-                }
-            }
-            ToolPanelLabelButton(title: "Reset to 0.25 in", fullWidth: true) {
-                setThickness(Self.defaultMargin)
             }
         }
-        .toolPanelChrome(width: 208)
+        .toolPanelChrome(width: 172)
         .onAppear { syncThickness() }
         .onChange(of: document.printLayoutRevision) { _, _ in syncThicknessIfIdle() }
     }
@@ -96,10 +73,14 @@ struct PrintMarginPanelView: View {
     }
 
     private func applyThickness() {
-        guard let value = Double(thicknessText.trimmingCharacters(in: .whitespaces)) else { return }
-        let points = units.toDocumentUnits(CGFloat(value))
-        guard points >= 0 else { return }
-        setThickness(points)
+        let cleaned = thicknessText
+            .replacingOccurrences(of: units.shortLabel, with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let value = Double(cleaned), value >= 0 else {
+            syncThickness()
+            return
+        }
+        setThickness(units.toDocumentUnits(CGFloat(value)))
     }
 
     private func setThickness(_ points: CGFloat) {
