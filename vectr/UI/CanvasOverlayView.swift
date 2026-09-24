@@ -136,7 +136,7 @@ struct CanvasOverlayView: View {
     @ViewBuilder
     private var commandPreviewHandles: some View {
         ForEach(Array(commandSession.controlPoints.enumerated()), id: \.offset) { index, point in
-            handleView(style: .command)
+            handleView(style: .command, strokeColor: document.strokeColor)
                 .position(document.viewport.documentToView(point))
                 .highPriorityGesture(commandPointDrag(index: index))
         }
@@ -219,7 +219,7 @@ struct CanvasOverlayView: View {
                 curveTangentHandles(strokeID: strokeID, stroke: stroke, curveHandles: curveHandles)
             }
             ForEach(Array(handles.enumerated()), id: \.offset) { index, point in
-                handleView(style: .edit)
+                handleView(style: .edit, strokeColor: stroke.strokeColor)
                     .position(document.viewport.documentToView(point))
                     .highPriorityGesture(strokeNodeDrag(strokeID: strokeID, index: index))
             }
@@ -832,7 +832,7 @@ struct CanvasOverlayView: View {
                 let isPivot = document.isMoveRotateMode
                     && document.moveRotationPivotAnchorIndex == index
                 ZStack {
-                    handleView(style: selected ? .selectedAnchor : .move)
+                    handleView(style: selected ? .selectedAnchor : .move, strokeColor: stroke.strokeColor)
                     if isPivot {
                         Circle()
                             .stroke(Color.yellow, lineWidth: 2)
@@ -1259,7 +1259,7 @@ struct CanvasOverlayView: View {
             let handles = ShapeGeometry.handlePoints(for: stroke)
 
             ForEach(Array(handles.enumerated()), id: \.offset) { _, point in
-                handleView(style: .addAnchor)
+                handleView(style: .addAnchor, strokeColor: stroke.strokeColor)
                     .position(document.viewport.documentToView(point))
             }
 
@@ -1278,7 +1278,7 @@ struct CanvasOverlayView: View {
             ForEach(cornerIndices, id: \.self) { index in
                 let point = handles[index]
                 let selected = document.selectedFilletCornerIndices.contains(index)
-                handleView(style: selected ? .selectedAnchor : .fillet)
+                handleView(style: selected ? .selectedAnchor : .fillet, strokeColor: stroke.strokeColor)
                     .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
                     .contentShape(Rectangle())
                     .position(document.viewport.documentToView(point))
@@ -1373,7 +1373,7 @@ struct CanvasOverlayView: View {
                 CGPoint(x: bbox.minX, y: bbox.maxY)
             ]
             ForEach(Array(corners.enumerated()), id: \.offset) { index, corner in
-                handleView(style: .edit)
+                handleView(style: .edit, strokeColor: stroke.strokeColor)
                     .position(document.viewport.documentToView(corner))
                     .highPriorityGesture(scaleDrag(strokeID: strokeID, cornerIndex: index, bbox: bbox))
             }
@@ -1863,14 +1863,45 @@ struct CanvasOverlayView: View {
         case edit, move, command, selectedAnchor, fillet, addAnchor
     }
 
-    private func handleView(style: HandleStyle) -> some View {
-        let fill: Color = style == .selectedAnchor ? .blue : Color(white: 0.28)
+    private func handleView(style: HandleStyle, strokeColor: CodableColor? = nil) -> some View {
+        let fill: Color
+        let halo: Color
+        let outline: Color?
+        if style == .selectedAnchor {
+            fill = .blue
+            halo = .white.opacity(0.85)
+            outline = nil
+        } else if let strokeColor {
+            fill = Color(red: strokeColor.red, green: strokeColor.green, blue: strokeColor.blue)
+            if Self.isLightAnchorColor(strokeColor) {
+                halo = .black.opacity(0.45)
+                outline = Color(white: 0.15)
+            } else {
+                halo = .white.opacity(0.85)
+                outline = nil
+            }
+        } else {
+            fill = Color(white: 0.28)
+            halo = .white.opacity(0.85)
+            outline = nil
+        }
         return Rectangle()
             .fill(fill)
+            .overlay {
+                if let outline {
+                    Rectangle().strokeBorder(outline, lineWidth: 1)
+                }
+            }
             .frame(width: anchorHandleSize, height: anchorHandleSize)
-            .shadow(color: .white.opacity(0.85), radius: 0.5)
+            .shadow(color: halo, radius: 0.5)
             .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
             .contentShape(Rectangle())
+    }
+
+    /// Light stroke colors need a dark edge so the anchor still reads on the line and the canvas.
+    private static func isLightAnchorColor(_ color: CodableColor) -> Bool {
+        let luminance = 0.2126 * color.red + 0.7152 * color.green + 0.0722 * color.blue
+        return luminance > 0.72
     }
 
     private func documentDelta(from translation: CGSize) -> CGPoint {
