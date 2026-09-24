@@ -8,8 +8,6 @@ import UIKit
 enum GridRenderer {
     static let gridLineWidth: CGFloat = 1
     static let axisLineWidth: CGFloat = 1.5
-    static let boundaryLineWidth: CGFloat = 1.5
-    static let boundaryDash: [CGFloat] = [8, 6]
 
     /// Document-space geometry for the live canvas layers and the CPU export path.
     struct LayerPaths {
@@ -19,7 +17,6 @@ enum GridRenderer {
         var rankPaths: [CGPath]
         var axisX: CGPath
         var axisY: CGPath
-        var boundary: CGPath?
         var canvasRect: CGRect?
     }
 
@@ -43,8 +40,8 @@ enum GridRenderer {
         let inv = 1 / max(viewport.scale, .leastNonzeroMagnitude)
 
         // Grid lines and axes honor the document's visibility toggle so thin
-        // strokes can be inspected on a clean sheet. The canvas boundary below
-        // stays so the sheet extent remains visible.
+        // strokes can be inspected on a clean sheet. The filled sheet still
+        // shows the canvas extent.
         if grid.isVisible {
             context.saveGState()
             context.concatenate(viewport.affineTransform)
@@ -66,17 +63,6 @@ enum GridRenderer {
             context.strokePath()
             context.setStrokeColor(axisYColor.cgColor)
             context.addPath(paths.axisY)
-            context.strokePath()
-            context.restoreGState()
-        }
-
-        if let boundary = paths.boundary {
-            context.saveGState()
-            context.concatenate(viewport.affineTransform)
-            context.setStrokeColor(boundaryColor.cgColor)
-            context.setLineWidth(boundaryLineWidth * inv)
-            context.setLineDash(phase: 0, lengths: boundaryDash.map { $0 * inv })
-            context.addPath(boundary)
             context.strokePath()
             context.restoreGState()
         }
@@ -129,7 +115,6 @@ enum GridRenderer {
             rankPaths: rankPaths,
             axisX: axisX,
             axisY: axisY,
-            boundary: canvas.map { CGPath(rect: $0, transform: nil) },
             canvasRect: canvas
         )
     }
@@ -173,21 +158,20 @@ enum GridRenderer {
     static func lineColor(rank: Int) -> UIColor {
         switch rank {
         case 0:
-            return UIColor.label.withAlphaComponent(0.58)
+            return UIColor.label.withAlphaComponent(0.32)
         case 1:
-            return UIColor.label.withAlphaComponent(0.38)
+            return UIColor.label.withAlphaComponent(0.20)
         case 2:
-            return UIColor.separator.withAlphaComponent(0.32)
+            return UIColor.separator.withAlphaComponent(0.18)
         case 3:
-            return UIColor.separator.withAlphaComponent(0.22)
+            return UIColor.separator.withAlphaComponent(0.12)
         default:
-            return UIColor.separator.withAlphaComponent(0.16)
+            return UIColor.separator.withAlphaComponent(0.08)
         }
     }
 
-    static var axisXColor: UIColor { UIColor.systemRed.withAlphaComponent(0.55) }
-    static var axisYColor: UIColor { UIColor.systemBlue.withAlphaComponent(0.55) }
-    static var boundaryColor: UIColor { UIColor.systemOrange.withAlphaComponent(0.45) }
+    static var axisXColor: UIColor { UIColor.systemRed.withAlphaComponent(0.35) }
+    static var axisYColor: UIColor { UIColor.systemBlue.withAlphaComponent(0.35) }
 
     private static func makeRankPaths(
         coverage: CGRect,
