@@ -5,6 +5,7 @@
 
 import CoreGraphics
 import SwiftUI
+import UIKit
 
 /// Prompt shown when creating a new canvas. Lets the user pick width, height, and
 /// the unit those values are entered in. Leaving the fields blank falls back to the
@@ -29,38 +30,78 @@ struct CanvasSizeSheet: View {
         unit.fromDocumentUnits(DocumentSettings.defaultCanvasHeight)
     }
 
+    private var pageColor: Color { Color(hex: AppearanceSettings.pasteboardHex) }
+    private var cardColor: Color { Color(hex: AppearanceSettings.toolbarHex) }
+
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    dimensionRow(title: "Width", text: $widthText, placeholder: defaultWidthDisplay)
-                    dimensionRow(title: "Height", text: $heightText, placeholder: defaultHeightDisplay)
-                } header: {
-                    Text("Canvas Size")
-                } footer: {
-                    Text("Leave blank to use the default 24 × 18 in.")
-                }
-
-                Section("Units") {
-                    Picker("Units", selection: $unit) {
-                        ForEach(Self.selectableUnits) { unit in
-                            Text(unit.shortLabel).tag(unit)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Canvas Size")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 0) {
+                            dimensionRow(title: "Width", text: $widthText, placeholder: defaultWidthDisplay)
+                            Rectangle()
+                                .fill(Color.white.opacity(0.15))
+                                .frame(height: 1)
+                            dimensionRow(title: "Height", text: $heightText, placeholder: defaultHeightDisplay)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(cardColor)
                     }
-                    .pickerStyle(.segmented)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Units")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        SettingsOptionBar(
+                            options: Self.selectableUnits,
+                            selection: $unit,
+                            title: \.label
+                        )
+                        .background(cardColor)
+                    }
                 }
+                .padding(20)
             }
+            .scrollContentBackground(.hidden)
+            .background(pageColor)
             .navigationTitle("New Canvas")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(pageColor, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") { create() }
+                    Button {
+                        create()
+                    } label: {
+                        Image(systemName: "checkmark")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Create")
                 }
             }
         }
+        .background(SquareSheetCorners())
+        .presentationBackground(pageColor)
+        .presentationCornerRadius(0)
+        .preferredColorScheme(.dark)
         .presentationDetents([.medium])
     }
 
@@ -69,12 +110,15 @@ struct CanvasSizeSheet: View {
             Text(title)
             Spacer()
             TextField(formatted(placeholder), text: text)
+                .textFieldStyle(.plain)
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: 120)
             Text(unit.shortLabel)
                 .foregroundStyle(.secondary)
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
     private func create() {
@@ -102,5 +146,44 @@ struct CanvasSizeSheet: View {
             return String(Int(value))
         }
         return String(format: "%.2f", value)
+    }
+}
+
+/// Clears the system sheet radius so the new-canvas menu has square corners.
+private struct SquareSheetCorners: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> SquareSheetCornerController {
+        SquareSheetCornerController()
+    }
+
+    func updateUIViewController(_ controller: SquareSheetCornerController, context: Context) {
+        controller.squareOff()
+    }
+}
+
+private final class SquareSheetCornerController: UIViewController {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        squareOff()
+    }
+
+    func squareOff() {
+        var ancestor: UIViewController? = self
+        while let current = ancestor {
+            current.sheetPresentationController?.preferredCornerRadius = 0
+            current.presentationController?.containerView?.layer.cornerRadius = 0
+            ancestor = current.parent
+        }
+
+        var view: UIView? = self.view
+        while let current = view {
+            current.layer.cornerRadius = 0
+            view = current.superview
+        }
     }
 }
