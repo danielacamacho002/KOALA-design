@@ -150,7 +150,7 @@ struct CanvasSizeSheet: View {
 }
 
 /// Clears the system sheet radius so the new-canvas menu has square corners.
-private struct SquareSheetCorners: UIViewControllerRepresentable {
+struct SquareSheetCorners: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> SquareSheetCornerController {
         SquareSheetCornerController()
     }
@@ -160,7 +160,7 @@ private struct SquareSheetCorners: UIViewControllerRepresentable {
     }
 }
 
-private final class SquareSheetCornerController: UIViewController {
+final class SquareSheetCornerController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .clear
