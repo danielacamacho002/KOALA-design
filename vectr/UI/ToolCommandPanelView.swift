@@ -87,7 +87,7 @@ struct ToolCommandPanelView: View {
     }
 
     private var panelHeader: some View {
-        ToolPanelHeader(session.toolTitle)
+        ToolPanelSectionLabel(session.toolTitle)
     }
 
     // MARK: - Tool variant
