@@ -22,6 +22,7 @@ struct MoveRotatePanelView: View {
     private static let textStrokeRange: ClosedRange<CGFloat> = 0.5...48
 
     @State private var degreesText = ""
+    @State private var isEditingDegrees = false
     @State private var thicknessText = ""
     @State private var fillOpacityText = ""
     @State private var showTextFillPicker = false
@@ -47,6 +48,15 @@ struct MoveRotatePanelView: View {
             return ShapeGeometry.normalizedRotationDegrees(selectedText?.rotation ?? 0)
         }
         return selectedStroke?.rotationDegrees ?? 0
+    }
+
+    /// Angle shown in the rotate stepper. One object uses its absolute rotation.
+    /// A multi-selection uses the degrees applied since it was selected.
+    private var displayedRotationDegrees: Double {
+        if document.hasMultiSelection {
+            return document.groupHandleRotationDegrees ?? 0
+        }
+        return currentDegrees
     }
 
     var body: some View {
@@ -87,14 +97,18 @@ struct MoveRotatePanelView: View {
             syncFillOpacity()
         }
         .onChange(of: document.selectedStrokeIDs) { _, _ in
+            syncDegreesField()
             syncThicknessText()
             syncFillOpacity()
         }
         .onChange(of: document.selectedTextID) { _, _ in
             syncDegreesField()
         }
+        .onChange(of: document.selectedTextIDs) { _, _ in
+            syncDegreesField()
+        }
         .onChange(of: document.geometryRevision) { _, _ in
-            syncDegreesFieldFromCurrent()
+            syncDegreesField()
             syncThicknessTextIfNeeded()
         }
         .onAppear {
@@ -400,7 +414,8 @@ struct MoveRotatePanelView: View {
                 keyboardType: .numbersAndPunctuation,
                 onMinus: { stepRotation(by: -1) },
                 onPlus: { stepRotation(by: 1) },
-                onSubmit: apply
+                onSubmit: apply,
+                onEditingChanged: { isEditingDegrees = $0 }
             )
 
             ToolPanelLabelButton(
@@ -553,41 +568,37 @@ struct MoveRotatePanelView: View {
     }
 
     private func syncDegreesField() {
-        // For a group / multi-selection the field takes a relative rotation, so start at 0.
-        if document.usesGroupTransform {
-            degreesText = "0"
-        } else {
-            degreesText = String(format: "%.1f", currentDegrees)
-        }
-    }
-
-    private func syncDegreesFieldFromCurrent() {
-        guard degreesText.isEmpty
-            || Double(degreesText.trimmingCharacters(in: .whitespaces)) == nil else { return }
-        syncDegreesField()
+        guard !isEditingDegrees else { return }
+        degreesText = String(format: "%.1f", displayedRotationDegrees)
     }
 
     private func apply() {
         guard let value = Double(degreesText.trimmingCharacters(in: .whitespaces)) else { return }
-        if document.usesGroupTransform {
-            applyGroupRotation()
+        if document.hasMultiSelection {
+            applyGroupRotation(toDegrees: value)
         } else {
             setRotation(toDegrees: value)
         }
     }
 
-    private func applyGroupRotation() {
-        guard let value = Double(degreesText.trimmingCharacters(in: .whitespaces)),
-              abs(value) > 0 else { return }
-        document.rotateSelectedElements(byDegrees: value)
-        degreesText = "0"
+    /// Multi-selection: the field is the rotation applied since the selection was made.
+    /// Submitting the value already shown does not rotate again.
+    private func applyGroupRotation(toDegrees value: Double) {
+        let current = document.groupHandleRotationDegrees ?? 0
+        let delta = value - current
+        guard abs(delta) > 0.05 else { return }
+        document.groupHandleRotationDegrees = current + delta
+        document.rotateSelectedElements(byDegrees: delta)
+        syncDegreesField()
         onApply()
     }
 
     private func stepRotation(by delta: Double) {
-        if document.usesGroupTransform {
+        if document.hasMultiSelection {
+            let current = document.groupHandleRotationDegrees ?? 0
+            document.groupHandleRotationDegrees = current + delta
             document.rotateSelectedElements(byDegrees: delta)
-            degreesText = "0"
+            syncDegreesField()
             onApply()
         } else {
             setRotation(toDegrees: currentDegrees + delta)

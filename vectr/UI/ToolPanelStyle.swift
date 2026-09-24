@@ -171,6 +171,7 @@ struct ToolPanelNumericStepper: View {
     var onMinus: () -> Void
     var onPlus: () -> Void
     var onSubmit: () -> Void
+    var onEditingChanged: ((Bool) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 0) {
@@ -197,7 +198,8 @@ struct ToolPanelNumericStepper: View {
                                 backgroundColor: .clear,
                                 textAlignment: .center,
                                 onSubmit: onSubmit,
-                                onEditingEnded: onSubmit
+                                onEditingEnded: onSubmit,
+                                onEditingChanged: onEditingChanged
                             )
                         }
 

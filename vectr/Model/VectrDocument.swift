@@ -78,6 +78,9 @@ final class VectrDocument {
     var selectedFilletCornerIndices: Set<Int> = []
     /// When set, move-tool rotation pivots around this anchor index; nil uses shape center.
     var moveRotationPivotAnchorIndex: Int?
+    /// Degrees the current multi-selection has been rotated since it was selected.
+    /// Session-only; the rotate stepper shows this while the group handle is used.
+    var groupHandleRotationDegrees: Double?
     /// Session clipboard for copying items from one layer and pasting onto another.
     /// Not persisted; switching layers clears selection, so copies live here until paste.
     var clipboard: ElementClipboard = ElementClipboard()
@@ -1696,6 +1699,7 @@ final class VectrDocument {
         }
         isSyncingSelection = false
         selectedReferenceImageID = nil
+        groupHandleRotationDegrees = nil
         clearAnchorSelection()
         if compactAnchors {
             compactCircularAnchors(for: strokeIDs)
@@ -3608,6 +3612,7 @@ final class VectrDocument {
         redoStack.append(currentSnapshot())
         apply(snapshot)
         viewport = preservedViewport
+        groupHandleRotationDegrees = nil
         undoRevision += 1
         geometryRevision += 1
         printLayoutRevision += 1
@@ -3619,6 +3624,7 @@ final class VectrDocument {
         undoStack.append(currentSnapshot())
         apply(snapshot)
         viewport = preservedViewport
+        groupHandleRotationDegrees = nil
         undoRevision += 1
         geometryRevision += 1
         printLayoutRevision += 1
