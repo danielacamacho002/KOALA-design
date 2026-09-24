@@ -31,7 +31,7 @@ nonisolated enum PrintMarginMode: String, Codable, CaseIterable, Identifiable, S
     var label: String {
         switch self {
         case .off: return "Off"
-        case .printDashed: return "Dashed"
+        case .printDashed: return "Dash"
         case .printSolid: return "Solid"
         }
     }

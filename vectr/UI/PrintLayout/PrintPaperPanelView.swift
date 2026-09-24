@@ -15,6 +15,8 @@ struct PrintPaperPanelView: View {
 
     @State private var widthText = ""
     @State private var heightText = ""
+    @State private var columnsText = ""
+    @State private var rowsText = ""
 
     private let gridRange = 1...10
 
@@ -26,18 +28,9 @@ struct PrintPaperPanelView: View {
                 ToolPanelCancelButton { onClose() }
             }
 
-            ToolPanelSectionLabel("Size")
-            VStack(spacing: 4) {
-                ForEach(PaperSize.allCases) { size in
-                    ToolPanelLabelButton(
-                        title: size.label,
-                        prominent: document.printLayout.paperSize == size,
-                        fullWidth: true,
-                        alignment: .leading
-                    ) {
-                        selectSize(size)
-                    }
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                ToolPanelSectionLabel("Size")
+                paperSizeGrid
             }
 
             if document.printLayout.paperSize == .custom {
@@ -74,35 +67,115 @@ struct PrintPaperPanelView: View {
 
             Divider()
 
-            ToolPanelSectionLabel("Grid")
-            stepperRow(label: "Columns", value: document.printLayout.columns) { value in
-                updateGrid(columns: value)
+            VStack(alignment: .leading, spacing: 4) {
+                ToolPanelSectionLabel("Columns")
+                ToolPanelNumericStepper(
+                    text: $columnsText,
+                    placeholder: "1",
+                    keyboardType: .numberPad,
+                    onMinus: { stepColumns(by: -1) },
+                    onPlus: { stepColumns(by: 1) },
+                    onSubmit: applyColumns
+                )
             }
-            stepperRow(label: "Rows", value: document.printLayout.rows) { value in
-                updateGrid(rows: value)
+
+            VStack(alignment: .leading, spacing: 4) {
+                ToolPanelSectionLabel("Rows")
+                ToolPanelNumericStepper(
+                    text: $rowsText,
+                    placeholder: "1",
+                    keyboardType: .numberPad,
+                    onMinus: { stepRows(by: -1) },
+                    onPlus: { stepRows(by: 1) },
+                    onSubmit: applyRows
+                )
             }
         }
-        .toolPanelChrome(width: 208)
-        .onAppear { syncCustomFields() }
+        .toolPanelChrome(width: 172)
+        .onAppear {
+            syncCustomFields()
+            syncGridFields()
+        }
         .onChange(of: document.printLayout.paperSize) { _, _ in syncCustomFields() }
+        .onChange(of: document.printLayoutRevision) { _, _ in syncGridFieldsIfIdle() }
+    }
+
+    // MARK: - Paper size grid
+
+    private var paperSizeGrid: some View {
+        VStack(spacing: 0) {
+            paperSizeRow(.letter, .a4)
+            Rectangle()
+                .fill(Color.primary.opacity(0.12))
+                .frame(height: 1)
+            paperSizeRow(.legal, .custom)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color.toolPanelButtonFill)
+    }
+
+    private func paperSizeRow(_ leading: PaperSize, _ trailing: PaperSize) -> some View {
+        HStack(spacing: 0) {
+            paperSizeButton(leading)
+            Rectangle()
+                .fill(Color.primary.opacity(0.12))
+                .frame(width: 1, height: 16)
+            paperSizeButton(trailing)
+        }
+    }
+
+    private func paperSizeButton(_ size: PaperSize) -> some View {
+        ToolPanelLabelButton(
+            title: size.label,
+            prominent: document.printLayout.paperSize == size,
+            fullWidth: true
+        ) {
+            selectSize(size)
+        }
     }
 
     // MARK: - Grid
 
-    private func stepperRow(label: String, value: Int, onChange: @escaping (Int) -> Void) -> some View {
-        HStack(spacing: 4) {
-            Text(label)
-                .font(.caption2)
-            Spacer(minLength: 4)
-            ToolPanelIconButton(systemImage: "minus", isDisabled: value <= gridRange.lowerBound) {
-                onChange(max(value - 1, gridRange.lowerBound))
-            }
-            Text("\(value)")
-                .font(.caption2.monospacedDigit())
-                .frame(minWidth: 24, alignment: .center)
-            ToolPanelIconButton(systemImage: "plus", isDisabled: value >= gridRange.upperBound) {
-                onChange(min(value + 1, gridRange.upperBound))
-            }
+    private func stepColumns(by delta: Int) {
+        let next = clampedGrid(document.printLayout.clampedColumns + delta)
+        updateGrid(columns: next)
+        columnsText = "\(next)"
+    }
+
+    private func stepRows(by delta: Int) {
+        let next = clampedGrid(document.printLayout.clampedRows + delta)
+        updateGrid(rows: next)
+        rowsText = "\(next)"
+    }
+
+    private func applyColumns() {
+        let next = clampedGrid(Int(columnsText.trimmingCharacters(in: .whitespaces)) ?? document.printLayout.clampedColumns)
+        updateGrid(columns: next)
+        columnsText = "\(next)"
+    }
+
+    private func applyRows() {
+        let next = clampedGrid(Int(rowsText.trimmingCharacters(in: .whitespaces)) ?? document.printLayout.clampedRows)
+        updateGrid(rows: next)
+        rowsText = "\(next)"
+    }
+
+    private func clampedGrid(_ value: Int) -> Int {
+        min(gridRange.upperBound, max(gridRange.lowerBound, value))
+    }
+
+    private func syncGridFields() {
+        columnsText = "\(document.printLayout.clampedColumns)"
+        rowsText = "\(document.printLayout.clampedRows)"
+    }
+
+    /// Refreshes the fields from the model, but never clobbers a value the user is typing.
+    private func syncGridFieldsIfIdle() {
+        if columnsText.isEmpty || Int(columnsText.trimmingCharacters(in: .whitespaces)) == nil {
+            columnsText = "\(document.printLayout.clampedColumns)"
+        }
+        if rowsText.isEmpty || Int(rowsText.trimmingCharacters(in: .whitespaces)) == nil {
+            rowsText = "\(document.printLayout.clampedRows)"
         }
     }
 
