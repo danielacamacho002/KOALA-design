@@ -15,10 +15,10 @@ nonisolated enum MeasurementUnit: String, Codable, CaseIterable, Identifiable, S
 
     var label: String {
         switch self {
-        case .points: return "Points (pt)"
-        case .millimeters: return "Millimeters (mm)"
-        case .centimeters: return "Centimeters (cm)"
-        case .inches: return "Inches (in)"
+        case .points: return "Points"
+        case .millimeters: return "Millimeters"
+        case .centimeters: return "Centimeters"
+        case .inches: return "Inches"
         }
     }
 
