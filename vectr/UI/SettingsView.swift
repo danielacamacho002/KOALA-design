@@ -216,10 +216,10 @@ struct SettingsView: View {
 }
 
 enum SettingsSelection {
-    /// Dark purple used for selected setting squares.
-    static let purple = Color(hex: "562E60")
+    /// System blue used for selected setting controls.
+    static let blue = Color.accentColor
     /// Translucent wash so a selected bar segment reads as a highlight.
-    static let highlight = purple.opacity(0.55)
+    static let highlight = blue.opacity(0.55)
 }
 
 private extension View {
@@ -258,7 +258,7 @@ struct SettingsOptionBar<Option: Hashable>: View {
                         .background {
                             if selection == option {
                                 SettingsSelection.highlight
-                                    .shadow(color: SettingsSelection.purple.opacity(0.95), radius: 8)
+                                    .shadow(color: SettingsSelection.blue.opacity(0.95), radius: 8)
                             }
                         }
                 }
@@ -296,7 +296,7 @@ private struct SettingsCheckboxToggleStyle: ToggleStyle {
             configuration.label
             Spacer(minLength: 12)
             SettingsSquare(
-                fill: configuration.isOn ? SettingsSelection.purple : Color.clear,
+                fill: configuration.isOn ? SettingsSelection.blue : Color.clear,
                 isSelected: configuration.isOn
             )
         }
