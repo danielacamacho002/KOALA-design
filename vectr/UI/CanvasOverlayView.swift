@@ -22,10 +22,12 @@ struct CanvasOverlayView: View {
     @State private var commandDragOriginPoints: [CGPoint] = []
     @State private var scaleDragOriginPoints: [CGPoint] = []
     @State private var scaleDragOriginHandles: [CurveHandle]? = nil
+    @State private var scaleDragOriginCutouts: [[CGPoint]] = []
     @State private var scaleDragOriginCenter: CGPoint = .zero
     @State private var scaleDragOriginCorner: CGPoint = .zero
     @State private var scaleDragOriginCornerDist: CGFloat = 1
     @State private var centerDragOriginPoints: [CGPoint] = []
+    @State private var centerDragOriginStroke: VectorStroke?
     /// Anchor snap references (handle points) captured when a center-handle drag begins.
     @State private var centerDragSnapOrigins: [CGPoint] = []
     /// The shape center captured when a center-handle drag begins (center-to-center priority).
@@ -1397,6 +1399,7 @@ struct CanvasOverlayView: View {
                     document.beginInteractiveEdit()
                     scaleDragOriginPoints = document.stroke(with: strokeID)?.points ?? []
                     scaleDragOriginHandles = document.stroke(with: strokeID)?.curveHandles
+                    scaleDragOriginCutouts = document.stroke(with: strokeID)?.cutoutPoints ?? []
                     scaleDragOriginCenter = CGPoint(x: bbox.midX, y: bbox.midY)
                     let corners = [
                         CGPoint(x: bbox.minX, y: bbox.minY),
@@ -1430,21 +1433,25 @@ struct CanvasOverlayView: View {
                         ? (dragPoint.y - center.y) / (corner.y - center.y)
                         : 1
                 }
-                let scaled = scaleDragOriginPoints.map { point in
+                let scalePoint = { (point: CGPoint) in
                     CGPoint(
                         x: center.x + (point.x - center.x) * sx,
                         y: center.y + (point.y - center.y) * sy
                     )
                 }
-                if let originHandles = scaleDragOriginHandles,
+                let scaled = scaleDragOriginPoints.map(scalePoint)
+                if scaleDragOriginHandles != nil || !scaleDragOriginCutouts.isEmpty,
                    var stroke = document.stroke(with: strokeID) {
                     stroke.points = scaled
-                    stroke.curveHandles = originHandles.map { handle in
-                        CurveHandle(
-                            inOffset: CGPoint(x: handle.inOffset.x * sx, y: handle.inOffset.y * sy),
-                            outOffset: CGPoint(x: handle.outOffset.x * sx, y: handle.outOffset.y * sy)
-                        )
+                    if let originHandles = scaleDragOriginHandles {
+                        stroke.curveHandles = originHandles.map { handle in
+                            CurveHandle(
+                                inOffset: CGPoint(x: handle.inOffset.x * sx, y: handle.inOffset.y * sy),
+                                outOffset: CGPoint(x: handle.outOffset.x * sx, y: handle.outOffset.y * sy)
+                            )
+                        }
                     }
+                    stroke.cutoutPoints = scaleDragOriginCutouts.map { $0.map(scalePoint) }
                     document.updateStroke(stroke, recordUndo: false)
                 } else {
                     document.setStrokePoints(id: strokeID, points: scaled, recordUndo: false)
@@ -1455,6 +1462,7 @@ struct CanvasOverlayView: View {
                 let didEdit = !scaleDragOriginPoints.isEmpty
                 scaleDragOriginPoints = []
                 scaleDragOriginHandles = nil
+                scaleDragOriginCutouts = []
                 guard didEdit else { return }
                 document.reconcileIntersectionAnchors(around: [strokeID])
                 onChanged()
@@ -1492,7 +1500,9 @@ struct CanvasOverlayView: View {
                     }
                     snapHaptics.prepare()
                     document.beginInteractiveEdit()
+                    centerDragOriginStroke = document.stroke(with: strokeID)
                 }
+                guard let origin = centerDragOriginStroke else { return }
                 let rawDelta = documentDelta(from: value.translation)
                 let delta = translationSnappedDelta(
                     origins: centerDragSnapOrigins,
@@ -1500,15 +1510,13 @@ struct CanvasOverlayView: View {
                     rawDelta: rawDelta,
                     excluding: [strokeID]
                 )
-                let moved = centerDragOriginPoints.map {
-                    CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
-                }
-                document.setStrokePoints(id: strokeID, points: moved, recordUndo: false)
+                document.updateStroke(origin.offsettingGeometry(by: delta), recordUndo: false)
                 onChanged()
             }
             .onEnded { _ in
                 let didEdit = !centerDragOriginPoints.isEmpty
                 centerDragOriginPoints = []
+                centerDragOriginStroke = nil
                 centerDragSnapOrigins = []
                 centerDragSnapCenter = nil
                 clearMoveSnap()
