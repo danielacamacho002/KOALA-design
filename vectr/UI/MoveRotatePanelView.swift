@@ -460,9 +460,8 @@ struct MoveRotatePanelView: View {
     @ViewBuilder
     private var arrangeSection: some View {
         HStack(spacing: 4) {
-            ToolPanelLabelButton(title: "Duplicate", fullWidth: true) {
-                let offset = max(document.grid.spacing, 1)
-                document.duplicateSelectedElements(offset: CGPoint(x: offset, y: offset))
+            ToolPanelLabelButton(title: "Mirror", fullWidth: true) {
+                document.mirrorSelectedElements()
                 onApply()
             }
 
