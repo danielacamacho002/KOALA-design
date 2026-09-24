@@ -34,12 +34,13 @@ struct FontPickerView: View {
                 fontMenu
             }
         }
-        .fileImporter(
-            isPresented: $showImporter,
-            allowedContentTypes: Self.fontContentTypes,
-            allowsMultipleSelection: false
-        ) { result in
-            handleImport(result)
+        .background {
+            DocumentImportSheet(
+                isPresented: $showImporter,
+                contentTypes: Self.fontContentTypes
+            ) { url in
+                handleImport(.success([url]))
+            }
         }
         .alert("Import Failed", isPresented: Binding(
             get: { importError != nil },
