@@ -66,11 +66,14 @@ nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
     /// Default plane fill opacity for closed shapes that have never been customized.
     static let defaultFillOpacity: CGFloat = 0.25
 
+    /// Startup pen width: 0.0278 in, thick enough to read against the default inch grid.
+    static let defaultStrokeWidth: CGFloat = UnitConversion.documentPoints(from: 0.0278, unit: .inches)
+
     init(
         id: UUID = UUID(),
         layerID: UUID,
         points: [CGPoint] = [],
-        strokeWidth: CGFloat = 1.5,
+        strokeWidth: CGFloat = VectorStroke.defaultStrokeWidth,
         strokeColor: CodableColor = CodableColor(.primary),
         isClosed: Bool = false,
         cornerRadius: CGFloat = 0,
