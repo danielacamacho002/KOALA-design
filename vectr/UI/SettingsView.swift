@@ -124,6 +124,7 @@ struct SettingsView: View {
                 reloadDisplayValues()
             }
         }
+        .background(SquareSheetCorners())
         .presentationBackground(pageColor)
         .presentationCornerRadius(0)
         .preferredColorScheme(.dark)
@@ -277,10 +278,10 @@ private struct SettingsSquare: View {
     var size: CGFloat = 22
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 4, style: .continuous)
+        Rectangle()
             .fill(fill)
             .overlay {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                Rectangle()
                     .strokeBorder(
                         isSelected ? Color.white : Color.white.opacity(0.4),
                         lineWidth: 1
@@ -297,7 +298,8 @@ private struct SettingsCheckboxToggleStyle: ToggleStyle {
             Spacer(minLength: 12)
             SettingsSquare(
                 fill: configuration.isOn ? SettingsSelection.blue : Color.clear,
-                isSelected: configuration.isOn
+                isSelected: configuration.isOn,
+                size: 12
             )
         }
         .contentShape(Rectangle())
