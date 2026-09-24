@@ -13,8 +13,6 @@ struct EditorToolbarView: View {
     var onUndo: () -> Void
     var onRedo: () -> Void
     var onSettings: () -> Void
-    var onShare: () -> Void
-    var onImport: () -> Void
     var onToolSelected: (ToolCategory?) -> Void
     var onSwitchToPrintLayout: (() -> Void)?
     var onVisibilityToggled: () -> Void
@@ -67,8 +65,6 @@ struct EditorToolbarView: View {
                         accessibilityLabel: "Print Layout"
                     )
                 }
-                toolbarIconButton("square.and.arrow.down", action: onImport, accessibilityLabel: "Import")
-                toolbarIconButton("square.and.arrow.up", action: onShare, accessibilityLabel: "Share")
                 toolbarIconButton("gearshape", action: onSettings, accessibilityLabel: "Settings")
             }
         }

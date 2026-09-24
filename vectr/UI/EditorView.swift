@@ -29,6 +29,8 @@ struct EditorView: View {
     @State private var canvasViewSize: CGSize = .zero
     @State private var canvasSafeAreaInsets: UIEdgeInsets = .zero
     @State private var showSettings = false
+    @State private var pendingImportAfterSettings = false
+    @State private var pendingExportAfterSettings = false
     @State private var chromeInsets = ViewportTransform.ChromeInsets()
     @State private var statusMessage: String?
     @State private var showUnsavedAlert = false
@@ -112,11 +114,27 @@ struct EditorView: View {
                 .allowsHitTesting(true)
             }
         }
-        .sheet(isPresented: $showSettings) {
+        .sheet(isPresented: $showSettings, onDismiss: {
+            if pendingImportAfterSettings {
+                pendingImportAfterSettings = false
+                showImportPicker = true
+            } else if pendingExportAfterSettings {
+                pendingExportAfterSettings = false
+                showExportSheet = true
+            }
+        }) {
             SettingsView(
                 document: store.document,
                 fileName: $store.fileName,
-                onFileNameChanged: handleFileNameChanged
+                onFileNameChanged: handleFileNameChanged,
+                onImport: {
+                    pendingImportAfterSettings = true
+                    showSettings = false
+                },
+                onExport: {
+                    pendingExportAfterSettings = true
+                    showSettings = false
+                }
             )
         }
         .fileImporter(
@@ -468,8 +486,6 @@ struct EditorView: View {
                 onUndo: handleDesignUndo,
                 onRedo: handleDesignRedo,
                 onSettings: { showSettings = true },
-                onShare: { showExportSheet = true },
-                onImport: { showImportPicker = true },
                 onToolSelected: handleToolSelected,
                 onSwitchToPrintLayout: { switchToPrintLayoutMode() },
                 onVisibilityToggled: {
