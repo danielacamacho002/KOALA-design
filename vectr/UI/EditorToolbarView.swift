@@ -15,7 +15,6 @@ struct EditorToolbarView: View {
     var onSettings: () -> Void
     var onShare: () -> Void
     var onImport: () -> Void
-    var onSave: () -> Void
     var onToolSelected: (ToolCategory?) -> Void
     var onSwitchToPrintLayout: (() -> Void)?
     var onVisibilityToggled: () -> Void
@@ -61,17 +60,16 @@ struct EditorToolbarView: View {
                 .padding(.horizontal, 10)
 
             HStack(spacing: 4) {
-                toolbarIconButton("gearshape", action: onSettings, accessibilityLabel: "Settings")
                 if let onSwitchToPrintLayout {
                     toolbarIconButton(
-                        "square.grid.3x3",
+                        "rectangle.split.3x3",
                         action: onSwitchToPrintLayout,
                         accessibilityLabel: "Print Layout"
                     )
                 }
                 toolbarIconButton("square.and.arrow.down", action: onImport, accessibilityLabel: "Import")
                 toolbarIconButton("square.and.arrow.up", action: onShare, accessibilityLabel: "Share")
-                toolbarIconButton("tray.and.arrow.down", action: onSave, accessibilityLabel: "Save")
+                toolbarIconButton("gearshape", action: onSettings, accessibilityLabel: "Settings")
             }
         }
         .frame(height: toolbarHeight)

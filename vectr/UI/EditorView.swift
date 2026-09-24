@@ -470,7 +470,6 @@ struct EditorView: View {
                 onSettings: { showSettings = true },
                 onShare: { showExportSheet = true },
                 onImport: { showImportPicker = true },
-                onSave: { saveDocumentNow() },
                 onToolSelected: handleToolSelected,
                 onSwitchToPrintLayout: { switchToPrintLayoutMode() },
                 onVisibilityToggled: {
