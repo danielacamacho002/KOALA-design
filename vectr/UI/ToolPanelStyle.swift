@@ -10,6 +10,13 @@
 import SwiftUI
 import UIKit
 
+/// Shared size of every floating tool command panel. The move panel is the reference.
+enum ToolPanelMetrics {
+    static let commandWidth: CGFloat = 172
+    /// Compact point/value field, matching the shape panel's start-point box.
+    static let pointFieldWidth: CGFloat = 100
+}
+
 extension Color {
     /// Fill for the non-prominent (secondary) tool panel buttons.
     static let toolPanelButtonFill = Color(hex: "F2F2F7")

@@ -305,6 +305,7 @@ struct EditorView: View {
                     FilletRadiusPanelView(
                         document: store.document,
                         units: store.document.settings.units,
+                        onChanged: { store.markDirty() },
                         onApply: {
                             store.document.clearToolSelections()
                             store.markDirty()
@@ -974,7 +975,7 @@ struct EditorView: View {
         let panelWidth: CGFloat
         switch store.document.activeCategory {
         case .fillet, .addAnchor, .pattern, .copy:
-            panelWidth = 188
+            panelWidth = ToolPanelMetrics.commandWidth
         default:
             panelWidth = 0
         }

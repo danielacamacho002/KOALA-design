@@ -8,8 +8,14 @@ import SwiftUI
 struct FilletRadiusPanelView: View {
     @Bindable var document: VectrDocument
     var units: MeasurementUnit
+    /// Marks the document dirty after a live radius change. Corner selection stays put so the
+    /// stepper can keep adjusting the same corners.
+    var onChanged: () -> Void = {}
     var onApply: () -> Void
     var onCancel: () -> Void
+
+    /// Radius step in document points, matching the thickness stepper.
+    private static let radiusStepPoints: CGFloat = 0.5
 
     @State private var radiusText = ""
 
@@ -17,33 +23,22 @@ struct FilletRadiusPanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             ToolPanelHeader("Fillet")
 
-            Text("Select corner anchors, enter radius, or drag a corner handle:")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                ToolPanelSectionLabel("Radius")
 
-            FingerOnlyTextField(
-                placeholder: "Radius",
-                text: $radiusText,
-                keyboardType: .decimalPad,
-                fontSize: 13,
-                cornerRadius: 0,
-                onSubmit: apply
-            )
-            .frame(height: 30)
+                ToolPanelNumericStepper(
+                    text: $radiusText,
+                    placeholder: "0",
+                    unitLabel: units.shortLabel,
+                    onMinus: { stepRadius(by: -Self.radiusStepPoints) },
+                    onPlus: { stepRadius(by: Self.radiusStepPoints) },
+                    onSubmit: { apply(finish: false) }
+                )
+            }
 
             Text("Selected corners: \(document.selectedFilletCornerIndices.count)")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
-
-            HStack(spacing: 4) {
-                Text("Current radius:")
-                Text(currentRadiusText)
-                    .fontWeight(.semibold)
-                    .monospacedDigit()
-            }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
 
             HStack(spacing: 4) {
                 ToolPanelCancelButton { onCancel() }
@@ -53,48 +48,75 @@ struct FilletRadiusPanelView: View {
                 ToolPanelApplyButton(
                     isDisabled: document.selectedFilletCornerIndices.isEmpty
                 ) {
-                    apply()
+                    apply(finish: true)
                 }
             }
         }
-        .toolPanelChrome(width: 172)
+        .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
         .onAppear {
-            let display = units.fromDocumentUnits(document.settings.defaultCornerRadius)
-            radiusText = String(format: "%.3f", display)
+            radiusText = displayString(units.fromDocumentUnits(document.settings.defaultCornerRadius))
             syncRadiusTextToSelection()
         }
         .onChange(of: document.selectedFilletCornerIndices) { _, _ in
             syncRadiusTextToSelection()
         }
-    }
-
-    private var currentRadiusText: String {
-        switch document.selectedFilletRadiusSummary() {
-        case .none:
-            return "—"
-        case .mixed:
-            return "Mixed"
-        case .uniform(let radius):
-            let display = units.fromDocumentUnits(radius)
-            return String(format: "%.3f %@", display, units.shortLabel)
+        .onChange(of: units) { _, _ in
+            syncRadiusTextToSelection()
         }
     }
 
-    /// Pre-fills the input with the selected corner's existing radius so the current value is
-    /// visible and easy to tweak.
+    /// Pre-fills the stepper with the selected corners' shared radius.
     private func syncRadiusTextToSelection() {
-        if case .uniform(let radius) = document.selectedFilletRadiusSummary(), radius > 0 {
-            radiusText = String(format: "%.3f", units.fromDocumentUnits(radius))
+        if case .uniform(let radius) = document.selectedFilletRadiusSummary() {
+            radiusText = displayString(units.fromDocumentUnits(radius))
         }
     }
 
-    private func apply() {
-        guard let value = Double(radiusText.trimmingCharacters(in: .whitespaces)) else { return }
-        let docRadius = units.toDocumentUnits(CGFloat(value))
+    private func stepRadius(by deltaDocPoints: CGFloat) {
+        let base: CGFloat
+        if case .uniform(let radius) = document.selectedFilletRadiusSummary() {
+            base = radius
+        } else {
+            base = parsedDocumentRadius() ?? document.settings.defaultCornerRadius
+        }
+        let next = max(0, base + deltaDocPoints)
+        radiusText = displayString(units.fromDocumentUnits(next))
+        commitRadius(next, finish: false)
+    }
+
+    /// `finish` commits and clears the corner selection. Live stepper changes leave it selected.
+    private func apply(finish: Bool) {
+        guard let docRadius = parsedDocumentRadius() else {
+            syncRadiusTextToSelection()
+            return
+        }
+        let clamped = max(0, docRadius)
+        radiusText = displayString(units.fromDocumentUnits(clamped))
+        commitRadius(clamped, finish: finish)
+    }
+
+    private func commitRadius(_ docRadius: CGFloat, finish: Bool) {
+        guard !document.selectedFilletCornerIndices.isEmpty else { return }
         document.applyFilletToSelected(
             radius: docRadius,
             cornerIndices: document.selectedFilletCornerIndices
         )
-        onApply()
+        if finish {
+            onApply()
+        } else {
+            onChanged()
+        }
+    }
+
+    private func parsedDocumentRadius() -> CGFloat? {
+        let cleaned = radiusText
+            .replacingOccurrences(of: units.shortLabel, with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let value = Double(cleaned) else { return nil }
+        return units.toDocumentUnits(CGFloat(value))
+    }
+
+    private func displayString(_ value: CGFloat) -> String {
+        String(format: "%.2f", value)
     }
 }

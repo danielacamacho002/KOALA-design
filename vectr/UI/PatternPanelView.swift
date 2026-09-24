@@ -32,11 +32,6 @@ struct PatternPanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             ToolPanelHeader("Pattern")
 
-            Text("Spread the selected shape into a grid, line, radial, or spiral arrangement.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
             Picker("Mode", selection: $settings.mode) {
                 ForEach(PatternMode.allCases) { mode in
                     Text(mode.label).tag(mode)
@@ -67,7 +62,7 @@ struct PatternPanelView: View {
                 ToolPanelApplyButton(isDisabled: !canApply) { apply() }
             }
         }
-        .toolPanelChrome(width: 208)
+        .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
         .onAppear {
             onPreviewChange()
         }
@@ -252,26 +247,16 @@ private struct PatternIntStepperRow: View {
     @State private var text = ""
 
     var body: some View {
-        HStack(spacing: 4) {
-            Text(label)
-                .font(.caption2)
-            Spacer(minLength: 4)
-            ToolPanelIconButton(systemImage: "minus", isDisabled: value <= range.lowerBound) {
-                applyValue(value - 1)
-            }
-            FingerOnlyTextField(
-                placeholder: "\(range.lowerBound)",
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel(label)
+            ToolPanelNumericStepper(
                 text: $text,
+                placeholder: "\(range.lowerBound)",
                 keyboardType: .numberPad,
-                fontSize: 12,
-                cornerRadius: 0,
-                onSubmit: commitText,
-                onEditingEnded: commitText
+                onMinus: { applyValue(value - 1) },
+                onPlus: { applyValue(value + 1) },
+                onSubmit: commitText
             )
-            .frame(width: 40, height: 26)
-            ToolPanelIconButton(systemImage: "plus", isDisabled: value >= range.upperBound) {
-                applyValue(value + 1)
-            }
         }
         .onAppear { text = "\(value)" }
         .onChange(of: value) { _, newValue in
@@ -348,38 +333,17 @@ private struct PatternLengthStepperRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 4) {
-            Text(label)
-                .font(.caption2)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .foregroundStyle(disabled ? .tertiary : .primary)
-            Spacer(minLength: 4)
-            ToolPanelIconButton(
-                systemImage: "minus",
-                isDisabled: disabled || displayValue <= minDisplay + 0.0001
-            ) {
-                applyDisplay(max(minDisplay, displayValue - lengthStep))
-            }
-            FingerOnlyTextField(
-                placeholder: formatted(minDisplay),
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel(label)
+            ToolPanelNumericStepper(
                 text: $text,
-                keyboardType: .decimalPad,
-                fontSize: 12,
-                cornerRadius: 0,
-                onSubmit: commitText,
-                onEditingEnded: commitText
+                placeholder: formatted(minDisplay),
+                unitLabel: units.shortLabel,
+                onMinus: { applyDisplay(max(minDisplay, displayValue - lengthStep)) },
+                onPlus: { applyDisplay(displayValue + lengthStep) },
+                onSubmit: commitText
             )
-            .frame(width: 52, height: 26)
             .disabled(disabled)
-            .allowsHitTesting(!disabled)
-            Text(units.shortLabel)
-                .font(.caption2)
-                .foregroundStyle(disabled ? .tertiary : .secondary)
-                .frame(minWidth: 16, alignment: .leading)
-            ToolPanelIconButton(systemImage: "plus", isDisabled: disabled) {
-                applyDisplay(displayValue + lengthStep)
-            }
         }
         .opacity(disabled ? 0.55 : 1)
         .onAppear { syncText() }
