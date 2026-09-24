@@ -87,7 +87,7 @@ struct ToolCommandPanelView: View {
     }
 
     private var panelHeader: some View {
-        ToolPanelHeader(session.toolTitle)
+        ToolPanelSectionLabel(session.toolTitle)
     }
 
     // MARK: - Tool variant
@@ -101,6 +101,9 @@ struct ToolCommandPanelView: View {
                 selectedIndex: selectedVariantIndex,
                 action: applyVariant
             )
+            // Chrome pads the panel by 8; pull the variant bar out so it
+            // sits 2pt from both edges.
+            .padding(.horizontal, -6)
         }
     }
 

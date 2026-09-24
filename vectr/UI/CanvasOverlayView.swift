@@ -77,6 +77,7 @@ struct CanvasOverlayView: View {
     @State private var groupRotatePivot: CGPoint = .zero
     @State private var groupRotatePreviousAngle: CGFloat = 0
     @State private var groupRotateAccumulated: CGFloat = 0
+    @State private var groupRotateReadoutBaseline: Double = 0
     @State private var groupRotateActive = false
 
     private let handleSize: CGFloat = 22
@@ -573,7 +574,12 @@ struct CanvasOverlayView: View {
                 let currentDoc = document.viewport.viewToDocument(value.location)
                 if !groupRotateActive {
                     groupRotateActive = true
+                    // Capture before expand, which clears the readout when membership changes.
+                    groupRotateReadoutBaseline = document.groupHandleRotationDegrees ?? 0
                     document.expandSelectionToGroupsIfNeeded()
+                    if document.hasMultiSelection {
+                        document.groupHandleRotationDegrees = groupRotateReadoutBaseline
+                    }
                     groupRotatePivot = pivot
                     groupRotatePreviousAngle = atan2(currentDoc.y - pivot.y, currentDoc.x - pivot.x)
                     groupRotateAccumulated = 0
@@ -596,6 +602,10 @@ struct CanvasOverlayView: View {
                 let step = atan2(sin(rawStep), cos(rawStep))
                 groupRotateAccumulated += step
                 groupRotatePreviousAngle = angle
+                if document.hasMultiSelection {
+                    document.groupHandleRotationDegrees = groupRotateReadoutBaseline
+                        + Double(groupRotateAccumulated * 180 / .pi)
+                }
 
                 for (_, origin) in groupRotateStrokeOrigins {
                     let rotated = ShapeGeometry.rotatedStroke(

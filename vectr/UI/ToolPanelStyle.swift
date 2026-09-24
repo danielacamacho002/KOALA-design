@@ -171,6 +171,7 @@ struct ToolPanelNumericStepper: View {
     var onMinus: () -> Void
     var onPlus: () -> Void
     var onSubmit: () -> Void
+    var onEditingChanged: ((Bool) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 0) {
@@ -197,7 +198,8 @@ struct ToolPanelNumericStepper: View {
                                 backgroundColor: .clear,
                                 textAlignment: .center,
                                 onSubmit: onSubmit,
-                                onEditingEnded: onSubmit
+                                onEditingEnded: onSubmit,
+                                onEditingChanged: onEditingChanged
                             )
                         }
 
@@ -258,6 +260,62 @@ struct ToolPanelMenuButton: View {
             .background(isExpanded ? Color.accentColor : Color.toolPanelButtonFill)
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Action buttons in one filled block, split by hairlines instead of gaps.
+struct ToolPanelJoinedActions: View {
+    struct Row {
+        let buttons: [Item]
+
+        init(_ buttons: [Item]) {
+            self.buttons = buttons
+        }
+    }
+
+    struct Item {
+        let title: String
+        let action: () -> Void
+    }
+
+    let rows: [Row]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
+                if rowIndex > 0 {
+                    hairline(horizontal: true)
+                }
+                HStack(spacing: 0) {
+                    ForEach(Array(row.buttons.enumerated()), id: \.offset) { index, button in
+                        if index > 0 {
+                            hairline(horizontal: false)
+                        }
+                        Button(action: button.action) {
+                            Text(button.title)
+                                .font(.system(size: 11))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                                .foregroundStyle(Color.toolPanelButtonForeground)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 26)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(button.title)
+                    }
+                }
+                .frame(height: 26)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color.toolPanelButtonFill)
+    }
+
+    private func hairline(horizontal: Bool) -> some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.12))
+            .frame(width: horizontal ? nil : 1, height: horizontal ? 1 : 16)
     }
 }
 
