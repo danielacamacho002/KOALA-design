@@ -14,27 +14,15 @@ enum StrokeEditor {
         let aligned = alignedCurveHandles(stroke, pointCount: originalCount)
         points.remove(at: index)
         let closed = stroke.isClosed && points.count > 2
-        let smooth = remappedSmoothForDeletion(stroke.smoothCornerIndices, removedIndex: index)
-        let preserved = pickHandles(aligned, keeping: (0..<originalCount).filter { $0 != index })
+        let keptIndices = (0..<originalCount).filter { $0 != index }
         return updatedStroke(
             stroke,
             points: points,
             isClosed: closed,
-            smoothMiddles: smooth,
-            preservedCurveHandles: preserved
+            sourceIndices: keptIndices,
+            sourceCount: originalCount,
+            preservedCurveHandles: pickHandles(aligned, keeping: keptIndices)
         )
-    }
-
-    /// Shifts baked-arc midpoint indices after removing an anchor. Corners whose arc span is
-    /// touched by the removal are dropped so a stale/distorted arc is never rendered.
-    private static func remappedSmoothForDeletion(_ indices: Set<Int>?, removedIndex: Int) -> Set<Int>? {
-        guard let indices, !indices.isEmpty else { return nil }
-        let shifted = indices.compactMap { middle -> Int? in
-            if middle == removedIndex || middle - 1 == removedIndex || middle + 1 == removedIndex { return nil }
-            return middle > removedIndex ? middle - 1 : middle
-        }
-        let set = Set(shifted)
-        return set.isEmpty ? nil : set
     }
 
     /// Result of deleting a single anchor. `additionalStroke` is only produced when an
@@ -85,12 +73,12 @@ enum StrokeEditor {
                 let keptIndices = (0..<count).filter { $0 != index }
                 points.remove(at: index)
                 let closed = stroke.isClosed && points.count > 2
-                let smooth = remappedSmoothForDeletion(stroke.smoothCornerIndices, removedIndex: index)
                 let updated = updatedStroke(
                     stroke,
                     points: points,
                     isClosed: closed,
-                    smoothMiddles: smooth,
+                    sourceIndices: keptIndices,
+                    sourceCount: count,
                     preservedCurveHandles: pickHandles(alignedHandles, keeping: keptIndices)
                 )
                 return AnchorDeletionResult(stroke: updated, additionalStroke: nil)
@@ -108,6 +96,8 @@ enum StrokeEditor {
                     stroke,
                     points: reopened,
                     isClosed: false,
+                    sourceIndices: order,
+                    sourceCount: count,
                     preservedCurveHandles: pickHandles(alignedHandles, keeping: order)
                 )
                 return AnchorDeletionResult(stroke: updated, additionalStroke: nil)
@@ -126,12 +116,16 @@ enum StrokeEditor {
                     stroke,
                     points: left,
                     isClosed: false,
+                    sourceIndices: leftIndices,
+                    sourceCount: count,
                     preservedCurveHandles: pickHandles(alignedHandles, keeping: leftIndices)
                 )
                 var secondary = updatedStroke(
                     stroke,
                     points: right,
                     isClosed: false,
+                    sourceIndices: rightIndices,
+                    sourceCount: count,
                     preservedCurveHandles: pickHandles(alignedHandles, keeping: rightIndices)
                 )
                 secondary.id = UUID()
@@ -144,6 +138,8 @@ enum StrokeEditor {
                     stroke,
                     points: kept,
                     isClosed: false,
+                    sourceIndices: keptIndices,
+                    sourceCount: count,
                     preservedCurveHandles: pickHandles(alignedHandles, keeping: keptIndices)
                 ),
                 additionalStroke: nil
@@ -154,12 +150,12 @@ enum StrokeEditor {
         guard count > 2 else { return nil }
         let keptIndices = (0..<count).filter { $0 != index }
         points.remove(at: index)
-        let smooth = remappedSmoothForDeletion(stroke.smoothCornerIndices, removedIndex: index)
         let updated = updatedStroke(
             stroke,
             points: points,
             isClosed: false,
-            smoothMiddles: smooth,
+            sourceIndices: keptIndices,
+            sourceCount: count,
             preservedCurveHandles: pickHandles(alignedHandles, keeping: keptIndices)
         )
         return AnchorDeletionResult(stroke: updated, additionalStroke: nil)
@@ -198,6 +194,8 @@ enum StrokeEditor {
                 stroke,
                 points: reopened,
                 isClosed: false,
+                sourceIndices: order,
+                sourceCount: points.count,
                 preservedCurveHandles: pickHandles(aligned, keeping: order)
             )
         }
@@ -212,6 +210,8 @@ enum StrokeEditor {
             stroke,
             points: openPoints,
             isClosed: false,
+            sourceIndices: keptIndices,
+            sourceCount: points.count,
             preservedCurveHandles: pickHandles(aligned, keeping: keptIndices)
         )
     }
@@ -343,11 +343,53 @@ enum StrokeEditor {
         return picked.count == oldIndices.count ? picked : nil
     }
 
+    /// Carries the fillet modifiers onto the anchors that survived an edit.
+    /// `sourceIndices[new]` is the anchor a kept point came from, so a per-corner radius
+    /// follows its corner. A baked arc midpoint only survives while both anchors its sweep
+    /// runs between are still its neighbors; otherwise the arc would be rebuilt through
+    /// whatever geometry the edit left next to it.
+    private static func remappedFilletModifiers(
+        _ stroke: VectorStroke,
+        sourceIndices: [Int],
+        sourceCount: Int,
+        isClosed: Bool
+    ) -> (radiiByIndex: [Int: CGFloat]?, smoothMiddles: Set<Int>?) {
+        var newPositions: [Int: Int] = [:]
+        for (new, source) in sourceIndices.enumerated() {
+            newPositions[source] = new
+        }
+
+        // A zero override is meaningful: it is how one corner stays sharp under a positive
+        // global `cornerRadius`, so it has to travel with its corner too.
+        var radii: [Int: CGFloat] = [:]
+        if let existing = stroke.cornerRadiiByIndex {
+            for (new, source) in sourceIndices.enumerated() {
+                if let radius = existing[source] { radii[new] = max(0, radius) }
+            }
+        }
+
+        var middles: Set<Int> = []
+        if let existing = stroke.smoothCornerIndices {
+            let newCount = sourceIndices.count
+            for (new, source) in sourceIndices.enumerated() where existing.contains(source) {
+                let sourcePrev = stroke.isClosed ? (source - 1 + sourceCount) % sourceCount : source - 1
+                let sourceNext = stroke.isClosed ? (source + 1) % sourceCount : source + 1
+                let newPrev = isClosed ? (new - 1 + newCount) % newCount : new - 1
+                let newNext = isClosed ? (new + 1) % newCount : new + 1
+                guard newPositions[sourcePrev] == newPrev, newPositions[sourceNext] == newNext else { continue }
+                middles.insert(new)
+            }
+        }
+
+        return (radii.isEmpty ? nil : radii, middles.isEmpty ? nil : middles)
+    }
+
     private static func updatedStroke(
         _ stroke: VectorStroke,
         points: [CGPoint],
         isClosed: Bool,
-        smoothMiddles: Set<Int>? = nil,
+        sourceIndices: [Int],
+        sourceCount: Int,
         preservedCurveHandles: [CurveHandle]? = nil
     ) -> VectorStroke {
         var shapeType = stroke.shapeType
@@ -367,6 +409,12 @@ enum StrokeEditor {
         } else {
             curveHandles = nil
         }
+        let fillets = remappedFilletModifiers(
+            stroke,
+            sourceIndices: sourceIndices,
+            sourceCount: sourceCount,
+            isClosed: isClosed
+        )
         return VectorStroke(
             id: stroke.id,
             layerID: stroke.layerID,
@@ -375,8 +423,8 @@ enum StrokeEditor {
             strokeColor: stroke.strokeColor,
             isClosed: isClosed,
             cornerRadius: stroke.cornerRadius,
-            cornerRadiiByIndex: nil,
-            smoothCornerIndices: smoothMiddles,
+            cornerRadiiByIndex: fillets.radiiByIndex,
+            smoothCornerIndices: fillets.smoothMiddles,
             isConstruction: stroke.isConstruction,
             shapeType: shapeType,
             cutoutPoints: isClosed ? stroke.cutoutPoints : [],
