@@ -955,9 +955,7 @@ final class DrawingCanvasUIView: UIView {
                     height: pointRadius * 2
                 )
             ).cgPath
-            dot.fillColor = UIColor.systemBlue.cgColor
-            dot.strokeColor = UIColor.white.cgColor
-            dot.lineWidth = 1.5
+            dot.fillColor = UIColor.systemTeal.cgColor
             layer.addSublayer(dot)
             curveAnchorLayers.append(dot)
         }
