@@ -3,6 +3,7 @@
 //  vectr
 //
 
+import SwiftUI
 import UIKit
 
 final class PrintLayoutCanvasUIView: UIView {
@@ -29,7 +30,7 @@ final class PrintLayoutCanvasUIView: UIView {
     init(document: VectrDocument) {
         self.document = document
         super.init(frame: .zero)
-        backgroundColor = UIColor(white: 0.92, alpha: 1)
+        backgroundColor = UIColor(Color(hex: AppearanceSettings.pasteboardHex))
         isMultipleTouchEnabled = true
 
         layer.addSublayer(sheetsLayer)
