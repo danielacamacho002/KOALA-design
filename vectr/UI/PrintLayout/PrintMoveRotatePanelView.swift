@@ -58,7 +58,7 @@ struct PrintMoveRotatePanelView: View {
                 )
 
                 ToolPanelLabelButton(
-                    title: rotateModeActive ? "Rotating" : "Rotate",
+                    title: "Rotate",
                     prominent: rotateModeActive,
                     fullWidth: true
                 ) {
@@ -82,7 +82,7 @@ struct PrintMoveRotatePanelView: View {
             }
             .background(Color.toolPanelButtonFill)
         }
-        .toolPanelChrome(width: 172)
+        .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
         .onAppear { syncDegreesField() }
         .onChange(of: document.printSelectedStrokeID) { _, _ in syncDegreesField() }
         .onChange(of: document.printSelectedTextID) { _, _ in syncDegreesField() }

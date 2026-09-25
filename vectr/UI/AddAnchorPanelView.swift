@@ -11,7 +11,7 @@ struct AddAnchorPanelView: View {
     var onCancel: () -> Void
     var onStatus: (String) -> Void
 
-    @State private var totalText = ""
+    @State private var totalText = "0"
 
     private var currentCount: Int {
         guard let stroke = document.selectedStrokeID.flatMap({ document.stroke(with: $0) }) else { return 0 }
@@ -34,20 +34,18 @@ struct AddAnchorPanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             ToolPanelHeader("Add Anchor")
 
-            Text("Tap an edge to add one anchor, or enter total anchor count.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
             FingerOnlyTextField(
-                placeholder: "Total anchors",
+                placeholder: "0",
                 text: $totalText,
                 keyboardType: .numberPad,
-                fontSize: 13,
+                fontSize: 12,
                 cornerRadius: 0,
+                backgroundColor: .clear,
                 onSubmit: apply
             )
-            .frame(height: 30)
+            .padding(.horizontal, 6)
+            .frame(width: ToolPanelMetrics.pointFieldWidth, height: 28, alignment: .leading)
+            .background(Color.toolPanelButtonFill)
 
             Text("Current anchors: \(currentCount)")
                 .font(.caption2.monospacedDigit())
@@ -61,7 +59,7 @@ struct AddAnchorPanelView: View {
                 ToolPanelApplyButton(isDisabled: !canApply) { apply() }
             }
         }
-        .toolPanelChrome(width: 172)
+        .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
     }
 
     private func apply() {

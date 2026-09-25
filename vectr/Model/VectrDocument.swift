@@ -26,6 +26,9 @@ final class VectrDocument {
 
     var strokeWidth: CGFloat = VectorStroke.defaultStrokeWidth
     var strokeColor: CodableColor = CodableColor(.primary)
+    /// Session-only. While Move is dragging a selection, motion locks to the
+    /// nearer of the X or Y axis after a short threshold. Not persisted.
+    var moveAxisLockEnabled = false
     var selectedStrokeID: UUID? {
         didSet {
             guard !isSyncingSelection else { return }
@@ -78,6 +81,9 @@ final class VectrDocument {
     var selectedFilletCornerIndices: Set<Int> = []
     /// When set, move-tool rotation pivots around this anchor index; nil uses shape center.
     var moveRotationPivotAnchorIndex: Int?
+    /// Degrees the current multi-selection has been rotated since it was selected.
+    /// Session-only; the rotate stepper shows this while the group handle is used.
+    var groupHandleRotationDegrees: Double?
     /// Session clipboard for copying items from one layer and pasting onto another.
     /// Not persisted; switching layers clears selection, so copies live here until paste.
     var clipboard: ElementClipboard = ElementClipboard()
@@ -1304,9 +1310,7 @@ final class VectrDocument {
     func translateStroke(id: UUID, delta: CGPoint, recordUndo: Bool = false) {
         guard let index = strokes.firstIndex(where: { $0.id == id }) else { return }
         if recordUndo { pushUndo() }
-        strokes[index].points = strokes[index].points.map {
-            CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
-        }
+        strokes[index] = strokes[index].offsettingGeometry(by: delta)
         if recordUndo {
             reconcileIntersectionAnchors(around: [id])
         }
@@ -1709,6 +1713,7 @@ final class VectrDocument {
         }
         isSyncingSelection = false
         selectedReferenceImageID = nil
+        groupHandleRotationDegrees = nil
         clearAnchorSelection()
         if compactAnchors {
             compactCircularAnchors(for: strokeIDs)
@@ -2100,26 +2105,27 @@ final class VectrDocument {
         !clipboard.isEmpty && activeLayer?.isLocked != true
     }
 
-    /// Pastes clipboard contents onto the active layer at the original document position.
-    /// Returns the number of items created, or 0 when paste is not possible.
+    /// Pastes clipboard contents onto the active layer, one grid step down and to
+    /// the right of the copied position. Returns the number of items created, or 0
+    /// when paste is not possible.
     @discardableResult
     func pasteClipboardToActiveLayer() -> Int {
         guard canPasteClipboard else { return 0 }
         pushUndo()
 
+        let step = max(grid.spacing, 1)
+        let offset = CGPoint(x: step, y: step)
         var strokeIDMap: [UUID: UUID] = [:]
         var textIDMap: [UUID: UUID] = [:]
         var newStrokeIDs: Set<UUID> = []
         var newTextIDs: Set<UUID> = []
 
         for stroke in clipboard.strokes {
-            var copy = stroke
-            let newID = UUID()
-            strokeIDMap[stroke.id] = newID
-            copy.id = newID
+            var copy = stroke.duplicated(offset: offset)
+            strokeIDMap[stroke.id] = copy.id
             copy.layerID = activeLayerID
             strokes.append(ShapeGeometry.captureRotationBaseIfNeeded(copy))
-            newStrokeIDs.insert(newID)
+            newStrokeIDs.insert(copy.id)
         }
         for text in clipboard.textElements {
             var copy = text
@@ -2127,6 +2133,7 @@ final class VectrDocument {
             textIDMap[text.id] = newID
             copy.id = newID
             copy.layerID = activeLayerID
+            copy.position = CGPoint(x: copy.position.x + offset.x, y: copy.position.y + offset.y)
             textElements.append(copy)
             newTextIDs.insert(newID)
         }
@@ -2142,7 +2149,8 @@ final class VectrDocument {
         return clipboard.itemCount
     }
 
-    /// Duplicates the selection, offsetting the copies and selecting them.
+    /// Duplicates the selection and selects the copies.
+    /// `offset` is `.zero` for an in-place duplicate; Mirror passes the reflection shift.
     /// Copies geometry and modifiers as-is (fillets, holes, curve handles, rotation).
     func duplicateSelectedElements(offset: CGPoint) {
         expandSelectionToGroupsIfNeeded()
@@ -2187,6 +2195,21 @@ final class VectrDocument {
 
         geometryRevision += 1
         setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs)
+    }
+
+    /// Reflects a copy of the selection across one edge of its bounding box and
+    /// selects the copy. Horizontal mirrors across the right edge; vertical across
+    /// the bottom. The original stays put. One undo step covers the whole copy.
+    func mirrorSelectedElements(horizontal: Bool = true) {
+        expandSelectionToGroupsIfNeeded()
+        guard let bbox = selectionBoundingBox() else { return }
+        let span = horizontal ? bbox.width : bbox.height
+        guard span > 1e-4 else { return }
+        let offset = horizontal
+            ? CGPoint(x: span, y: 0)
+            : CGPoint(x: 0, y: span)
+        duplicateSelectedElements(offset: offset)
+        flipSelection(horizontal: horizontal, recordUndo: false)
     }
 
     /// Copies document-level per-stroke data (print placement, dimension pins) onto a clone.
@@ -2242,10 +2265,10 @@ final class VectrDocument {
     }
 
     /// Mirrors the selection about its combined bounding-box center.
-    func flipSelection(horizontal: Bool) {
+    func flipSelection(horizontal: Bool, recordUndo: Bool = true) {
         expandSelectionToGroupsIfNeeded()
         guard let bbox = selectionBoundingBox() else { return }
-        pushUndo()
+        if recordUndo { pushUndo() }
         let cx = bbox.midX
         let cy = bbox.midY
         func flip(_ point: CGPoint) -> CGPoint {
@@ -2697,6 +2720,58 @@ final class VectrDocument {
             if let stroke = stroke(with: id) { return stroke.resolvedFillOpacity }
         }
         return nil
+    }
+
+    // MARK: - Fill color editing
+
+    /// Shared fill color of the selected closed shapes. `uniform(nil)` is the default gray plane.
+    enum FillColorSelection: Equatable {
+        case none
+        case uniform(CodableColor?)
+        case mixed
+    }
+
+    func selectedFillColorSummary() -> FillColorSelection {
+        let ids = closedFillableSelectedStrokeIDs()
+        guard !ids.isEmpty else { return .none }
+        var seen: CodableColor??
+        for id in ids {
+            guard let stroke = stroke(with: id) else { continue }
+            if let existing = seen {
+                if existing != stroke.fillColor { return .mixed }
+            } else {
+                seen = .some(stroke.fillColor)
+            }
+        }
+        guard let seen else { return .none }
+        return .uniform(seen)
+    }
+
+    /// Stored fill of the first selected closed shape. `nil` means the default gray plane.
+    func representativeSelectedFillColor() -> CodableColor? {
+        for id in closedFillableSelectedStrokeIDs() {
+            if let stroke = stroke(with: id) { return stroke.fillColor }
+        }
+        return nil
+    }
+
+    /// Sets the fill color on every selected closed shape. Opacity stays on `fillOpacity`.
+    @discardableResult
+    func setSelectedStrokesFillColor(_ color: CodableColor, recordUndo: Bool = true) -> Bool {
+        let ids = closedFillableSelectedStrokeIDs()
+        guard !ids.isEmpty else { return false }
+        let willChange = ids.contains { id in
+            guard let stroke = stroke(with: id) else { return false }
+            return stroke.fillColor != color
+        }
+        guard willChange else { return false }
+        if recordUndo { pushUndo() }
+        for id in ids {
+            guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
+            strokes[index].fillColor = color
+        }
+        geometryRevision += 1
+        return true
     }
 
     /// Sets the fill opacity (0...1) on every selected closed shape.
@@ -3621,6 +3696,7 @@ final class VectrDocument {
         redoStack.append(currentSnapshot())
         apply(snapshot)
         viewport = preservedViewport
+        groupHandleRotationDegrees = nil
         undoRevision += 1
         geometryRevision += 1
         printLayoutRevision += 1
@@ -3632,6 +3708,7 @@ final class VectrDocument {
         undoStack.append(currentSnapshot())
         apply(snapshot)
         viewport = preservedViewport
+        groupHandleRotationDegrees = nil
         undoRevision += 1
         geometryRevision += 1
         printLayoutRevision += 1

@@ -29,6 +29,8 @@ struct EditorView: View {
     @State private var canvasViewSize: CGSize = .zero
     @State private var canvasSafeAreaInsets: UIEdgeInsets = .zero
     @State private var showSettings = false
+    @State private var pendingImportAfterSettings = false
+    @State private var pendingExportAfterSettings = false
     @State private var chromeInsets = ViewportTransform.ChromeInsets()
     @State private var statusMessage: String?
     @State private var showUnsavedAlert = false
@@ -111,11 +113,27 @@ struct EditorView: View {
                 .allowsHitTesting(true)
             }
         }
-        .sheet(isPresented: $showSettings) {
+        .sheet(isPresented: $showSettings, onDismiss: {
+            if pendingImportAfterSettings {
+                pendingImportAfterSettings = false
+                showImportPicker = true
+            } else if pendingExportAfterSettings {
+                pendingExportAfterSettings = false
+                showExportSheet = true
+            }
+        }) {
             SettingsView(
                 document: store.document,
                 fileName: $store.fileName,
-                onFileNameChanged: handleFileNameChanged
+                onFileNameChanged: handleFileNameChanged,
+                onImport: {
+                    pendingImportAfterSettings = true
+                    showSettings = false
+                },
+                onExport: {
+                    pendingExportAfterSettings = true
+                    showSettings = false
+                }
             )
         }
         .background {
@@ -306,6 +324,7 @@ struct EditorView: View {
                     FilletRadiusPanelView(
                         document: store.document,
                         units: store.document.settings.units,
+                        onChanged: { store.markDirty() },
                         onApply: {
                             store.document.clearToolSelections()
                             store.markDirty()
@@ -468,9 +487,6 @@ struct EditorView: View {
                 onUndo: handleDesignUndo,
                 onRedo: handleDesignRedo,
                 onSettings: { showSettings = true },
-                onShare: { showExportSheet = true },
-                onImport: { showImportPicker = true },
-                onSave: { saveDocumentNow() },
                 onToolSelected: handleToolSelected,
                 onSwitchToPrintLayout: { switchToPrintLayoutMode() },
                 onVisibilityToggled: {
@@ -546,7 +562,8 @@ struct EditorView: View {
         printCanvasRect = layoutRect
 
         let points = store.document.allPrintLayoutPoints()
-        guard let bounds = boundingRect(for: points) else { return }
+        let bounds = PrintLayoutCoordinateSpace.boundingRect(for: points)
+        guard !bounds.isNull else { return }
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
         let currentScale = store.document.viewport.scale
         // The canvas is drawn full-screen (it ignores the safe area / toolbar),
@@ -558,15 +575,6 @@ struct EditorView: View {
             y: viewCenter.y - center.y * currentScale
         )
         printCanvasHandle.refreshViewport()
-    }
-
-    private func boundingRect(for points: [CGPoint]) -> CGRect? {
-        guard let first = points.first else { return nil }
-        var rect = CGRect(origin: first, size: .zero)
-        for point in points.dropFirst() {
-            rect = rect.union(CGRect(origin: point, size: .zero))
-        }
-        return rect
     }
 
     private func preparePrintExport() {
@@ -975,7 +983,7 @@ struct EditorView: View {
         let panelWidth: CGFloat
         switch store.document.activeCategory {
         case .fillet, .addAnchor, .pattern, .copy:
-            panelWidth = 188
+            panelWidth = ToolPanelMetrics.commandWidth
         default:
             panelWidth = 0
         }
@@ -1186,16 +1194,6 @@ struct EditorView: View {
         }
     }
 
-    /// Closed-arc fallback may only drop the implied closing chord (last→first).
-    /// Opening at start→mid or mid→end would reorder the three anchors and flip
-    /// the arc to the other side of its chord.
-    private func closingEdgeFallbackAllowed(_ stroke: VectorStroke, edgeIndex: Int) -> Bool {
-        if stroke.shapeType == .arc {
-            return stroke.isClosed && edgeIndex == max(stroke.points.count - 1, 0)
-        }
-        return true
-    }
-
     /// A trim tap that has been previewed but not yet cut.
     private struct PendingTrim {
         var point: CGPoint
@@ -1356,7 +1354,7 @@ struct EditorView: View {
                        point: documentPoint,
                        threshold: threshold
                    ),
-                   closingEdgeFallbackAllowed(stroke, edgeIndex: edgeIndex) {
+                   EditorDrawingGeometry.closingEdgeFallbackAllowed(stroke, edgeIndex: edgeIndex) {
                     store.document.deleteStrokeEdge(at: edgeIndex)
                     store.markDirty()
                 } else {
@@ -1610,40 +1608,13 @@ struct EditorView: View {
     }
 
     private func dragControlPoints(start: CGPoint, end: CGPoint) -> [CGPoint] {
-        switch store.document.activeCategory {
-        case .line:
-            return [start, end]
-        case .circle:
-            switch store.document.circleVariant {
-            case .center:
-                return [start, end]
-            case .edge:
-                return [start, end]
-            case .ellipse:
-                let rx = max(0.001, abs(end.x - start.x))
-                let ry = max(0.001, abs(end.y - start.y))
-                return [
-                    start,
-                    CGPoint(x: start.x + rx, y: start.y),
-                    CGPoint(x: start.x, y: start.y + ry)
-                ]
-            }
-        case .rectangle:
-            switch store.document.rectangleVariant {
-            case .center:
-                let halfW = max(0.001, abs(end.x - start.x))
-                let halfH = max(0.001, abs(end.y - start.y))
-                return [
-                    start,
-                    CGPoint(x: start.x + halfW, y: start.y),
-                    CGPoint(x: start.x, y: start.y + halfH)
-                ]
-            case .edge:
-                return [start, end]
-            }
-        default:
-            return []
-        }
+        EditorDrawingGeometry.dragControlPoints(
+            category: store.document.activeCategory,
+            circleVariant: store.document.circleVariant,
+            rectangleVariant: store.document.rectangleVariant,
+            start: start,
+            end: end
+        )
     }
 
     private func handleFileNameChanged() {

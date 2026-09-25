@@ -22,10 +22,12 @@ struct CanvasOverlayView: View {
     @State private var commandDragOriginPoints: [CGPoint] = []
     @State private var scaleDragOriginPoints: [CGPoint] = []
     @State private var scaleDragOriginHandles: [CurveHandle]? = nil
+    @State private var scaleDragOriginCutouts: [[CGPoint]] = []
     @State private var scaleDragOriginCenter: CGPoint = .zero
     @State private var scaleDragOriginCorner: CGPoint = .zero
     @State private var scaleDragOriginCornerDist: CGFloat = 1
     @State private var centerDragOriginPoints: [CGPoint] = []
+    @State private var centerDragOriginStroke: VectorStroke?
     /// Anchor snap references (handle points) captured when a center-handle drag begins.
     @State private var centerDragSnapOrigins: [CGPoint] = []
     /// The shape center captured when a center-handle drag begins (center-to-center priority).
@@ -77,7 +79,10 @@ struct CanvasOverlayView: View {
     @State private var groupRotatePivot: CGPoint = .zero
     @State private var groupRotatePreviousAngle: CGFloat = 0
     @State private var groupRotateAccumulated: CGFloat = 0
+    @State private var groupRotateReadoutBaseline: Double = 0
     @State private var groupRotateActive = false
+    /// Dominant axis chosen for the current whole-object Move drag. Resets on end.
+    @State private var moveTranslationAxis: MoveDragAxis = .free
 
     private let handleSize: CGFloat = 22
     private let centerHandleSize: CGFloat = 16
@@ -90,12 +95,12 @@ struct CanvasOverlayView: View {
     private let anchorDragThreshold: CGFloat = 6
 
     var body: some View {
-        GeometryReader { _ in
+        GeometryReader { geo in
             ZStack {
                 if commandSession.isActive {
                     commandPreviewHandles
                 } else if document.activeCategory == .move || document.activeCategory == nil {
-                    moveToolOverlay
+                    moveToolOverlay(canvasSize: geo.size)
                 } else if document.activeCategory == .scale {
                     emptyToolDismissOverlay
                     if document.selectedTextID != nil {
@@ -373,7 +378,7 @@ struct CanvasOverlayView: View {
     // MARK: - Move tool routing
 
     @ViewBuilder
-    private var moveToolOverlay: some View {
+    private func moveToolOverlay(canvasSize: CGSize) -> some View {
         ZStack {
             if document.usesGroupTransform {
                 multiSelectionMoveOverlay
@@ -390,7 +395,64 @@ struct CanvasOverlayView: View {
             if let rect = marqueeViewRect {
                 marqueeBox(rect)
             }
+
+            if document.moveAxisLockEnabled,
+               moveTranslationAxis != .free,
+               let center = moveAxisGuidelineCenter {
+                moveAxisGuideline(
+                    axis: moveTranslationAxis,
+                    center: document.viewport.documentToView(center),
+                    size: canvasSize
+                )
+            }
         }
+    }
+
+    /// Document-space center used for the dashed axis guideline during a locked move.
+    private var moveAxisGuidelineCenter: CGPoint? {
+        if let bbox = document.selectionBoundingBox(), !bbox.isNull, !bbox.isInfinite {
+            return CGPoint(x: bbox.midX, y: bbox.midY)
+        }
+        if let frame = document.resolvedReferenceImageFrame {
+            return CGPoint(x: frame.midX, y: frame.midY)
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func moveAxisGuideline(axis: MoveDragAxis, center: CGPoint, size: CGSize) -> some View {
+        Path { path in
+            switch axis {
+            case .horizontal:
+                path.move(to: CGPoint(x: 0, y: center.y))
+                path.addLine(to: CGPoint(x: size.width, y: center.y))
+            case .vertical:
+                path.move(to: CGPoint(x: center.x, y: 0))
+                path.addLine(to: CGPoint(x: center.x, y: size.height))
+            case .free:
+                break
+            }
+        }
+        .stroke(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [6, 4]))
+        .allowsHitTesting(false)
+    }
+
+    /// Constrains a whole-object Move delta to X or Y once the drag passes the threshold.
+    /// Anchor reshape, scale, and rotate skip this path.
+    private func axisLockedTranslationDelta(
+        rawDelta: CGPoint,
+        viewTranslation: CGSize
+    ) -> CGPoint {
+        moveTranslationAxis = MoveAxisLock.resolvedAxis(
+            current: moveTranslationAxis,
+            viewTranslation: viewTranslation,
+            enabled: document.moveAxisLockEnabled
+        )
+        return MoveAxisLock.constrainedDelta(rawDelta, axis: moveTranslationAxis)
+    }
+
+    private func resetMoveAxisLock() {
+        moveTranslationAxis = .free
     }
 
     /// Full-canvas catcher for tools whose handles live on this overlay. A tap
@@ -457,7 +519,12 @@ struct CanvasOverlayView: View {
                         },
                         onMoveBegan: { beginGroupMove() },
                         onMoveChanged: { value in
-                            applyGroupMove(delta: documentDelta(from: value.translation))
+                            let raw = documentDelta(from: value.translation)
+                            let locked = axisLockedTranslationDelta(
+                                rawDelta: raw,
+                                viewTranslation: value.translation
+                            )
+                            applyGroupMove(delta: locked)
                         }
                     )
                 },
@@ -535,12 +602,14 @@ struct CanvasOverlayView: View {
 
     private func applyGroupMove(delta rawDelta: CGPoint) {
         // Snap the whole group when any member's anchor/center lands on other geometry.
-        let delta = translationSnappedDelta(
+        var delta = translationSnappedDelta(
             origins: groupMoveSnapOrigins,
             centerOrigins: groupMoveSnapCenters,
             rawDelta: rawDelta,
             excluding: Set(groupMoveStrokeOrigins.keys)
         )
+        // Object snap must not pull the group off the locked axis.
+        delta = MoveAxisLock.constrainedDelta(delta, axis: moveTranslationAxis)
         // Translate each child independently from its captured origin. Overlapping
         // anchors may coincide visually but are never welded or merged.
         for (_, origin) in groupMoveStrokeOrigins {
@@ -562,6 +631,7 @@ struct CanvasOverlayView: View {
         groupMoveSnapOrigins = []
         groupMoveSnapCenters = []
         clearMoveSnap()
+        resetMoveAxisLock()
         // Skip intersection-anchor reconciliation so overlapping vertices inside a
         // group stay independent (no weld/merge of coordinate arrays).
         onChanged()
@@ -573,7 +643,12 @@ struct CanvasOverlayView: View {
                 let currentDoc = document.viewport.viewToDocument(value.location)
                 if !groupRotateActive {
                     groupRotateActive = true
+                    // Capture before expand, which clears the readout when membership changes.
+                    groupRotateReadoutBaseline = document.groupHandleRotationDegrees ?? 0
                     document.expandSelectionToGroupsIfNeeded()
+                    if document.hasMultiSelection {
+                        document.groupHandleRotationDegrees = groupRotateReadoutBaseline
+                    }
                     groupRotatePivot = pivot
                     groupRotatePreviousAngle = atan2(currentDoc.y - pivot.y, currentDoc.x - pivot.x)
                     groupRotateAccumulated = 0
@@ -596,6 +671,10 @@ struct CanvasOverlayView: View {
                 let step = atan2(sin(rawStep), cos(rawStep))
                 groupRotateAccumulated += step
                 groupRotatePreviousAngle = angle
+                if document.hasMultiSelection {
+                    document.groupHandleRotationDegrees = groupRotateReadoutBaseline
+                        + Double(groupRotateAccumulated * 180 / .pi)
+                }
 
                 for (_, origin) in groupRotateStrokeOrigins {
                     let rotated = ShapeGeometry.rotatedStroke(
@@ -651,16 +730,10 @@ struct CanvasOverlayView: View {
     }
 
     private func marqueeDocRect(start: CGPoint, current: CGPoint) -> CGRect? {
-        let a = document.viewport.viewToDocument(start)
-        let b = document.viewport.viewToDocument(current)
-        let rect = CGRect(
-            x: min(a.x, b.x),
-            y: min(a.y, b.y),
-            width: abs(a.x - b.x),
-            height: abs(a.y - b.y)
+        CanvasOverlayGeometry.marqueeRect(
+            from: document.viewport.viewToDocument(start),
+            to: document.viewport.viewToDocument(current)
         )
-        guard rect.width > 0.5 || rect.height > 0.5 else { return nil }
-        return rect
     }
 
     @ViewBuilder
@@ -1047,13 +1120,26 @@ struct CanvasOverlayView: View {
             snapHaptics.prepare()
         }
         let rawDelta = documentDelta(from: value.translation)
-        let delta = snapAdjustedDelta(
+        let baseDelta: CGPoint
+        if anchorIndex == nil {
+            // Whole-object body drag — axis lock applies. Anchor-handle reshape does not.
+            baseDelta = axisLockedTranslationDelta(
+                rawDelta: rawDelta,
+                viewTranslation: value.translation
+            )
+        } else {
+            baseDelta = rawDelta
+        }
+        var delta = snapAdjustedDelta(
             strokeID: strokeID,
             stroke: stroke,
-            rawDelta: rawDelta,
+            rawDelta: baseDelta,
             anchorIndex: anchorIndex,
             cursorViewPoint: value.location
         )
+        if anchorIndex == nil {
+            delta = MoveAxisLock.constrainedDelta(delta, axis: moveTranslationAxis)
+        }
         applyMove(strokeID: strokeID, stroke: stroke, delta: delta, anchorIndex: anchorIndex)
         onChanged()
     }
@@ -1063,6 +1149,7 @@ struct CanvasOverlayView: View {
         moveDragOriginPoints = []
         moveDragOriginStroke = nil
         clearMoveSnap()
+        resetMoveAxisLock()
         guard didEdit else { return }
         document.reconcileIntersectionAnchors(around: [strokeID])
         onChanged()
@@ -1387,53 +1474,42 @@ struct CanvasOverlayView: View {
                     document.beginInteractiveEdit()
                     scaleDragOriginPoints = document.stroke(with: strokeID)?.points ?? []
                     scaleDragOriginHandles = document.stroke(with: strokeID)?.curveHandles
+                    scaleDragOriginCutouts = document.stroke(with: strokeID)?.cutoutPoints ?? []
                     scaleDragOriginCenter = CGPoint(x: bbox.midX, y: bbox.midY)
-                    let corners = [
-                        CGPoint(x: bbox.minX, y: bbox.minY),
-                        CGPoint(x: bbox.maxX, y: bbox.minY),
-                        CGPoint(x: bbox.maxX, y: bbox.maxY),
-                        CGPoint(x: bbox.minX, y: bbox.maxY)
-                    ]
-                    let corner = corners[cornerIndex]
+                    let corner = CanvasOverlayGeometry.cornerHandles(of: bbox)[cornerIndex]
                     scaleDragOriginCorner = corner
-                    scaleDragOriginCornerDist = max(
-                        hypot(corner.x - scaleDragOriginCenter.x, corner.y - scaleDragOriginCenter.y),
-                        0.001
+                    scaleDragOriginCornerDist = CanvasOverlayGeometry.cornerDistance(
+                        from: scaleDragOriginCenter,
+                        to: corner
                     )
                 }
                 guard !scaleDragOriginPoints.isEmpty else { return }
                 let center = scaleDragOriginCenter
-                let dragPoint = document.viewport.viewToDocument(value.location)
-                let corner = scaleDragOriginCorner
-                let sx: CGFloat
-                let sy: CGFloat
-                if document.scaleUniform {
-                    let newDist = hypot(dragPoint.x - center.x, dragPoint.y - center.y)
-                    let factor = newDist / scaleDragOriginCornerDist
-                    sx = factor
-                    sy = factor
-                } else {
-                    sx = abs(corner.x - center.x) > 0.001
-                        ? (dragPoint.x - center.x) / (corner.x - center.x)
-                        : 1
-                    sy = abs(corner.y - center.y) > 0.001
-                        ? (dragPoint.y - center.y) / (corner.y - center.y)
-                        : 1
-                }
-                let scaled = scaleDragOriginPoints.map { point in
-                    CGPoint(
-                        x: center.x + (point.x - center.x) * sx,
-                        y: center.y + (point.y - center.y) * sy
-                    )
-                }
-                if let originHandles = scaleDragOriginHandles,
+                let factors = CanvasOverlayGeometry.scaleFactors(
+                    center: center,
+                    corner: scaleDragOriginCorner,
+                    dragPoint: document.viewport.viewToDocument(value.location),
+                    uniform: document.scaleUniform,
+                    originCornerDistance: scaleDragOriginCornerDist
+                )
+                let scaled = CanvasOverlayGeometry.scaled(
+                    points: scaleDragOriginPoints,
+                    about: center,
+                    x: factors.x,
+                    y: factors.y
+                )
+                if scaleDragOriginHandles != nil || !scaleDragOriginCutouts.isEmpty,
                    var stroke = document.stroke(with: strokeID) {
                     stroke.points = scaled
-                    stroke.curveHandles = originHandles.map { handle in
-                        CurveHandle(
-                            inOffset: CGPoint(x: handle.inOffset.x * sx, y: handle.inOffset.y * sy),
-                            outOffset: CGPoint(x: handle.outOffset.x * sx, y: handle.outOffset.y * sy)
+                    if let originHandles = scaleDragOriginHandles {
+                        stroke.curveHandles = CanvasOverlayGeometry.scaled(
+                            handles: originHandles,
+                            x: factors.x,
+                            y: factors.y
                         )
+                    }
+                    stroke.cutoutPoints = scaleDragOriginCutouts.map {
+                        CanvasOverlayGeometry.scaled(points: $0, about: center, x: factors.x, y: factors.y)
                     }
                     document.updateStroke(stroke, recordUndo: false)
                 } else {
@@ -1445,6 +1521,7 @@ struct CanvasOverlayView: View {
                 let didEdit = !scaleDragOriginPoints.isEmpty
                 scaleDragOriginPoints = []
                 scaleDragOriginHandles = nil
+                scaleDragOriginCutouts = []
                 guard didEdit else { return }
                 document.reconcileIntersectionAnchors(around: [strokeID])
                 onChanged()
@@ -1482,26 +1559,32 @@ struct CanvasOverlayView: View {
                     }
                     snapHaptics.prepare()
                     document.beginInteractiveEdit()
+                    centerDragOriginStroke = document.stroke(with: strokeID)
                 }
+                guard let origin = centerDragOriginStroke else { return }
                 let rawDelta = documentDelta(from: value.translation)
-                let delta = translationSnappedDelta(
+                let locked = axisLockedTranslationDelta(
+                    rawDelta: rawDelta,
+                    viewTranslation: value.translation
+                )
+                var delta = translationSnappedDelta(
                     origins: centerDragSnapOrigins,
                     centerOrigins: centerDragSnapCenter.map { [$0] } ?? [],
-                    rawDelta: rawDelta,
+                    rawDelta: locked,
                     excluding: [strokeID]
                 )
-                let moved = centerDragOriginPoints.map {
-                    CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
-                }
-                document.setStrokePoints(id: strokeID, points: moved, recordUndo: false)
+                delta = MoveAxisLock.constrainedDelta(delta, axis: moveTranslationAxis)
+                document.updateStroke(origin.offsettingGeometry(by: delta), recordUndo: false)
                 onChanged()
             }
             .onEnded { _ in
                 let didEdit = !centerDragOriginPoints.isEmpty
                 centerDragOriginPoints = []
+                centerDragOriginStroke = nil
                 centerDragSnapOrigins = []
                 centerDragSnapCenter = nil
                 clearMoveSnap()
+                resetMoveAxisLock()
                 guard didEdit else { return }
                 document.reconcileIntersectionAnchors(around: [strokeID])
                 onChanged()
@@ -1557,7 +1640,11 @@ struct CanvasOverlayView: View {
                 },
                 onMoveChanged: { value in
                     guard let origin = textMoveOrigin else { return }
-                    let delta = documentDelta(from: value.translation)
+                    let raw = documentDelta(from: value.translation)
+                    let delta = axisLockedTranslationDelta(
+                        rawDelta: raw,
+                        viewTranslation: value.translation
+                    )
                     document.setTextPosition(
                         id: id,
                         position: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y),
@@ -1567,6 +1654,7 @@ struct CanvasOverlayView: View {
                 },
                 onMoveEnded: {
                     textMoveOrigin = nil
+                    resetMoveAxisLock()
                     onChanged()
                 }
             )
@@ -1618,7 +1706,11 @@ struct CanvasOverlayView: View {
                 },
                 onMoveChanged: { value in
                     guard let origin = imageMoveOrigin else { return }
-                    let delta = documentDelta(from: value.translation)
+                    let raw = documentDelta(from: value.translation)
+                    let delta = axisLockedTranslationDelta(
+                        rawDelta: raw,
+                        viewTranslation: value.translation
+                    )
                     document.setReferenceImageFrame(
                         origin.offsetBy(dx: delta.x, dy: delta.y),
                         recordUndo: false
@@ -1627,6 +1719,7 @@ struct CanvasOverlayView: View {
                 },
                 onMoveEnded: {
                     imageMoveOrigin = nil
+                    resetMoveAxisLock()
                     onChanged()
                 }
             )
@@ -1668,47 +1761,29 @@ struct CanvasOverlayView: View {
                     guard let frame = document.resolvedReferenceImageFrame else { return }
                     imageScaleOrigin = frame
                     imageScaleOriginCenter = CGPoint(x: frame.midX, y: frame.midY)
-                    let corners = [
-                        CGPoint(x: frame.minX, y: frame.minY),
-                        CGPoint(x: frame.maxX, y: frame.minY),
-                        CGPoint(x: frame.maxX, y: frame.maxY),
-                        CGPoint(x: frame.minX, y: frame.maxY)
-                    ]
-                    let corner = corners[cornerIndex]
+                    let corner = CanvasOverlayGeometry.cornerHandles(of: frame)[cornerIndex]
                     imageScaleOriginCorner = corner
-                    imageScaleOriginCornerDist = max(
-                        hypot(corner.x - frame.midX, corner.y - frame.midY),
-                        0.001
+                    imageScaleOriginCornerDist = CanvasOverlayGeometry.cornerDistance(
+                        from: imageScaleOriginCenter,
+                        to: corner
                     )
                     document.beginInteractiveEdit()
                 }
                 guard let origin = imageScaleOrigin else { return }
                 let center = imageScaleOriginCenter
-                let dragPoint = document.viewport.viewToDocument(value.location)
-                let corner = imageScaleOriginCorner
-                let sx: CGFloat
-                let sy: CGFloat
-                if document.scaleUniform {
-                    let newDist = hypot(dragPoint.x - center.x, dragPoint.y - center.y)
-                    let factor = newDist / imageScaleOriginCornerDist
-                    sx = factor
-                    sy = factor
-                } else {
-                    sx = abs(corner.x - center.x) > 0.001
-                        ? (dragPoint.x - center.x) / (corner.x - center.x)
-                        : 1
-                    sy = abs(corner.y - center.y) > 0.001
-                        ? (dragPoint.y - center.y) / (corner.y - center.y)
-                        : 1
-                }
-                let width = abs(origin.width * sx)
-                let height = abs(origin.height * sy)
+                let factors = CanvasOverlayGeometry.scaleFactors(
+                    center: center,
+                    corner: imageScaleOriginCorner,
+                    dragPoint: document.viewport.viewToDocument(value.location),
+                    uniform: document.scaleUniform,
+                    originCornerDistance: imageScaleOriginCornerDist
+                )
                 document.setReferenceImageFrame(
-                    CGRect(
-                        x: center.x - width / 2,
-                        y: center.y - height / 2,
-                        width: width,
-                        height: height
+                    CanvasOverlayGeometry.scaledFrame(
+                        origin: origin,
+                        center: center,
+                        x: factors.x,
+                        y: factors.y
                     ),
                     recordUndo: false
                 )
@@ -1760,21 +1835,19 @@ struct CanvasOverlayView: View {
                     guard let element = document.textElement(with: id) else { return }
                     textScaleOrigin = element
                     textScaleOriginCenter = element.center
-                    let corner = element.corners()[cornerIndex]
-                    textScaleOriginDist = max(
-                        hypot(corner.x - element.center.x, corner.y - element.center.y),
-                        0.001
+                    textScaleOriginDist = CanvasOverlayGeometry.cornerDistance(
+                        from: element.center,
+                        to: element.corners()[cornerIndex]
                     )
                     document.beginInteractiveEdit()
                 }
                 guard let origin = textScaleOrigin else { return }
-                let dragPoint = document.viewport.viewToDocument(value.location)
-                let newDist = hypot(
-                    dragPoint.x - textScaleOriginCenter.x,
-                    dragPoint.y - textScaleOriginCenter.y
+                let newSize = CanvasOverlayGeometry.scaledFontSize(
+                    origin: origin.fontSize,
+                    center: textScaleOriginCenter,
+                    dragPoint: document.viewport.viewToDocument(value.location),
+                    originDistance: textScaleOriginDist
                 )
-                let factor = newDist / textScaleOriginDist
-                let newSize = max(4, origin.fontSize * factor)
                 var updated = origin
                 updated.fontSize = newSize
                 let size = updated.textSize()

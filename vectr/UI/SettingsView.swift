@@ -9,6 +9,8 @@ struct SettingsView: View {
     @Bindable var document: VectrDocument
     @Binding var fileName: String
     var onFileNameChanged: () -> Void
+    var onImport: () -> Void
+    var onExport: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var editingName = ""
@@ -31,6 +33,22 @@ struct SettingsView: View {
                             .textInputAutocapitalization(.words)
                             .autocorrectionDisabled()
                             .padding(12)
+                    }
+
+                    settingsCard("File") {
+                        Button(action: importProject) {
+                            Label("Import", systemImage: "square.and.arrow.down")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .settingsInset()
+                        rowDivider
+                        Button(action: exportProject) {
+                            Label("Export", systemImage: "square.and.arrow.up")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .settingsInset()
                     }
 
                     settingsCard("Units") {
@@ -180,6 +198,16 @@ struct SettingsView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .settingsInset()
+    }
+
+    private func importProject() {
+        commitProjectName()
+        onImport()
+    }
+
+    private func exportProject() {
+        commitProjectName()
+        onExport()
     }
 
     private func commitProjectName() {

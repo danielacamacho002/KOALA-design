@@ -77,7 +77,7 @@ struct TextToolPanelView: View {
 
             strokeWeightRow
         }
-        .toolPanelChrome(width: 264)
+        .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
         .onAppear {
             text = document.textElement(with: elementID)?.text ?? ""
             DispatchQueue.main.async { focused = true }

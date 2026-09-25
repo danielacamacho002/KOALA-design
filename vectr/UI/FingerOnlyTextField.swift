@@ -34,6 +34,7 @@ struct FingerOnlyTextField: UIViewRepresentable {
     var textAlignment: NSTextAlignment = .natural
     var onSubmit: (() -> Void)?
     var onEditingEnded: (() -> Void)?
+    var onEditingChanged: ((Bool) -> Void)? = nil
 
     func makeUIView(context: Context) -> UITextField {
         let field = FingerOnlyUITextField()
@@ -63,25 +64,42 @@ struct FingerOnlyTextField: UIViewRepresentable {
         uiView.layer.cornerRadius = cornerRadius
         context.coordinator.onSubmit = onSubmit
         context.coordinator.onEditingEnded = onEditingEnded
+        context.coordinator.onEditingChanged = onEditingChanged
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, onSubmit: onSubmit, onEditingEnded: onEditingEnded)
+        Coordinator(
+            text: $text,
+            onSubmit: onSubmit,
+            onEditingEnded: onEditingEnded,
+            onEditingChanged: onEditingChanged
+        )
     }
 
     final class Coordinator: NSObject, UITextFieldDelegate {
         @Binding var text: String
         var onSubmit: (() -> Void)?
         var onEditingEnded: (() -> Void)?
+        var onEditingChanged: ((Bool) -> Void)?
 
-        init(text: Binding<String>, onSubmit: (() -> Void)?, onEditingEnded: (() -> Void)?) {
+        init(
+            text: Binding<String>,
+            onSubmit: (() -> Void)?,
+            onEditingEnded: (() -> Void)?,
+            onEditingChanged: ((Bool) -> Void)?
+        ) {
             _text = text
             self.onSubmit = onSubmit
             self.onEditingEnded = onEditingEnded
+            self.onEditingChanged = onEditingChanged
         }
 
         @objc func textChanged(_ sender: UITextField) {
             text = sender.text ?? ""
+        }
+
+        func textFieldDidBeginEditing(_ textField: UITextField) {
+            onEditingChanged?(true)
         }
 
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {
@@ -91,6 +109,7 @@ struct FingerOnlyTextField: UIViewRepresentable {
         }
 
         func textFieldDidEndEditing(_ textField: UITextField) {
+            onEditingChanged?(false)
             onEditingEnded?()
         }
     }
