@@ -541,9 +541,8 @@ struct MoveRotatePanelView: View {
     private var arrangeSection: some View {
         ToolPanelJoinedActions(rows: [
             .init([
-                .init(title: "Duplicate") {
-                    let offset = max(document.grid.spacing, 1)
-                    document.duplicateSelectedElements(offset: CGPoint(x: offset, y: offset))
+                .init(title: "Mirror") {
+                    document.mirrorSelectedElements()
                     onApply()
                 },
                 .init(title: "Delete") {

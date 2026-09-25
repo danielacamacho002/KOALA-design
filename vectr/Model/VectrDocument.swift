@@ -2105,26 +2105,27 @@ final class VectrDocument {
         !clipboard.isEmpty && activeLayer?.isLocked != true
     }
 
-    /// Pastes clipboard contents onto the active layer at the original document position.
-    /// Returns the number of items created, or 0 when paste is not possible.
+    /// Pastes clipboard contents onto the active layer, one grid step down and to
+    /// the right of the copied position. Returns the number of items created, or 0
+    /// when paste is not possible.
     @discardableResult
     func pasteClipboardToActiveLayer() -> Int {
         guard canPasteClipboard else { return 0 }
         pushUndo()
 
+        let step = max(grid.spacing, 1)
+        let offset = CGPoint(x: step, y: step)
         var strokeIDMap: [UUID: UUID] = [:]
         var textIDMap: [UUID: UUID] = [:]
         var newStrokeIDs: Set<UUID> = []
         var newTextIDs: Set<UUID> = []
 
         for stroke in clipboard.strokes {
-            var copy = stroke
-            let newID = UUID()
-            strokeIDMap[stroke.id] = newID
-            copy.id = newID
+            var copy = stroke.duplicated(offset: offset)
+            strokeIDMap[stroke.id] = copy.id
             copy.layerID = activeLayerID
             strokes.append(ShapeGeometry.captureRotationBaseIfNeeded(copy))
-            newStrokeIDs.insert(newID)
+            newStrokeIDs.insert(copy.id)
         }
         for text in clipboard.textElements {
             var copy = text
@@ -2132,6 +2133,7 @@ final class VectrDocument {
             textIDMap[text.id] = newID
             copy.id = newID
             copy.layerID = activeLayerID
+            copy.position = CGPoint(x: copy.position.x + offset.x, y: copy.position.y + offset.y)
             textElements.append(copy)
             newTextIDs.insert(newID)
         }
@@ -2147,7 +2149,8 @@ final class VectrDocument {
         return clipboard.itemCount
     }
 
-    /// Duplicates the selection, offsetting the copies and selecting them.
+    /// Duplicates the selection and selects the copies.
+    /// `offset` is `.zero` for an in-place duplicate; Mirror passes the reflection shift.
     /// Copies geometry and modifiers as-is (fillets, holes, curve handles, rotation).
     func duplicateSelectedElements(offset: CGPoint) {
         expandSelectionToGroupsIfNeeded()
@@ -2192,6 +2195,21 @@ final class VectrDocument {
 
         geometryRevision += 1
         setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs)
+    }
+
+    /// Reflects a copy of the selection across one edge of its bounding box and
+    /// selects the copy. Horizontal mirrors across the right edge; vertical across
+    /// the bottom. The original stays put. One undo step covers the whole copy.
+    func mirrorSelectedElements(horizontal: Bool = true) {
+        expandSelectionToGroupsIfNeeded()
+        guard let bbox = selectionBoundingBox() else { return }
+        let span = horizontal ? bbox.width : bbox.height
+        guard span > 1e-4 else { return }
+        let offset = horizontal
+            ? CGPoint(x: span, y: 0)
+            : CGPoint(x: 0, y: span)
+        duplicateSelectedElements(offset: offset)
+        flipSelection(horizontal: horizontal, recordUndo: false)
     }
 
     /// Copies document-level per-stroke data (print placement, dimension pins) onto a clone.
@@ -2247,10 +2265,10 @@ final class VectrDocument {
     }
 
     /// Mirrors the selection about its combined bounding-box center.
-    func flipSelection(horizontal: Bool) {
+    func flipSelection(horizontal: Bool, recordUndo: Bool = true) {
         expandSelectionToGroupsIfNeeded()
         guard let bbox = selectionBoundingBox() else { return }
-        pushUndo()
+        if recordUndo { pushUndo() }
         let cx = bbox.midX
         let cy = bbox.midY
         func flip(_ point: CGPoint) -> CGPoint {
