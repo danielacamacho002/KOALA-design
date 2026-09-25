@@ -136,12 +136,13 @@ struct EditorView: View {
                 }
             )
         }
-        .fileImporter(
-            isPresented: $showImportPicker,
-            allowedContentTypes: ImportRouter.supportedTypes,
-            allowsMultipleSelection: false
-        ) { result in
-            handleImport(result)
+        .background {
+            DocumentImportSheet(
+                isPresented: $showImportPicker,
+                contentTypes: ImportRouter.supportedTypes
+            ) { url in
+                handleImport(.success([url]))
+            }
         }
         .sheet(isPresented: $showExportSheet, onDismiss: {
             guard pendingShareAfterDismiss else { return }

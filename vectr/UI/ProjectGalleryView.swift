@@ -82,12 +82,13 @@ struct ProjectGalleryView: View {
         .background(toolbarColor.ignoresSafeArea())
         .preferredColorScheme(navigationPath.isEmpty ? .dark : nil)
         .task { await library.refresh() }
-        .fileImporter(
-            isPresented: $showImportPicker,
-            allowedContentTypes: ImportRouter.supportedTypes,
-            allowsMultipleSelection: false
-        ) { result in
-            handleImport(result)
+        .background {
+            DocumentImportSheet(
+                isPresented: $showImportPicker,
+                contentTypes: ImportRouter.supportedTypes
+            ) { url in
+                handleImport(.success([url]))
+            }
         }
         .sheet(isPresented: $showNewCanvasSheet) {
             CanvasSizeSheet { size, units in
