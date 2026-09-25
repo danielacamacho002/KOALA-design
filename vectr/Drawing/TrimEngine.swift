@@ -45,6 +45,12 @@ enum TrimEngine {
         strokes: [VectorStroke],
         preferredStrokeID: UUID? = nil
     ) -> TrimResult? {
+        // A live fillet is a modifier over sharp corner points, and `renderPoints` does not
+        // round them. Trimming that raw contour would cut between the sharp corners and hand
+        // back a leftover with no fillet fields, so the whole shape loses its rounding.
+        // Baking turns every fillet into anchors plus smooth arc midpoints first.
+        let strokes = strokes.map { AnchorPointEngine.bakedFilletStroke(for: $0) ?? $0 }
+
         guard let match = nearestContour(
             to: tapPoint,
             threshold: threshold,
@@ -154,13 +160,25 @@ enum TrimEngine {
         let keepAsArc = target.shapeType == .arc
             && kept.count >= 3
             && keptPointsLieOnCircle(kept, target: target)
+        if keepAsArc {
+            let draft = openStroke(from: target, points: collapsedArcAnchors(kept), shapeType: .arc)
+            return TrimResult(
+                stroke: ShapeGeometry.withCompactedCircularAnchors(draft),
+                strokeID: target.id,
+                additionalStroke: nil,
+                removedSegment: removed
+            )
+        }
+
+        let collapsed = recollapsedSmoothRuns(kept, target: target)
         let draft = openStroke(
             from: target,
-            points: keepAsArc ? collapsedArcAnchors(kept) : kept,
-            shapeType: keepAsArc ? .arc : .polyline
+            points: collapsed.points,
+            shapeType: .polyline,
+            smoothCornerIndices: collapsed.smooth
         )
         return TrimResult(
-            stroke: ShapeGeometry.withCompactedCircularAnchors(draft),
+            stroke: compactedLeftover(draft),
             strokeID: target.id,
             additionalStroke: nil,
             removedSegment: removed
@@ -291,16 +309,8 @@ enum TrimEngine {
 
         if leftValid, rightValid {
             // Keep both pieces when a middle span is removed.
-            let primary = openStroke(
-                from: target,
-                points: refinedOpenPoints(left, target: target),
-                shapeType: demotedShapeType(target)
-            )
-            var secondary = openStroke(
-                from: target,
-                points: refinedOpenPoints(right, target: target),
-                shapeType: demotedShapeType(target)
-            )
+            let primary = openPiece(left, of: target)
+            var secondary = openPiece(right, of: target)
             secondary.id = UUID()
             return TrimResult(
                 stroke: primary,
@@ -310,16 +320,23 @@ enum TrimEngine {
             )
         }
 
-        let kept = leftValid ? left : right
         return TrimResult(
-            stroke: openStroke(
-                from: target,
-                points: refinedOpenPoints(kept, target: target),
-                shapeType: demotedShapeType(target)
-            ),
+            stroke: openPiece(leftValid ? left : right, of: target),
             strokeID: target.id,
             additionalStroke: nil,
             removedSegment: removed
+        )
+    }
+
+    /// One surviving piece of an open trim, with any baked fillet arcs it kept put back
+    /// as anchors.
+    private static func openPiece(_ points: [CGPoint], of target: VectorStroke) -> VectorStroke {
+        let collapsed = recollapsedSmoothRuns(refinedOpenPoints(points, target: target), target: target)
+        return openStroke(
+            from: target,
+            points: collapsed.points,
+            shapeType: demotedShapeType(target),
+            smoothCornerIndices: collapsed.smooth
         )
     }
 
@@ -443,6 +460,17 @@ enum TrimEngine {
             }
         }
 
+        // Each baked fillet arc is its own span, bounded by the tangent anchors where it
+        // meets the straight edges. Those tangents are not corners — the arc is tessellated
+        // below the corner threshold — so without them a fully filleted shape offers no cut
+        // points at all and nothing can be trimmed.
+        for tangent in smoothRunBoundaryPoints(of: target) {
+            if let hit = projectOntoContour(tangent, points: renderPoints, closed: closed),
+               hit.radialDistance <= 0.5 {
+                cuts.append(Cut(distance: hit.distance, point: tangent))
+            }
+        }
+
         // A closed arc's start and end are always cut points, so the implied
         // closing chord can be removed even when nothing else intersects it.
         if closed, target.shapeType == .arc, renderPoints.count >= 2 {
@@ -502,6 +530,103 @@ enum TrimEngine {
         }
 
         return dedupeCuts(cuts, totalLength: totalLength, closed: closed)
+    }
+
+    /// A kept span is flattened: `renderPoints` tessellates every baked fillet arc it runs
+    /// through. Each arc the trim did not cut survives whole (its tangent anchors are the
+    /// cut points), so those samples go back to the anchors the stroke stores, with the
+    /// midpoint tagged smooth again. Leaving the tessellation in place instead would make
+    /// the circular compactor fit one wide arc across the straight edges between fillets.
+    private static func recollapsedSmoothRuns(
+        _ points: [CGPoint],
+        target: VectorStroke
+    ) -> (points: [CGPoint], smooth: Set<Int>) {
+        guard let smooth = target.smoothCornerIndices, !smooth.isEmpty else { return (points, []) }
+        let anchors = target.points
+        let count = anchors.count
+        guard count >= 3, points.count >= 2 else { return (points, []) }
+
+        func index(of point: CGPoint, from start: Int) -> Int? {
+            points[start...].firstIndex { hypot($0.x - point.x, $0.y - point.y) <= 0.01 }
+        }
+
+        // Each run's stored chain runs tangent → midpoints → tangent.
+        var candidates: [(start: Int, end: Int, chain: [CGPoint])] = []
+        for run in ShapeGeometry.consecutiveSmoothRuns(
+            count: count,
+            smooth: smooth,
+            closed: target.isClosed
+        ) {
+            guard let first = run.first, let last = run.last, run.count < count else { continue }
+            let chain = [anchors[(first - 1 + count) % count]]
+                + run.map { anchors[$0] }
+                + [anchors[(last + 1) % count]]
+            guard let start = index(of: chain[0], from: 0),
+                  let end = index(of: chain[chain.count - 1], from: start + 1),
+                  end - start >= chain.count - 1 else { continue }
+            candidates.append((start, end, chain))
+        }
+
+        var chainsBySpanStart: [Int: (end: Int, chain: [CGPoint])] = [:]
+        var consumedThrough = -1
+        for candidate in candidates.sorted(by: { $0.start < $1.start }) where candidate.start > consumedThrough {
+            chainsBySpanStart[candidate.start] = (candidate.end, candidate.chain)
+            consumedThrough = candidate.end
+        }
+        guard !chainsBySpanStart.isEmpty else { return (points, []) }
+
+        var collapsed: [CGPoint] = []
+        var collapsedSmooth: Set<Int> = []
+        var cursor = 0
+        while cursor < points.count {
+            guard let replacement = chainsBySpanStart[cursor] else {
+                collapsed.append(points[cursor])
+                cursor += 1
+                continue
+            }
+            for (offset, point) in replacement.chain.enumerated() {
+                if offset > 0, offset < replacement.chain.count - 1 {
+                    collapsedSmooth.insert(collapsed.count)
+                }
+                collapsed.append(point)
+            }
+            cursor = replacement.end + 1
+        }
+
+        // A midpoint at either end has lost the anchor its arc sweeps from, so it is a
+        // plain vertex now.
+        collapsedSmooth.remove(0)
+        collapsedSmooth.remove(collapsed.count - 1)
+        return (collapsed, collapsedSmooth)
+    }
+
+    /// Trim leftovers are re-flattened by the circular compactor so quadrant cuts stay
+    /// curved. Skip it once fillet arcs are back as anchors: run detection across that
+    /// mix of anchors and tessellation fits one wide arc over the straight edges.
+    private static func compactedLeftover(_ stroke: VectorStroke) -> VectorStroke {
+        stroke.hasBakedSmoothCorners ? stroke : ShapeGeometry.withCompactedCircularAnchors(stroke)
+    }
+
+    /// Anchors flanking each baked smooth run: the tangent points where a fillet arc
+    /// hands off to the straight geometry on either side.
+    private static func smoothRunBoundaryPoints(of stroke: VectorStroke) -> [CGPoint] {
+        guard let smooth = stroke.smoothCornerIndices, !smooth.isEmpty else { return [] }
+        let points = stroke.points
+        let count = points.count
+        guard count >= 3 else { return [] }
+
+        let runs = ShapeGeometry.consecutiveSmoothRuns(
+            count: count,
+            smooth: smooth,
+            closed: stroke.isClosed
+        )
+        var boundaries: [CGPoint] = []
+        for run in runs {
+            guard let first = run.first, let last = run.last, run.count < count else { continue }
+            boundaries.append(points[(first - 1 + count) % count])
+            boundaries.append(points[(last + 1) % count])
+        }
+        return boundaries
     }
 
     /// True when the vertex is a real corner: the incoming and outgoing edges change
@@ -818,7 +943,8 @@ enum TrimEngine {
     private static func openStroke(
         from target: VectorStroke,
         points: [CGPoint],
-        shapeType: StrokeShapeType
+        shapeType: StrokeShapeType,
+        smoothCornerIndices: Set<Int> = []
     ) -> VectorStroke {
         VectorStroke(
             id: target.id,
@@ -829,7 +955,7 @@ enum TrimEngine {
             isClosed: false,
             cornerRadius: 0,
             cornerRadiiByIndex: nil,
-            smoothCornerIndices: nil,
+            smoothCornerIndices: smoothCornerIndices.isEmpty ? nil : smoothCornerIndices,
             isConstruction: false,
             shapeType: shapeType,
             shapeRotation: nil,

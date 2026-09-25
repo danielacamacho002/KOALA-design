@@ -53,7 +53,7 @@ nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
     var curveHandles: [CurveHandle]? = nil
     /// Fill opacity (0...1) for closed shapes. `nil` falls back to `defaultFillOpacity`.
     var fillOpacity: CGFloat? = nil
-    /// Optional fill color for imported artwork. `nil` keeps the default gray plane fill.
+    /// Fill color for closed shapes. `nil` keeps the default gray plane fill.
     var fillColor: CodableColor? = nil
     /// Fill rule for compound contours (`cutoutPoints`). `nil` uses even-odd when
     /// holes exist (native boolean cuts) and nonzero otherwise.
@@ -66,11 +66,14 @@ nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
     /// Default plane fill opacity for closed shapes that have never been customized.
     static let defaultFillOpacity: CGFloat = 0.25
 
+    /// Startup pen width: 0.0278 in, thick enough to read against the default inch grid.
+    static let defaultStrokeWidth: CGFloat = UnitConversion.documentPoints(from: 0.0278, unit: .inches)
+
     init(
         id: UUID = UUID(),
         layerID: UUID,
         points: [CGPoint] = [],
-        strokeWidth: CGFloat = 1.5,
+        strokeWidth: CGFloat = VectorStroke.defaultStrokeWidth,
         strokeColor: CodableColor = CodableColor(.primary),
         isClosed: Bool = false,
         cornerRadius: CGFloat = 0,

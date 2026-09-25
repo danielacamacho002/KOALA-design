@@ -20,7 +20,7 @@ struct FontPickerView: View {
     @State private var strokeText = ""
     @State private var showColorPicker = false
 
-    private let panelWidth: CGFloat = 150
+    private let panelWidth = ToolPanelMetrics.commandWidth
     private static let strokeStepPoints: CGFloat = 0.5
     private static let strokeRange: ClosedRange<CGFloat> = 0.5...48
 

@@ -17,10 +17,7 @@ struct ToolCommandPanelView: View {
     var onCancel: () -> Void
     var onVariantChanged: () -> Void
 
-    private let panelWidth: CGFloat = 150
-    /// Compact width for point entry. Sized for `12.5, 8.0` / `d100` without
-    /// stretching across the panel; 12pt mono matches the thickness field.
-    private static let pointInputWidth: CGFloat = 100
+    private let panelWidth = ToolPanelMetrics.commandWidth
     /// Thickness step in document points so behavior matches the select/move panel.
     private static let thicknessStepPoints: CGFloat = 0.5
 
@@ -50,7 +47,7 @@ struct ToolCommandPanelView: View {
                         onSubmit: submitInput
                     )
                     .padding(.horizontal, 6)
-                    .frame(width: Self.pointInputWidth, height: 28, alignment: .leading)
+                    .frame(width: ToolPanelMetrics.pointFieldWidth, height: 28, alignment: .leading)
                     .background(Color.toolPanelButtonFill)
 
                     if let error = session.lastError {
@@ -87,7 +84,7 @@ struct ToolCommandPanelView: View {
     }
 
     private var panelHeader: some View {
-        ToolPanelHeader(session.toolTitle)
+        ToolPanelSectionLabel(session.toolTitle)
     }
 
     // MARK: - Tool variant
@@ -101,6 +98,9 @@ struct ToolCommandPanelView: View {
                 selectedIndex: selectedVariantIndex,
                 action: applyVariant
             )
+            // Chrome pads the panel by 8; pull the variant bar out so it
+            // sits 2pt from both edges.
+            .padding(.horizontal, -6)
         }
     }
 

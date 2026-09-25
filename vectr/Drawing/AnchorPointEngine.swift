@@ -61,6 +61,13 @@ enum AnchorPointEngine {
         )
     }
 
+    /// Distance to the outline as drawn. A live fillet is a modifier over sharp corner
+    /// points, so the stroke's own `distance(to:)` measures the corner the arc cut off
+    /// rather than the rounded edge on screen.
+    static func roundedOutlineDistance(from stroke: VectorStroke, to point: CGPoint) -> CGFloat {
+        (bakedFilletStroke(for: stroke) ?? stroke).distance(to: point)
+    }
+
     static func anchorCount(for stroke: VectorStroke) -> Int {
         dedupedHandlePoints(for: stroke).count
     }

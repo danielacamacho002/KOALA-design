@@ -24,8 +24,11 @@ final class VectrDocument {
     var grid: GridSettings
     var settings: DocumentSettings = DocumentSettings()
 
-    var strokeWidth: CGFloat = 1.5
+    var strokeWidth: CGFloat = VectorStroke.defaultStrokeWidth
     var strokeColor: CodableColor = CodableColor(.primary)
+    /// Session-only. While Move is dragging a selection, motion locks to the
+    /// nearer of the X or Y axis after a short threshold. Not persisted.
+    var moveAxisLockEnabled = false
     var selectedStrokeID: UUID? {
         didSet {
             guard !isSyncingSelection else { return }
@@ -78,6 +81,9 @@ final class VectrDocument {
     var selectedFilletCornerIndices: Set<Int> = []
     /// When set, move-tool rotation pivots around this anchor index; nil uses shape center.
     var moveRotationPivotAnchorIndex: Int?
+    /// Degrees the current multi-selection has been rotated since it was selected.
+    /// Session-only; the rotate stepper shows this while the group handle is used.
+    var groupHandleRotationDegrees: Double?
     /// Session clipboard for copying items from one layer and pasting onto another.
     /// Not persisted; switching layers clears selection, so copies live here until paste.
     var clipboard: ElementClipboard = ElementClipboard()
@@ -1304,9 +1310,7 @@ final class VectrDocument {
     func translateStroke(id: UUID, delta: CGPoint, recordUndo: Bool = false) {
         guard let index = strokes.firstIndex(where: { $0.id == id }) else { return }
         if recordUndo { pushUndo() }
-        strokes[index].points = strokes[index].points.map {
-            CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
-        }
+        strokes[index] = strokes[index].offsettingGeometry(by: delta)
         if recordUndo {
             reconcileIntersectionAnchors(around: [id])
         }
@@ -1445,6 +1449,12 @@ final class VectrDocument {
         guard handles.indices.contains(index) else { return false }
         let handle = handles[index]
         let handleDistance = hypot(handle.x - documentPoint.x, handle.y - documentPoint.y)
+        // A filleted corner's anchor sits outside the outline — the arc cut that corner off —
+        // so a tap out there never landed on the shape. Deleting it would drop both edges the
+        // corner joins, which is how a single trim tap used to flatten a rounded rectangle.
+        guard AnchorPointEngine.roundedOutlineDistance(from: stroke, to: handle) <= 0.01 else {
+            return false
+        }
         let droppingRedundant = PolygonBoolean.isRedundantContourVertex(
             handles,
             index: index,
@@ -1492,11 +1502,11 @@ final class VectrDocument {
 
         pushUndo()
         if let index = strokes.firstIndex(where: { $0.id == result.strokeID }) {
-            strokes[index] = ShapeGeometry.withCompactedCircularAnchors(result.stroke)
+            strokes[index] = compactedTrimLeftover(result.stroke)
         }
         var affected: Set<UUID> = [result.stroke.id]
         if let additional = result.additionalStroke {
-            strokes.append(ShapeGeometry.withCompactedCircularAnchors(additional))
+            strokes.append(compactedTrimLeftover(additional))
             affected.insert(additional.id)
         }
         selectedStrokeID = result.stroke.id
@@ -1505,6 +1515,13 @@ final class VectrDocument {
         DonutDetector.reconcile(document: self)
         geometryRevision += 1
         return true
+    }
+
+    /// A leftover whose fillet arcs are already stored as anchors is finished geometry:
+    /// re-running circular run detection over it fits one wide arc across the straight
+    /// edges between two fillets.
+    private func compactedTrimLeftover(_ stroke: VectorStroke) -> VectorStroke {
+        stroke.hasBakedSmoothCorners ? stroke : ShapeGeometry.withCompactedCircularAnchors(stroke)
     }
 
     /// Geometry of the span `trimAt` would remove at the same point. Read-only: no undo,
@@ -1696,6 +1713,7 @@ final class VectrDocument {
         }
         isSyncingSelection = false
         selectedReferenceImageID = nil
+        groupHandleRotationDegrees = nil
         clearAnchorSelection()
         if compactAnchors {
             compactCircularAnchors(for: strokeIDs)
@@ -2686,6 +2704,58 @@ final class VectrDocument {
         return nil
     }
 
+    // MARK: - Fill color editing
+
+    /// Shared fill color of the selected closed shapes. `uniform(nil)` is the default gray plane.
+    enum FillColorSelection: Equatable {
+        case none
+        case uniform(CodableColor?)
+        case mixed
+    }
+
+    func selectedFillColorSummary() -> FillColorSelection {
+        let ids = closedFillableSelectedStrokeIDs()
+        guard !ids.isEmpty else { return .none }
+        var seen: CodableColor??
+        for id in ids {
+            guard let stroke = stroke(with: id) else { continue }
+            if let existing = seen {
+                if existing != stroke.fillColor { return .mixed }
+            } else {
+                seen = .some(stroke.fillColor)
+            }
+        }
+        guard let seen else { return .none }
+        return .uniform(seen)
+    }
+
+    /// Stored fill of the first selected closed shape. `nil` means the default gray plane.
+    func representativeSelectedFillColor() -> CodableColor? {
+        for id in closedFillableSelectedStrokeIDs() {
+            if let stroke = stroke(with: id) { return stroke.fillColor }
+        }
+        return nil
+    }
+
+    /// Sets the fill color on every selected closed shape. Opacity stays on `fillOpacity`.
+    @discardableResult
+    func setSelectedStrokesFillColor(_ color: CodableColor, recordUndo: Bool = true) -> Bool {
+        let ids = closedFillableSelectedStrokeIDs()
+        guard !ids.isEmpty else { return false }
+        let willChange = ids.contains { id in
+            guard let stroke = stroke(with: id) else { return false }
+            return stroke.fillColor != color
+        }
+        guard willChange else { return false }
+        if recordUndo { pushUndo() }
+        for id in ids {
+            guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
+            strokes[index].fillColor = color
+        }
+        geometryRevision += 1
+        return true
+    }
+
     /// Sets the fill opacity (0...1) on every selected closed shape.
     @discardableResult
     func setSelectedStrokesFillOpacity(_ opacity: CGFloat, recordUndo: Bool = true) -> Bool {
@@ -3608,6 +3678,7 @@ final class VectrDocument {
         redoStack.append(currentSnapshot())
         apply(snapshot)
         viewport = preservedViewport
+        groupHandleRotationDegrees = nil
         undoRevision += 1
         geometryRevision += 1
         printLayoutRevision += 1
@@ -3619,6 +3690,7 @@ final class VectrDocument {
         undoStack.append(currentSnapshot())
         apply(snapshot)
         viewport = preservedViewport
+        groupHandleRotationDegrees = nil
         undoRevision += 1
         geometryRevision += 1
         printLayoutRevision += 1

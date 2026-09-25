@@ -10,6 +10,13 @@
 import SwiftUI
 import UIKit
 
+/// Shared size of every floating tool command panel. The move panel is the reference.
+enum ToolPanelMetrics {
+    static let commandWidth: CGFloat = 172
+    /// Compact point/value field, matching the shape panel's start-point box.
+    static let pointFieldWidth: CGFloat = 100
+}
+
 extension Color {
     /// Fill for the non-prominent (secondary) tool panel buttons.
     static let toolPanelButtonFill = Color(hex: "F2F2F7")
@@ -171,6 +178,7 @@ struct ToolPanelNumericStepper: View {
     var onMinus: () -> Void
     var onPlus: () -> Void
     var onSubmit: () -> Void
+    var onEditingChanged: ((Bool) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 0) {
@@ -197,7 +205,8 @@ struct ToolPanelNumericStepper: View {
                                 backgroundColor: .clear,
                                 textAlignment: .center,
                                 onSubmit: onSubmit,
-                                onEditingEnded: onSubmit
+                                onEditingEnded: onSubmit,
+                                onEditingChanged: onEditingChanged
                             )
                         }
 
@@ -258,6 +267,64 @@ struct ToolPanelMenuButton: View {
             .background(isExpanded ? Color.accentColor : Color.toolPanelButtonFill)
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Action buttons in one filled block, split by hairlines instead of gaps.
+struct ToolPanelJoinedActions: View {
+    struct Row {
+        let buttons: [Item]
+
+        init(_ buttons: [Item]) {
+            self.buttons = buttons
+        }
+    }
+
+    struct Item {
+        let title: String
+        var prominent: Bool = false
+        let action: () -> Void
+    }
+
+    let rows: [Row]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
+                if rowIndex > 0 {
+                    hairline(horizontal: true)
+                }
+                HStack(spacing: 0) {
+                    ForEach(Array(row.buttons.enumerated()), id: \.offset) { index, button in
+                        if index > 0 {
+                            hairline(horizontal: false)
+                        }
+                        Button(action: button.action) {
+                            Text(button.title)
+                                .font(.system(size: 11, weight: button.prominent ? .semibold : .regular))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                                .foregroundStyle(button.prominent ? Color.black : Color.toolPanelButtonForeground)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 26)
+                                .background(button.prominent ? Color.accentColor : Color.clear)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(button.title)
+                    }
+                }
+                .frame(height: 26)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color.toolPanelButtonFill)
+    }
+
+    private func hairline(horizontal: Bool) -> some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.12))
+            .frame(width: horizontal ? nil : 1, height: horizontal ? 1 : 16)
     }
 }
 

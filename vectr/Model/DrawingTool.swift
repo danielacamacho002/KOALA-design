@@ -52,7 +52,7 @@ nonisolated enum ToolCategory: String, CaseIterable, Codable, Sendable {
         case .line: return "line.diagonal"
         case .circle: return "circle"
         case .rectangle: return "rectangle"
-        case .curve: return "scribble.variable"
+        case .curve: return "point.bottomleft.forward.to.point.topright.scurvepath"
         case .type: return "textformat"
         case .move: return "arrow.up.and.down.and.arrow.left.and.right"
         case .scale: return "arrow.up.left.and.arrow.down.right"
