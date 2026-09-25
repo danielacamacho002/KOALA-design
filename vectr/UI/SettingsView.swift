@@ -9,6 +9,8 @@ struct SettingsView: View {
     @Bindable var document: VectrDocument
     @Binding var fileName: String
     var onFileNameChanged: () -> Void
+    var onImport: () -> Void
+    var onExport: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var editingName = ""
@@ -25,6 +27,15 @@ struct SettingsView: View {
                     TextField("Project name", text: $editingName)
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
+                }
+
+                Section("File") {
+                    Button(action: importProject) {
+                        Label("Import", systemImage: "square.and.arrow.down")
+                    }
+                    Button(action: exportProject) {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
                 }
 
                 Section("Units") {
@@ -146,6 +157,16 @@ struct SettingsView: View {
         case .centimeters: return 0.1
         case .inches: return 0.05
         }
+    }
+
+    private func importProject() {
+        commitProjectName()
+        onImport()
+    }
+
+    private func exportProject() {
+        commitProjectName()
+        onExport()
     }
 
     private func commitProjectName() {
