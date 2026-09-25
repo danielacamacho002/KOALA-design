@@ -117,7 +117,7 @@ struct ScaleToolPanelView: View {
                 }
             }
         }
-        .toolPanelChrome(width: 150)
+        .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
     }
 
     private var selectedIndex: Int {

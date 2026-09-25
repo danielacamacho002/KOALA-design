@@ -10,6 +10,13 @@
 import SwiftUI
 import UIKit
 
+/// Shared size of every floating tool command panel. The move panel is the reference.
+enum ToolPanelMetrics {
+    static let commandWidth: CGFloat = 172
+    /// Compact point/value field, matching the shape panel's start-point box.
+    static let pointFieldWidth: CGFloat = 100
+}
+
 extension Color {
     /// Fill for the non-prominent (secondary) tool panel buttons.
     static let toolPanelButtonFill = Color(hex: "F2F2F7")
@@ -275,6 +282,7 @@ struct ToolPanelJoinedActions: View {
 
     struct Item {
         let title: String
+        var prominent: Bool = false
         let action: () -> Void
     }
 
@@ -293,12 +301,13 @@ struct ToolPanelJoinedActions: View {
                         }
                         Button(action: button.action) {
                             Text(button.title)
-                                .font(.system(size: 11))
+                                .font(.system(size: 11, weight: button.prominent ? .semibold : .regular))
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.7)
-                                .foregroundStyle(Color.toolPanelButtonForeground)
+                                .foregroundStyle(button.prominent ? Color.black : Color.toolPanelButtonForeground)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 26)
+                                .background(button.prominent ? Color.accentColor : Color.clear)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)

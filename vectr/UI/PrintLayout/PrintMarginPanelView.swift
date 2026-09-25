@@ -60,7 +60,7 @@ struct PrintMarginPanelView: View {
                 )
             }
         }
-        .toolPanelChrome(width: 172)
+        .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
         .onAppear { syncThickness() }
         .onChange(of: document.printLayoutRevision) { _, _ in syncThicknessIfIdle() }
     }

@@ -104,7 +104,7 @@ struct MoveRotatePanelView: View {
 
             arrangeSection
         }
-        .toolPanelChrome(width: 172)
+        .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
         .onChange(of: document.selectedStrokeID) { _, _ in
             syncDegreesField()
             syncThicknessText()

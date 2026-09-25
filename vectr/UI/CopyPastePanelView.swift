@@ -52,7 +52,7 @@ struct CopyPastePanelView: View {
                     .foregroundStyle(layer.isLocked ? .red : .secondary)
             }
         }
-        .toolPanelChrome(width: 188)
+        .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
     }
 
     private func copySelection() {
