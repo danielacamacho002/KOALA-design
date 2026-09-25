@@ -1310,9 +1310,7 @@ final class VectrDocument {
     func translateStroke(id: UUID, delta: CGPoint, recordUndo: Bool = false) {
         guard let index = strokes.firstIndex(where: { $0.id == id }) else { return }
         if recordUndo { pushUndo() }
-        strokes[index].points = strokes[index].points.map {
-            CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
-        }
+        strokes[index] = strokes[index].offsettingGeometry(by: delta)
         if recordUndo {
             reconcileIntersectionAnchors(around: [id])
         }
