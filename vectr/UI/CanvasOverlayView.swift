@@ -730,16 +730,10 @@ struct CanvasOverlayView: View {
     }
 
     private func marqueeDocRect(start: CGPoint, current: CGPoint) -> CGRect? {
-        let a = document.viewport.viewToDocument(start)
-        let b = document.viewport.viewToDocument(current)
-        let rect = CGRect(
-            x: min(a.x, b.x),
-            y: min(a.y, b.y),
-            width: abs(a.x - b.x),
-            height: abs(a.y - b.y)
+        CanvasOverlayGeometry.marqueeRect(
+            from: document.viewport.viewToDocument(start),
+            to: document.viewport.viewToDocument(current)
         )
-        guard rect.width > 0.5 || rect.height > 0.5 else { return nil }
-        return rect
     }
 
     @ViewBuilder
@@ -1482,57 +1476,41 @@ struct CanvasOverlayView: View {
                     scaleDragOriginHandles = document.stroke(with: strokeID)?.curveHandles
                     scaleDragOriginCutouts = document.stroke(with: strokeID)?.cutoutPoints ?? []
                     scaleDragOriginCenter = CGPoint(x: bbox.midX, y: bbox.midY)
-                    let corners = [
-                        CGPoint(x: bbox.minX, y: bbox.minY),
-                        CGPoint(x: bbox.maxX, y: bbox.minY),
-                        CGPoint(x: bbox.maxX, y: bbox.maxY),
-                        CGPoint(x: bbox.minX, y: bbox.maxY)
-                    ]
-                    let corner = corners[cornerIndex]
+                    let corner = CanvasOverlayGeometry.cornerHandles(of: bbox)[cornerIndex]
                     scaleDragOriginCorner = corner
-                    scaleDragOriginCornerDist = max(
-                        hypot(corner.x - scaleDragOriginCenter.x, corner.y - scaleDragOriginCenter.y),
-                        0.001
+                    scaleDragOriginCornerDist = CanvasOverlayGeometry.cornerDistance(
+                        from: scaleDragOriginCenter,
+                        to: corner
                     )
                 }
                 guard !scaleDragOriginPoints.isEmpty else { return }
                 let center = scaleDragOriginCenter
-                let dragPoint = document.viewport.viewToDocument(value.location)
-                let corner = scaleDragOriginCorner
-                let sx: CGFloat
-                let sy: CGFloat
-                if document.scaleUniform {
-                    let newDist = hypot(dragPoint.x - center.x, dragPoint.y - center.y)
-                    let factor = newDist / scaleDragOriginCornerDist
-                    sx = factor
-                    sy = factor
-                } else {
-                    sx = abs(corner.x - center.x) > 0.001
-                        ? (dragPoint.x - center.x) / (corner.x - center.x)
-                        : 1
-                    sy = abs(corner.y - center.y) > 0.001
-                        ? (dragPoint.y - center.y) / (corner.y - center.y)
-                        : 1
-                }
-                let scalePoint = { (point: CGPoint) in
-                    CGPoint(
-                        x: center.x + (point.x - center.x) * sx,
-                        y: center.y + (point.y - center.y) * sy
-                    )
-                }
-                let scaled = scaleDragOriginPoints.map(scalePoint)
+                let factors = CanvasOverlayGeometry.scaleFactors(
+                    center: center,
+                    corner: scaleDragOriginCorner,
+                    dragPoint: document.viewport.viewToDocument(value.location),
+                    uniform: document.scaleUniform,
+                    originCornerDistance: scaleDragOriginCornerDist
+                )
+                let scaled = CanvasOverlayGeometry.scaled(
+                    points: scaleDragOriginPoints,
+                    about: center,
+                    x: factors.x,
+                    y: factors.y
+                )
                 if scaleDragOriginHandles != nil || !scaleDragOriginCutouts.isEmpty,
                    var stroke = document.stroke(with: strokeID) {
                     stroke.points = scaled
                     if let originHandles = scaleDragOriginHandles {
-                        stroke.curveHandles = originHandles.map { handle in
-                            CurveHandle(
-                                inOffset: CGPoint(x: handle.inOffset.x * sx, y: handle.inOffset.y * sy),
-                                outOffset: CGPoint(x: handle.outOffset.x * sx, y: handle.outOffset.y * sy)
-                            )
-                        }
+                        stroke.curveHandles = CanvasOverlayGeometry.scaled(
+                            handles: originHandles,
+                            x: factors.x,
+                            y: factors.y
+                        )
                     }
-                    stroke.cutoutPoints = scaleDragOriginCutouts.map { $0.map(scalePoint) }
+                    stroke.cutoutPoints = scaleDragOriginCutouts.map {
+                        CanvasOverlayGeometry.scaled(points: $0, about: center, x: factors.x, y: factors.y)
+                    }
                     document.updateStroke(stroke, recordUndo: false)
                 } else {
                     document.setStrokePoints(id: strokeID, points: scaled, recordUndo: false)
@@ -1783,47 +1761,29 @@ struct CanvasOverlayView: View {
                     guard let frame = document.resolvedReferenceImageFrame else { return }
                     imageScaleOrigin = frame
                     imageScaleOriginCenter = CGPoint(x: frame.midX, y: frame.midY)
-                    let corners = [
-                        CGPoint(x: frame.minX, y: frame.minY),
-                        CGPoint(x: frame.maxX, y: frame.minY),
-                        CGPoint(x: frame.maxX, y: frame.maxY),
-                        CGPoint(x: frame.minX, y: frame.maxY)
-                    ]
-                    let corner = corners[cornerIndex]
+                    let corner = CanvasOverlayGeometry.cornerHandles(of: frame)[cornerIndex]
                     imageScaleOriginCorner = corner
-                    imageScaleOriginCornerDist = max(
-                        hypot(corner.x - frame.midX, corner.y - frame.midY),
-                        0.001
+                    imageScaleOriginCornerDist = CanvasOverlayGeometry.cornerDistance(
+                        from: imageScaleOriginCenter,
+                        to: corner
                     )
                     document.beginInteractiveEdit()
                 }
                 guard let origin = imageScaleOrigin else { return }
                 let center = imageScaleOriginCenter
-                let dragPoint = document.viewport.viewToDocument(value.location)
-                let corner = imageScaleOriginCorner
-                let sx: CGFloat
-                let sy: CGFloat
-                if document.scaleUniform {
-                    let newDist = hypot(dragPoint.x - center.x, dragPoint.y - center.y)
-                    let factor = newDist / imageScaleOriginCornerDist
-                    sx = factor
-                    sy = factor
-                } else {
-                    sx = abs(corner.x - center.x) > 0.001
-                        ? (dragPoint.x - center.x) / (corner.x - center.x)
-                        : 1
-                    sy = abs(corner.y - center.y) > 0.001
-                        ? (dragPoint.y - center.y) / (corner.y - center.y)
-                        : 1
-                }
-                let width = abs(origin.width * sx)
-                let height = abs(origin.height * sy)
+                let factors = CanvasOverlayGeometry.scaleFactors(
+                    center: center,
+                    corner: imageScaleOriginCorner,
+                    dragPoint: document.viewport.viewToDocument(value.location),
+                    uniform: document.scaleUniform,
+                    originCornerDistance: imageScaleOriginCornerDist
+                )
                 document.setReferenceImageFrame(
-                    CGRect(
-                        x: center.x - width / 2,
-                        y: center.y - height / 2,
-                        width: width,
-                        height: height
+                    CanvasOverlayGeometry.scaledFrame(
+                        origin: origin,
+                        center: center,
+                        x: factors.x,
+                        y: factors.y
                     ),
                     recordUndo: false
                 )
@@ -1875,21 +1835,19 @@ struct CanvasOverlayView: View {
                     guard let element = document.textElement(with: id) else { return }
                     textScaleOrigin = element
                     textScaleOriginCenter = element.center
-                    let corner = element.corners()[cornerIndex]
-                    textScaleOriginDist = max(
-                        hypot(corner.x - element.center.x, corner.y - element.center.y),
-                        0.001
+                    textScaleOriginDist = CanvasOverlayGeometry.cornerDistance(
+                        from: element.center,
+                        to: element.corners()[cornerIndex]
                     )
                     document.beginInteractiveEdit()
                 }
                 guard let origin = textScaleOrigin else { return }
-                let dragPoint = document.viewport.viewToDocument(value.location)
-                let newDist = hypot(
-                    dragPoint.x - textScaleOriginCenter.x,
-                    dragPoint.y - textScaleOriginCenter.y
+                let newSize = CanvasOverlayGeometry.scaledFontSize(
+                    origin: origin.fontSize,
+                    center: textScaleOriginCenter,
+                    dragPoint: document.viewport.viewToDocument(value.location),
+                    originDistance: textScaleOriginDist
                 )
-                let factor = newDist / textScaleOriginDist
-                let newSize = max(4, origin.fontSize * factor)
                 var updated = origin
                 updated.fontSize = newSize
                 let size = updated.textSize()
