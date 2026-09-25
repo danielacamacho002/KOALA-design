@@ -81,6 +81,8 @@ struct CanvasOverlayView: View {
     @State private var groupRotateAccumulated: CGFloat = 0
     @State private var groupRotateReadoutBaseline: Double = 0
     @State private var groupRotateActive = false
+    /// Dominant axis chosen for the current whole-object Move drag. Resets on end.
+    @State private var moveTranslationAxis: MoveDragAxis = .free
 
     private let handleSize: CGFloat = 22
     private let centerHandleSize: CGFloat = 16
@@ -93,12 +95,12 @@ struct CanvasOverlayView: View {
     private let anchorDragThreshold: CGFloat = 6
 
     var body: some View {
-        GeometryReader { _ in
+        GeometryReader { geo in
             ZStack {
                 if commandSession.isActive {
                     commandPreviewHandles
                 } else if document.activeCategory == .move || document.activeCategory == nil {
-                    moveToolOverlay
+                    moveToolOverlay(canvasSize: geo.size)
                 } else if document.activeCategory == .scale {
                     emptyToolDismissOverlay
                     if document.selectedTextID != nil {
@@ -376,7 +378,7 @@ struct CanvasOverlayView: View {
     // MARK: - Move tool routing
 
     @ViewBuilder
-    private var moveToolOverlay: some View {
+    private func moveToolOverlay(canvasSize: CGSize) -> some View {
         ZStack {
             if document.usesGroupTransform {
                 multiSelectionMoveOverlay
@@ -393,7 +395,64 @@ struct CanvasOverlayView: View {
             if let rect = marqueeViewRect {
                 marqueeBox(rect)
             }
+
+            if document.moveAxisLockEnabled,
+               moveTranslationAxis != .free,
+               let center = moveAxisGuidelineCenter {
+                moveAxisGuideline(
+                    axis: moveTranslationAxis,
+                    center: document.viewport.documentToView(center),
+                    size: canvasSize
+                )
+            }
         }
+    }
+
+    /// Document-space center used for the dashed axis guideline during a locked move.
+    private var moveAxisGuidelineCenter: CGPoint? {
+        if let bbox = document.selectionBoundingBox(), !bbox.isNull, !bbox.isInfinite {
+            return CGPoint(x: bbox.midX, y: bbox.midY)
+        }
+        if let frame = document.resolvedReferenceImageFrame {
+            return CGPoint(x: frame.midX, y: frame.midY)
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func moveAxisGuideline(axis: MoveDragAxis, center: CGPoint, size: CGSize) -> some View {
+        Path { path in
+            switch axis {
+            case .horizontal:
+                path.move(to: CGPoint(x: 0, y: center.y))
+                path.addLine(to: CGPoint(x: size.width, y: center.y))
+            case .vertical:
+                path.move(to: CGPoint(x: center.x, y: 0))
+                path.addLine(to: CGPoint(x: center.x, y: size.height))
+            case .free:
+                break
+            }
+        }
+        .stroke(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [6, 4]))
+        .allowsHitTesting(false)
+    }
+
+    /// Constrains a whole-object Move delta to X or Y once the drag passes the threshold.
+    /// Anchor reshape, scale, and rotate skip this path.
+    private func axisLockedTranslationDelta(
+        rawDelta: CGPoint,
+        viewTranslation: CGSize
+    ) -> CGPoint {
+        moveTranslationAxis = MoveAxisLock.resolvedAxis(
+            current: moveTranslationAxis,
+            viewTranslation: viewTranslation,
+            enabled: document.moveAxisLockEnabled
+        )
+        return MoveAxisLock.constrainedDelta(rawDelta, axis: moveTranslationAxis)
+    }
+
+    private func resetMoveAxisLock() {
+        moveTranslationAxis = .free
     }
 
     /// Full-canvas catcher for tools whose handles live on this overlay. A tap
@@ -460,7 +519,12 @@ struct CanvasOverlayView: View {
                         },
                         onMoveBegan: { beginGroupMove() },
                         onMoveChanged: { value in
-                            applyGroupMove(delta: documentDelta(from: value.translation))
+                            let raw = documentDelta(from: value.translation)
+                            let locked = axisLockedTranslationDelta(
+                                rawDelta: raw,
+                                viewTranslation: value.translation
+                            )
+                            applyGroupMove(delta: locked)
                         }
                     )
                 },
@@ -538,12 +602,14 @@ struct CanvasOverlayView: View {
 
     private func applyGroupMove(delta rawDelta: CGPoint) {
         // Snap the whole group when any member's anchor/center lands on other geometry.
-        let delta = translationSnappedDelta(
+        var delta = translationSnappedDelta(
             origins: groupMoveSnapOrigins,
             centerOrigins: groupMoveSnapCenters,
             rawDelta: rawDelta,
             excluding: Set(groupMoveStrokeOrigins.keys)
         )
+        // Object snap must not pull the group off the locked axis.
+        delta = MoveAxisLock.constrainedDelta(delta, axis: moveTranslationAxis)
         // Translate each child independently from its captured origin. Overlapping
         // anchors may coincide visually but are never welded or merged.
         for (_, origin) in groupMoveStrokeOrigins {
@@ -565,6 +631,7 @@ struct CanvasOverlayView: View {
         groupMoveSnapOrigins = []
         groupMoveSnapCenters = []
         clearMoveSnap()
+        resetMoveAxisLock()
         // Skip intersection-anchor reconciliation so overlapping vertices inside a
         // group stay independent (no weld/merge of coordinate arrays).
         onChanged()
@@ -1059,13 +1126,26 @@ struct CanvasOverlayView: View {
             snapHaptics.prepare()
         }
         let rawDelta = documentDelta(from: value.translation)
-        let delta = snapAdjustedDelta(
+        let baseDelta: CGPoint
+        if anchorIndex == nil {
+            // Whole-object body drag — axis lock applies. Anchor-handle reshape does not.
+            baseDelta = axisLockedTranslationDelta(
+                rawDelta: rawDelta,
+                viewTranslation: value.translation
+            )
+        } else {
+            baseDelta = rawDelta
+        }
+        var delta = snapAdjustedDelta(
             strokeID: strokeID,
             stroke: stroke,
-            rawDelta: rawDelta,
+            rawDelta: baseDelta,
             anchorIndex: anchorIndex,
             cursorViewPoint: value.location
         )
+        if anchorIndex == nil {
+            delta = MoveAxisLock.constrainedDelta(delta, axis: moveTranslationAxis)
+        }
         applyMove(strokeID: strokeID, stroke: stroke, delta: delta, anchorIndex: anchorIndex)
         onChanged()
     }
@@ -1075,6 +1155,7 @@ struct CanvasOverlayView: View {
         moveDragOriginPoints = []
         moveDragOriginStroke = nil
         clearMoveSnap()
+        resetMoveAxisLock()
         guard didEdit else { return }
         document.reconcileIntersectionAnchors(around: [strokeID])
         onChanged()
@@ -1504,12 +1585,17 @@ struct CanvasOverlayView: View {
                 }
                 guard let origin = centerDragOriginStroke else { return }
                 let rawDelta = documentDelta(from: value.translation)
-                let delta = translationSnappedDelta(
+                let locked = axisLockedTranslationDelta(
+                    rawDelta: rawDelta,
+                    viewTranslation: value.translation
+                )
+                var delta = translationSnappedDelta(
                     origins: centerDragSnapOrigins,
                     centerOrigins: centerDragSnapCenter.map { [$0] } ?? [],
-                    rawDelta: rawDelta,
+                    rawDelta: locked,
                     excluding: [strokeID]
                 )
+                delta = MoveAxisLock.constrainedDelta(delta, axis: moveTranslationAxis)
                 document.updateStroke(origin.offsettingGeometry(by: delta), recordUndo: false)
                 onChanged()
             }
@@ -1520,6 +1606,7 @@ struct CanvasOverlayView: View {
                 centerDragSnapOrigins = []
                 centerDragSnapCenter = nil
                 clearMoveSnap()
+                resetMoveAxisLock()
                 guard didEdit else { return }
                 document.reconcileIntersectionAnchors(around: [strokeID])
                 onChanged()
@@ -1575,7 +1662,11 @@ struct CanvasOverlayView: View {
                 },
                 onMoveChanged: { value in
                     guard let origin = textMoveOrigin else { return }
-                    let delta = documentDelta(from: value.translation)
+                    let raw = documentDelta(from: value.translation)
+                    let delta = axisLockedTranslationDelta(
+                        rawDelta: raw,
+                        viewTranslation: value.translation
+                    )
                     document.setTextPosition(
                         id: id,
                         position: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y),
@@ -1585,6 +1676,7 @@ struct CanvasOverlayView: View {
                 },
                 onMoveEnded: {
                     textMoveOrigin = nil
+                    resetMoveAxisLock()
                     onChanged()
                 }
             )
@@ -1636,7 +1728,11 @@ struct CanvasOverlayView: View {
                 },
                 onMoveChanged: { value in
                     guard let origin = imageMoveOrigin else { return }
-                    let delta = documentDelta(from: value.translation)
+                    let raw = documentDelta(from: value.translation)
+                    let delta = axisLockedTranslationDelta(
+                        rawDelta: raw,
+                        viewTranslation: value.translation
+                    )
                     document.setReferenceImageFrame(
                         origin.offsetBy(dx: delta.x, dy: delta.y),
                         recordUndo: false
@@ -1645,6 +1741,7 @@ struct CanvasOverlayView: View {
                 },
                 onMoveEnded: {
                     imageMoveOrigin = nil
+                    resetMoveAxisLock()
                     onChanged()
                 }
             )

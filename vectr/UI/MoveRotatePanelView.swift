@@ -28,6 +28,7 @@ struct MoveRotatePanelView: View {
     @State private var showTextFillPicker = false
     @State private var showTextStrokePicker = false
     @State private var showColorPicker = false
+    @State private var showFillColorPicker = false
 
     private var selectedStroke: VectorStroke? {
         guard let id = document.selectedStrokeID else { return nil }
@@ -61,6 +62,16 @@ struct MoveRotatePanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            ToolPanelLabelButton(
+                title: document.moveAxisLockEnabled ? "Axis locked" : "Lock to XY axis",
+                prominent: document.moveAxisLockEnabled,
+                fullWidth: true
+            ) {
+                document.moveAxisLockEnabled.toggle()
+            }
+
+            Divider()
+
             rotateSection
 
             if !document.selectedTextIDs.isEmpty {
@@ -77,6 +88,9 @@ struct MoveRotatePanelView: View {
             }
 
             if document.hasClosedFillableSelection {
+                Divider()
+                fillColorSection
+
                 Divider()
                 fillOpacitySection
             }
@@ -381,6 +395,67 @@ struct MoveRotatePanelView: View {
             get: { currentStrokeColor },
             set: { newColor in
                 document.setSelectedStrokesColor(CodableColor(newColor), recordUndo: false)
+                onApply()
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var fillColorSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Fill")
+
+            HStack(spacing: 2) {
+                Rectangle()
+                    .fill(currentFillColor)
+                    .frame(width: 26, height: 26)
+                    .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
+
+                Button {
+                    showFillColorPicker = true
+                } label: {
+                    Image(systemName: "eyedropper")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.blue)
+                        .frame(width: 24, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Fill color")
+                .sheet(isPresented: $showFillColorPicker) {
+                    SystemColorPickerSheet(
+                        color: fillColorBinding,
+                        onBeginEditing: { document.beginInteractiveEdit() }
+                    )
+                }
+
+                if isFillColorMixed {
+                    Text("Mixed")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var currentFillColor: Color {
+        if let color = document.representativeSelectedFillColor() {
+            return color.color
+        }
+        return Color(uiColor: .systemGray)
+    }
+
+    private var isFillColorMixed: Bool {
+        document.selectedFillColorSummary() == .mixed
+    }
+
+    /// Writes the picked color onto selected closed shapes. One undo snapshot is taken
+    /// when the picker opens (`onBeginEditing`); later samples do not record again.
+    private var fillColorBinding: Binding<Color> {
+        Binding(
+            get: { currentFillColor },
+            set: { newColor in
+                document.setSelectedStrokesFillColor(CodableColor(newColor), recordUndo: false)
                 onApply()
             }
         )
