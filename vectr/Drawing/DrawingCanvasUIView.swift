@@ -943,7 +943,10 @@ final class DrawingCanvasUIView: UIView {
             return
         }
 
-        let pointRadius: CGFloat = 4
+        let pointRadius = CanvasOverlayGeometry.anchorScreenLength(
+            base: 4,
+            scale: document.viewport.scale
+        )
         for point in curveAnchors {
             let dot = CAShapeLayer()
             let viewPoint = document.viewport.documentToView(point)
@@ -1007,7 +1010,10 @@ final class DrawingCanvasUIView: UIView {
             return
         }
 
-        let pointRadius: CGFloat = 5
+        let pointRadius = CanvasOverlayGeometry.anchorScreenLength(
+            base: 5,
+            scale: document.viewport.scale
+        )
         for point in dots {
             let dot = CAShapeLayer()
             let viewPoint = document.viewport.documentToView(point)
