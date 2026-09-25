@@ -268,6 +268,7 @@ struct SettingsOptionBar<Option: Hashable>: View {
             }
         }
         .fixedSize(horizontal: false, vertical: true)
+        .compositingGroup()
         .clipShape(Rectangle())
     }
 }
