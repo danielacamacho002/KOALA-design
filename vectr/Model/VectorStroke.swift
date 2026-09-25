@@ -53,7 +53,7 @@ nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
     var curveHandles: [CurveHandle]? = nil
     /// Fill opacity (0...1) for closed shapes. `nil` falls back to `defaultFillOpacity`.
     var fillOpacity: CGFloat? = nil
-    /// Optional fill color for imported artwork. `nil` keeps the default gray plane fill.
+    /// Fill color for closed shapes. `nil` keeps the default gray plane fill.
     var fillColor: CodableColor? = nil
     /// Fill rule for compound contours (`cutoutPoints`). `nil` uses even-odd when
     /// holes exist (native boolean cuts) and nonzero otherwise.

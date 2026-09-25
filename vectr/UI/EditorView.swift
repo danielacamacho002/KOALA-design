@@ -29,6 +29,8 @@ struct EditorView: View {
     @State private var canvasViewSize: CGSize = .zero
     @State private var canvasSafeAreaInsets: UIEdgeInsets = .zero
     @State private var showSettings = false
+    @State private var pendingImportAfterSettings = false
+    @State private var pendingExportAfterSettings = false
     @State private var chromeInsets = ViewportTransform.ChromeInsets()
     @State private var statusMessage: String?
     @State private var showUnsavedAlert = false
@@ -111,11 +113,27 @@ struct EditorView: View {
                 .allowsHitTesting(true)
             }
         }
-        .sheet(isPresented: $showSettings) {
+        .sheet(isPresented: $showSettings, onDismiss: {
+            if pendingImportAfterSettings {
+                pendingImportAfterSettings = false
+                showImportPicker = true
+            } else if pendingExportAfterSettings {
+                pendingExportAfterSettings = false
+                showExportSheet = true
+            }
+        }) {
             SettingsView(
                 document: store.document,
                 fileName: $store.fileName,
-                onFileNameChanged: handleFileNameChanged
+                onFileNameChanged: handleFileNameChanged,
+                onImport: {
+                    pendingImportAfterSettings = true
+                    showSettings = false
+                },
+                onExport: {
+                    pendingExportAfterSettings = true
+                    showSettings = false
+                }
             )
         }
         .fileImporter(
@@ -305,6 +323,7 @@ struct EditorView: View {
                     FilletRadiusPanelView(
                         document: store.document,
                         units: store.document.settings.units,
+                        onChanged: { store.markDirty() },
                         onApply: {
                             store.document.clearToolSelections()
                             store.markDirty()
@@ -467,9 +486,6 @@ struct EditorView: View {
                 onUndo: handleDesignUndo,
                 onRedo: handleDesignRedo,
                 onSettings: { showSettings = true },
-                onShare: { showExportSheet = true },
-                onImport: { showImportPicker = true },
-                onSave: { saveDocumentNow() },
                 onToolSelected: handleToolSelected,
                 onSwitchToPrintLayout: { switchToPrintLayoutMode() },
                 onVisibilityToggled: {
@@ -974,7 +990,7 @@ struct EditorView: View {
         let panelWidth: CGFloat
         switch store.document.activeCategory {
         case .fillet, .addAnchor, .pattern, .copy:
-            panelWidth = 188
+            panelWidth = ToolPanelMetrics.commandWidth
         default:
             panelWidth = 0
         }

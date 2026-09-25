@@ -91,7 +91,7 @@ struct PrintPaperPanelView: View {
                 )
             }
         }
-        .toolPanelChrome(width: 172)
+        .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
         .onAppear {
             syncCustomFields()
             syncGridFields()
