@@ -93,7 +93,8 @@ struct CanvasOverlayView: View {
     @State private var moveTranslationAxis: MoveDragAxis = .free
 
     private let handleSize: CGFloat = 22
-    /// Visible side length of path anchors and the center handle. Hit testing uses `anchorTouchTargetSize`.
+    /// Visible side length of path anchors and the center handle at 1× zoom.
+    /// Above 1× this grows with the viewport via `anchorScreenLength`. Hit testing uses `anchorTouchTargetSize`.
     private let anchorHandleSize: CGFloat = 6
     private let coordinateSpaceName = "editor"
     private let filletDragThreshold: CGFloat = 6
@@ -296,11 +297,12 @@ struct CanvasOverlayView: View {
     }
 
     private func tangentDot() -> some View {
-        Circle()
+        let side = anchorScreenLength(base: anchorHandleSize)
+        return Circle()
             .fill(Color.teal)
-            .frame(width: anchorHandleSize, height: anchorHandleSize)
+            .frame(width: side, height: side)
             .shadow(color: .white.opacity(0.85), radius: 0.5)
-            .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
+            .frame(width: anchorHitTarget(visible: side), height: anchorHitTarget(visible: side))
             .contentShape(Rectangle())
     }
 
@@ -974,15 +976,16 @@ struct CanvasOverlayView: View {
                 let selected = document.selectedAnchorIndices.contains(index)
                 let isPivot = document.isMoveRotateMode
                     && document.moveRotationPivotAnchorIndex == index
+                let ring = anchorScreenLength(base: anchorHandleSize + 6)
                 ZStack {
                     handleView(style: selected ? .selectedAnchor : .move, strokeColor: stroke.strokeColor)
                     if isPivot {
                         Circle()
                             .stroke(Color.yellow, lineWidth: 2)
-                            .frame(width: anchorHandleSize + 6, height: anchorHandleSize + 6)
+                            .frame(width: ring, height: ring)
                     }
                 }
-                .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
+                .frame(width: anchorHitTarget(visible: ring), height: anchorHitTarget(visible: ring))
                 .contentShape(Rectangle())
                 .position(document.viewport.documentToView(point))
                 .highPriorityGesture(anchorMoveDrag(strokeID: strokeID, stroke: stroke, anchorIndex: index))
@@ -1589,11 +1592,12 @@ struct CanvasOverlayView: View {
     @ViewBuilder
     private func centerHandle(strokeID: UUID, stroke: VectorStroke, centerOverride: CGPoint? = nil) -> some View {
         if let center = centerOverride ?? ShapeGeometry.shapeCenter(for: stroke) {
+            let side = anchorScreenLength(base: anchorHandleSize)
             RoundedRectangle(cornerRadius: 1)
                 .fill(Color(red: 0.22, green: 0.48, blue: 0.78))
-                .frame(width: anchorHandleSize, height: anchorHandleSize)
+                .frame(width: side, height: side)
                 .shadow(color: .white.opacity(0.85), radius: 0.5)
-                .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
+                .frame(width: anchorHitTarget(visible: side), height: anchorHitTarget(visible: side))
                 .contentShape(Rectangle())
                 .position(document.viewport.documentToView(center))
                 .highPriorityGesture(centerHandleDrag(strokeID: strokeID))
@@ -2014,6 +2018,7 @@ struct CanvasOverlayView: View {
             halo = .white.opacity(0.85)
             outline = nil
         }
+        let side = anchorScreenLength(base: anchorHandleSize)
         return Rectangle()
             .fill(fill)
             .overlay {
@@ -2021,10 +2026,20 @@ struct CanvasOverlayView: View {
                     Rectangle().strokeBorder(outline, lineWidth: 1)
                 }
             }
-            .frame(width: anchorHandleSize, height: anchorHandleSize)
+            .frame(width: side, height: side)
             .shadow(color: halo, radius: 0.5)
-            .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
+            .frame(width: anchorHitTarget(visible: side), height: anchorHitTarget(visible: side))
             .contentShape(Rectangle())
+    }
+
+    /// On-screen side of an anchor whose 1× size is `base`. Grows with zoom above 1×.
+    private func anchorScreenLength(base: CGFloat) -> CGFloat {
+        CanvasOverlayGeometry.anchorScreenLength(base: base, scale: document.viewport.scale)
+    }
+
+    /// Hit target stays at least `anchorTouchTargetSize`, and widens if the visible mark would be clipped.
+    private func anchorHitTarget(visible: CGFloat) -> CGFloat {
+        max(anchorTouchTargetSize, visible)
     }
 
     /// Light stroke colors need a dark edge so the anchor still reads on the line and the canvas.

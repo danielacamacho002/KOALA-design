@@ -94,6 +94,13 @@ nonisolated enum CanvasOverlayGeometry: Sendable {
         return max(4, origin * (distance / max(originDistance, epsilon)))
     }
 
+    /// Screen length of an anchor that measures `base` points at 1× zoom.
+    /// Below 1× the mark stays `base` so zooming out does not shrink it.
+    /// Above 1× it grows with the design through the full zoom range, matching stroke width.
+    static func anchorScreenLength(base: CGFloat, scale: CGFloat) -> CGFloat {
+        base * max(scale, 1)
+    }
+
     /// Marquee rectangle from two document-space points. `nil` while the drag is still
     /// small enough to be a tap rather than a deliberate selection box.
     static func marqueeRect(from start: CGPoint, to current: CGPoint, minimumSpan: CGFloat = 0.5) -> CGRect? {

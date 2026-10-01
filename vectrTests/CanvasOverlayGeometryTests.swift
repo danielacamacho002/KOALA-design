@@ -139,6 +139,16 @@ struct CanvasOverlayGeometryTests {
         #expect(rect == nil)
     }
 
+    @Test func anchorScreenLengthFloorsBelowOneXAndKeepsGrowingAtMaxZoom() {
+        let base: CGFloat = 6
+        #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 0) == base)
+        #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 0.5) == base)
+        #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 1) == base)
+        #expect(abs(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 4) - 24) < 1e-9)
+        let maxZoom = ViewportTransform.maxScale
+        #expect(abs(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: maxZoom) - base * maxZoom) < 1e-9)
+    }
+
     /// One axis clearing the threshold is enough: a thin horizontal band is a valid marquee.
     @Test func marqueeSurvivesWhenOnlyOneAxisClearsTheMinimum() {
         let rect = CanvasOverlayGeometry.marqueeRect(from: .zero, to: CGPoint(x: 30, y: 0.1))
