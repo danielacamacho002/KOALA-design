@@ -265,6 +265,7 @@ struct EditorView: View {
                         dragDrawEnd = nil
                     },
                     curveDraft: curveDraft,
+                    curveDraftRevision: curveDraft.revision,
                     onCurveCommitted: commitCurve,
                     onLayoutMetrics: updateCanvasLayoutMetrics,
                     viewportHandle: designCanvasHandle
@@ -1075,7 +1076,7 @@ struct EditorView: View {
         case .curve:
             commandSession.cancel()
             store.document.selectedStrokeID = nil
-            statusMessage = "Draw lines with Apple Pencil; double-tap to finish the curve"
+            statusMessage = "Draw with Apple Pencil; tap an open end to continue; double-tap to finish"
         case .dimensions:
             commandSession.cancel()
             store.document.revealDimensionsForCurrentSelection()
@@ -1286,6 +1287,9 @@ struct EditorView: View {
         case .move, nil:
             activateMoveIfHit(at: documentPoint)
         case .curve:
+            if resumeOpenCurve(at: documentPoint) {
+                return
+            }
             dismissActiveTool()
         case .type:
             endTextEditingIfNeeded()
@@ -1574,7 +1578,45 @@ struct EditorView: View {
         }
     }
 
-    private func commitCurve(anchors rawAnchors: [CGPoint]) {
+    /// Tap an endpoint of an open curve to keep drawing from that end.
+    /// A tail already in progress still finishes and leaves the tool.
+    private func resumeOpenCurve(at documentPoint: CGPoint) -> Bool {
+        guard curveDraft.canResume else { return false }
+        let radius = store.document.viewport.viewToDocument(distance: 44)
+        guard let hit = ShapeGeometry.openCurveEndpoint(
+            in: store.document.interactiveStrokes(),
+            near: documentPoint,
+            radius: radius
+        ) else { return false }
+        let seed = ShapeGeometry.continuationSeed(for: hit.stroke, fromStart: hit.fromStart)
+        curveDraft.beginContinuation(
+            strokeID: hit.stroke.id,
+            anchors: seed.anchors,
+            handles: seed.handles,
+            reversed: seed.reversed
+        )
+        statusMessage = "Draw to continue the curve; double-tap to finish"
+        return true
+    }
+
+    private func commitCurve(_ finish: CurveDraftFinish) {
+        if let continuation = finish.continuation,
+           let existing = store.document.stroke(with: continuation.strokeID) {
+            let updated = ShapeGeometry.extendingOpenCurve(
+                existing,
+                anchorsInContinuationOrder: finish.anchors,
+                originalHandles: continuation.originalHandles,
+                reversed: continuation.reversed,
+                closeTolerance: store.document.grid.spacing * 0.5
+            )
+            guard updated != existing else { return }
+            store.document.updateStroke(updated)
+            store.document.selectedStrokeID = updated.id
+            store.markDirty()
+            return
+        }
+
+        let rawAnchors = finish.anchors
         guard rawAnchors.count >= 2 else { return }
 
         // Recognize a closed shape: if the curve loops back near its start, drop the

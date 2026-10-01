@@ -1150,6 +1150,19 @@ nonisolated enum ShapeGeometry: Sendable {
         return result
     }
 
+    /// Open `.curve` endpoint a tap can keep drawing from.
+    struct OpenCurveEndpoint: Equatable, Sendable {
+        var stroke: VectorStroke
+        var fromStart: Bool
+    }
+
+    /// Existing curve oriented so new anchors append at the live end.
+    struct CurveContinuationSeed: Sendable {
+        var anchors: [CGPoint]
+        var handles: [CurveHandle]
+        var reversed: Bool
+    }
+
     /// Derives editable tangent handles from the auto-computed cardinal spline so a
     /// freshly committed curve keeps its current look but becomes reshapeable.
     static func defaultCurveHandles(anchors: [CGPoint], closed: Bool = false) -> [CurveHandle] {
@@ -1160,37 +1173,195 @@ nonisolated enum ShapeGeometry: Sendable {
 
         var handles = anchors.map { _ in CurveHandle() }
         let segmentCount = closed ? count : count - 1
-
         for index in 0..<segmentCount {
-            let nextIndex = (index + 1) % count
-            let p1 = anchors[index]
-            let p2 = anchors[nextIndex]
-            let p0: CGPoint
-            let p3: CGPoint
-            if closed {
-                p0 = anchors[(index - 1 + count) % count]
-                p3 = anchors[(index + 2) % count]
-            } else {
-                p0 = index > 0 ? anchors[index - 1] : p1
-                p3 = index < count - 2 ? anchors[index + 2] : p2
-            }
+            applyCardinalSegment(to: &handles, anchors: anchors, index: index, closed: closed)
+        }
+        return handles
+    }
 
-            let tension1 = curveTension(prev: p0, cur: p1, next: p2)
-            let tension2 = curveTension(prev: p1, cur: p2, next: p3)
-
-            // Outgoing handle at p1 for this segment.
-            handles[index].outOffset = CGPoint(
-                x: (p2.x - p0.x) * tension1 / 6,
-                y: (p2.y - p0.y) * tension1 / 6
-            )
-            // Incoming handle at p2 for this segment.
-            handles[nextIndex].inOffset = CGPoint(
-                x: -(p3.x - p1.x) * tension2 / 6,
-                y: -(p3.y - p1.y) * tension2 / 6
-            )
+    /// Handles for a curve that is being extended. Existing segment tangents are copied.
+    /// Cardinal handles are written only from the live end forward, including the
+    /// closing segment when `closed` is true.
+    static func continuationHandles(
+        originalHandles: [CurveHandle],
+        anchors: [CGPoint],
+        closed: Bool
+    ) -> [CurveHandle] {
+        let count = anchors.count
+        guard count >= 2 else {
+            return anchors.map { _ in CurveHandle() }
+        }
+        let preservedCount = min(originalHandles.count, count)
+        guard preservedCount >= 2 else {
+            return defaultCurveHandles(anchors: anchors, closed: closed)
+        }
+        if preservedCount == count, !closed {
+            return Array(originalHandles.prefix(count))
         }
 
+        var handles = Array(originalHandles.prefix(preservedCount))
+        if handles.count < count {
+            handles.append(contentsOf: Array(repeating: CurveHandle(), count: count - handles.count))
+        }
+        let junction = preservedCount - 1
+        let segmentCount = closed ? count : count - 1
+        guard junction < segmentCount else { return handles }
+        for index in junction..<segmentCount {
+            applyCardinalSegment(to: &handles, anchors: anchors, index: index, closed: closed)
+        }
         return handles
+    }
+
+    /// Anchors and handles ordered so new points append at the live end.
+    /// Continuing from the start reverses the path; `reversed` tells the commit to flip it back.
+    static func continuationSeed(for stroke: VectorStroke, fromStart: Bool) -> CurveContinuationSeed {
+        let anchors = stroke.points
+        let handles: [CurveHandle]
+        if let stored = stroke.curveHandles, stored.count == anchors.count {
+            handles = stored
+        } else {
+            handles = defaultCurveHandles(anchors: anchors, closed: false)
+        }
+        guard fromStart else {
+            return CurveContinuationSeed(anchors: anchors, handles: handles, reversed: false)
+        }
+        return CurveContinuationSeed(
+            anchors: Array(anchors.reversed()),
+            handles: reversedCurveHandles(handles),
+            reversed: true
+        )
+    }
+
+    /// Appends anchors to an open curve. Tangents that already draw the curve stay put.
+    /// A new end that lands on the other end closes the curve, using the same minimum
+    /// as a newly drawn loop: at least three anchors remain after the duplicate is dropped.
+    static func extendingOpenCurve(
+        _ stroke: VectorStroke,
+        anchorsInContinuationOrder: [CGPoint],
+        originalHandles: [CurveHandle],
+        reversed: Bool,
+        closeTolerance: CGFloat
+    ) -> VectorStroke {
+        guard stroke.shapeType == .curve, !stroke.isClosed, originalHandles.count >= 2 else {
+            return stroke
+        }
+        var anchors = anchorsInContinuationOrder
+        guard anchors.count >= originalHandles.count else { return stroke }
+
+        var closed = false
+        if anchors.count > originalHandles.count,
+           anchors.count >= 4,
+           let first = anchors.first,
+           let last = anchors.last,
+           hypot(first.x - last.x, first.y - last.y) <= closeTolerance {
+            anchors.removeLast()
+            closed = anchors.count >= 3
+        }
+        guard closed || anchors.count > originalHandles.count else { return stroke }
+
+        let handles = continuationHandles(
+            originalHandles: originalHandles,
+            anchors: anchors,
+            closed: closed
+        )
+        let prepended = reversed ? max(0, anchors.count - originalHandles.count) : 0
+
+        var updated = stroke
+        if reversed {
+            updated.points = Array(anchors.reversed())
+            updated.curveHandles = reversedCurveHandles(handles)
+        } else {
+            updated.points = anchors
+            updated.curveHandles = handles
+        }
+        updated.isClosed = closed
+        guard prepended != 0 else { return updated }
+        updated.smoothCornerIndices = shifted(updated.smoothCornerIndices, by: prepended)
+        updated.cornerRadiiByIndex = shifted(updated.cornerRadiiByIndex, by: prepended)
+        updated.openEdgeStarts = shifted(updated.openEdgeStarts, by: prepended)
+        return updated
+    }
+
+    /// Nearest open-curve endpoint within `radius`, preferring the front-most stroke on a tie.
+    /// `strokes` is back-to-front. Equal distance to both ends continues from the last anchor.
+    static func openCurveEndpoint(
+        in strokes: [VectorStroke],
+        near point: CGPoint,
+        radius: CGFloat
+    ) -> OpenCurveEndpoint? {
+        guard radius >= 0 else { return nil }
+        var best: OpenCurveEndpoint?
+        var bestDistance: CGFloat?
+        for stroke in strokes.reversed() {
+            guard stroke.shapeType == .curve,
+                  !stroke.isClosed,
+                  !stroke.isConstruction,
+                  stroke.points.count >= 2,
+                  let first = stroke.points.first,
+                  let last = stroke.points.last else { continue }
+            let startDistance = hypot(point.x - first.x, point.y - first.y)
+            let endDistance = hypot(point.x - last.x, point.y - last.y)
+            let fromStart = startDistance < endDistance
+            let distance = fromStart ? startDistance : endDistance
+            guard distance <= radius else { continue }
+            if let bestDistance, distance >= bestDistance { continue }
+            bestDistance = distance
+            best = OpenCurveEndpoint(stroke: stroke, fromStart: fromStart)
+        }
+        return best
+    }
+
+    private static func reversedCurveHandles(_ handles: [CurveHandle]) -> [CurveHandle] {
+        handles.reversed().map { CurveHandle(inOffset: $0.outOffset, outOffset: $0.inOffset) }
+    }
+
+    private static func shifted(_ indices: Set<Int>?, by delta: Int) -> Set<Int>? {
+        guard let indices, delta != 0 else { return indices }
+        return Set(indices.map { $0 + delta })
+    }
+
+    private static func shifted(_ radii: [Int: CGFloat]?, by delta: Int) -> [Int: CGFloat]? {
+        guard let radii, delta != 0 else { return radii }
+        return Dictionary(uniqueKeysWithValues: radii.map { ($0.key + delta, $0.value) })
+    }
+
+    private static func shifted(_ indices: [Int]?, by delta: Int) -> [Int]? {
+        guard let indices, delta != 0 else { return indices }
+        return indices.map { $0 + delta }
+    }
+
+    /// Writes the outgoing handle at `index` and the incoming handle at the next anchor.
+    private static func applyCardinalSegment(
+        to handles: inout [CurveHandle],
+        anchors: [CGPoint],
+        index: Int,
+        closed: Bool
+    ) {
+        let count = anchors.count
+        guard count >= 2, handles.count == count, index >= 0, index < count else { return }
+        let nextIndex = (index + 1) % count
+        let p1 = anchors[index]
+        let p2 = anchors[nextIndex]
+        let p0: CGPoint
+        let p3: CGPoint
+        if closed {
+            p0 = anchors[(index - 1 + count) % count]
+            p3 = anchors[(index + 2) % count]
+        } else {
+            p0 = index > 0 ? anchors[index - 1] : p1
+            p3 = index < count - 2 ? anchors[index + 2] : p2
+        }
+
+        let tension1 = curveTension(prev: p0, cur: p1, next: p2)
+        let tension2 = curveTension(prev: p1, cur: p2, next: p3)
+        handles[index].outOffset = CGPoint(
+            x: (p2.x - p0.x) * tension1 / 6,
+            y: (p2.y - p0.y) * tension1 / 6
+        )
+        handles[nextIndex].inOffset = CGPoint(
+            x: -(p3.x - p1.x) * tension2 / 6,
+            y: -(p3.y - p1.y) * tension2 / 6
+        )
     }
 
     /// Roundness factor in `0...1` for the corner at `cur`.
