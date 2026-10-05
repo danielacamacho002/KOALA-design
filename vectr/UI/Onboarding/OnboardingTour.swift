@@ -52,7 +52,9 @@ enum OnboardingTarget: Equatable {
         switch self {
         case .snaps, .snap: return .aboveSnaps
         case .layers, .share, .save, .printLayout: return .trailingPark
-        case .tool, .commandPanel: return .besideCommandPanel
+        case .tool, .commandPanel, .paperGrid, .margins: return .besideCommandPanel
+        case .printTool(let tool):
+            return tool == .select ? .besideCommandPanel : .followTarget
         default: return .followTarget
         }
     }
@@ -171,7 +173,7 @@ struct OnboardingTour: Equatable {
             OnboardingStep(
                 id: "design.command",
                 title: "Command panel",
-                body: "The active-tool panel: pick variants, type points, and set thickness or color.",
+                body: "Select a sub-tool, type in points, and set line thickness or color.",
                 alignment: .topLeading,
                 padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .commandPanel
@@ -207,6 +209,10 @@ struct OnboardingTour: Equatable {
             designTool(
                 .pattern,
                 body: "Create a pattern of selected drawing."
+            ),
+            designTool(
+                .copy,
+                body: "Copy, paste, or duplicate a selection."
             ),
             designTool(
                 .delete,
@@ -252,7 +258,7 @@ struct OnboardingTour: Equatable {
             OnboardingStep(
                 id: "design.printLayout",
                 title: "Print Layout",
-                body: "Open Print Layout to tile artwork across pages. A short tour starts the first time you go there.",
+                body: "Open Print Layout to tile artwork across pages.",
                 alignment: .topTrailing,
                 padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .printLayout
@@ -269,14 +275,6 @@ struct OnboardingTour: Equatable {
                 body: "A short walk through Print Layout. Tap Next to continue, or Skip all to dismiss.",
                 alignment: .center,
                 padding: EdgeInsets()
-            ),
-            OnboardingStep(
-                id: "print.modes",
-                title: "Modes",
-                body: "Use the pencil button to switch back to Design.",
-                alignment: .topLeading,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
-                target: .modes
             ),
             OnboardingStep(
                 id: "print.paper",

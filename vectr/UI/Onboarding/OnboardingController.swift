@@ -7,6 +7,7 @@
 
 import Foundation
 import Observation
+import SwiftUI
 
 @Observable
 final class OnboardingController {
@@ -45,20 +46,34 @@ final class OnboardingController {
 
     func advance() {
         guard isActive else { return }
-        if isLastStep {
-            complete()
-        } else {
-            stepIndex += 1
+        withoutAnimation {
+            if isLastStep {
+                complete()
+            } else {
+                stepIndex += 1
+            }
         }
     }
 
     func retreat() {
         guard isActive, !isFirstStep else { return }
-        stepIndex -= 1
+        withoutAnimation {
+            stepIndex -= 1
+        }
     }
 
     func skipAll() {
-        complete()
+        withoutAnimation {
+            complete()
+        }
+    }
+
+    /// Step changes should snap the instruction box. An animated move makes the
+    /// Next button travel across the canvas.
+    private func withoutAnimation(_ change: () -> Void) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction, change)
     }
 
     func restart() {

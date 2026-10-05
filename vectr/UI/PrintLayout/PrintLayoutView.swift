@@ -33,9 +33,17 @@ struct PrintLayoutView: View {
 
     /// Drives the move/rotate panel. The Cut tool leaves its fresh pieces selected,
     /// but the overlay handles are only live for Select, so the panel stays hidden
-    /// until the tool can actually use it.
+    /// until the tool can actually use it. The Select tour step opens it anyway so
+    /// the instruction can sit beside the panel.
     private var hasPrintSelection: Bool {
         document.printLayout.activeTool == .select && !document.printSelectionIsEmpty
+    }
+
+    private var showsMovePanel: Bool {
+        if printOnboarding.isActive, printOnboarding.currentTarget == .printTool(.select) {
+            return true
+        }
+        return hasPrintSelection
     }
 
     var body: some View {
@@ -84,7 +92,7 @@ struct PrintLayoutView: View {
                         onChanged: onChanged,
                         onClose: { showPaperPanel = false }
                     )
-                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                    .transition(.identity)
                 } else if showMarginPanel {
                     PrintMarginPanelView(
                         document: document,
@@ -92,8 +100,8 @@ struct PrintLayoutView: View {
                         onChanged: onChanged,
                         onClose: { showMarginPanel = false }
                     )
-                    .transition(.opacity.combined(with: .move(edge: .leading)))
-                } else if hasPrintSelection {
+                    .transition(.identity)
+                } else if showsMovePanel {
                     PrintMoveRotatePanelView(
                         document: document,
                         rotateModeActive: $printRotateMode,
@@ -104,12 +112,27 @@ struct PrintLayoutView: View {
                             document.clearPrintSelection()
                         }
                     )
-                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                    .transition(.identity)
                 }
             }
-            .animation(.easeInOut(duration: 0.15), value: showPaperPanel)
-            .animation(.easeInOut(duration: 0.15), value: showMarginPanel)
-            .animation(.easeInOut(duration: 0.15), value: hasPrintSelection)
+            .overlay(alignment: .topLeading) {
+                if printOnboarding.currentStep?.target.boxPlacement == .besideCommandPanel,
+                   let step = printOnboarding.currentStep {
+                    OnboardingHoverBoxView(
+                        step: step,
+                        stepNumber: printOnboarding.stepNumber,
+                        stepCount: printOnboarding.stepCount,
+                        onNext: { printOnboarding.advance() },
+                        onBack: { printOnboarding.retreat() },
+                        onSkipAll: { printOnboarding.skipAll() },
+                        canGoBack: !printOnboarding.isFirstStep
+                    )
+                    .id(step.id)
+                    .padding(.leading, ToolPanelMetrics.commandWidth + 12)
+                    .transition(.identity)
+                    .transaction { $0.animation = nil }
+                }
+            }
             .onChange(of: document.printSelectedStrokeID) { _, _ in printRotateMode = false }
             .onChange(of: document.printSelectedTextID) { _, _ in printRotateMode = false }
             .onChange(of: document.printSelectionCount) { _, _ in printRotateMode = false }
@@ -165,6 +188,36 @@ struct PrintLayoutView: View {
         }
         .onPreferenceChange(OnboardingAnchorPreferenceKey.self) { onboardingAnchors = $0 }
         .onPreferenceChange(OnboardingOverlayFrameKey.self) { onboardingOverlayFrame = $0 }
+        .onChange(of: printOnboarding.stepIndex) { _, _ in
+            syncPrintTourStep()
+        }
+        .onAppear {
+            syncPrintTourStep()
+        }
+    }
+
+    /// Opens the command panel for the current print-layout tour step and selects
+    /// the matching tool. Other steps close those panels.
+    private func syncPrintTourStep() {
+        guard printOnboarding.isActive else { return }
+        switch printOnboarding.currentTarget {
+        case .paperGrid:
+            showMarginPanel = false
+            showPaperPanel = true
+        case .margins:
+            showPaperPanel = false
+            showMarginPanel = true
+        case .printTool(let tool):
+            showPaperPanel = false
+            showMarginPanel = false
+            guard document.printLayout.activeTool != tool else { return }
+            var settings = document.printLayout
+            settings.activeTool = tool
+            document.updatePrintLayout(settings, recordUndo: false)
+        default:
+            showPaperPanel = false
+            showMarginPanel = false
+        }
     }
 
     private func handleCanvasTap(at documentPoint: CGPoint) {

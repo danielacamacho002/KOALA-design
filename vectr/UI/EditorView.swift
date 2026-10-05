@@ -342,8 +342,7 @@ struct EditorView: View {
                         }
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
-                } else if store.document.activeCategory == .move,
-                          !store.document.selectionIsEmpty {
+                } else if showsEditCommandPanel {
                     MoveRotatePanelView(
                         document: store.document,
                         units: store.document.settings.units
@@ -399,42 +398,41 @@ struct EditorView: View {
                 }
             }
             .overlay(alignment: .topLeading) {
-                HStack(alignment: .top, spacing: 12) {
-                    if commandSession.isActive && showCommandPanel {
-                        ToolCommandPanelView(
-                            session: commandSession,
-                            document: store.document,
-                            units: store.document.settings.units,
-                            grid: store.document.grid,
-                            documentSettings: store.document.settings,
-                            snapEnabled: drawingSnapEnabled,
-                            onSubmitPoint: handleCommandPointSubmitted,
-                            onDone: { commitCommandShape(restart: true) },
-                            onCancel: {
-                                updateChromeInsets()
-                            },
-                            onVariantChanged: { startDrawingSessionIfNeeded() },
-                            isTourHighlighted: designOnboarding.currentTarget == .commandPanel
-                        )
-                        .transition(.opacity.combined(with: .move(edge: .leading)))
-                    }
-
-                    if designOnboarding.currentStep?.target.boxPlacement == .besideCommandPanel,
-                       let step = designOnboarding.currentStep {
-                        OnboardingHoverBoxView(
-                            step: step,
-                            stepNumber: designOnboarding.stepNumber,
-                            stepCount: designOnboarding.stepCount,
-                            onNext: { designOnboarding.advance() },
-                            onBack: { designOnboarding.retreat() },
-                            onSkipAll: { designOnboarding.skipAll() },
-                            canGoBack: !designOnboarding.isFirstStep
-                        )
-                        .transition(.identity)
-                        .transaction { $0.animation = nil }
-                    }
+                if commandSession.isActive && showCommandPanel {
+                    ToolCommandPanelView(
+                        session: commandSession,
+                        document: store.document,
+                        units: store.document.settings.units,
+                        grid: store.document.grid,
+                        documentSettings: store.document.settings,
+                        snapEnabled: drawingSnapEnabled,
+                        onSubmitPoint: handleCommandPointSubmitted,
+                        onDone: { commitCommandShape(restart: true) },
+                        onCancel: {
+                            updateChromeInsets()
+                        },
+                        onVariantChanged: { startDrawingSessionIfNeeded() },
+                        isTourHighlighted: designOnboarding.currentTarget == .commandPanel
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
-                .padding(.leading, commandSession.isActive && showCommandPanel ? 0 : 162)
+            }
+            .overlay(alignment: .topLeading) {
+                if designOnboarding.currentStep?.target.boxPlacement == .besideCommandPanel,
+                   let step = designOnboarding.currentStep {
+                    OnboardingHoverBoxView(
+                        step: step,
+                        stepNumber: designOnboarding.stepNumber,
+                        stepCount: designOnboarding.stepCount,
+                        onNext: { designOnboarding.advance() },
+                        onBack: { designOnboarding.retreat() },
+                        onSkipAll: { designOnboarding.skipAll() },
+                        canGoBack: !designOnboarding.isFirstStep
+                    )
+                    .padding(.leading, ToolPanelMetrics.commandWidth + 12)
+                    .transition(.identity)
+                    .transaction { $0.animation = nil }
+                }
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .type && editingTextID == nil {
@@ -710,6 +708,15 @@ struct EditorView: View {
 
     private var shouldAngleSnapDrawnSegment: Bool {
         store.document.activeCategory == .line && store.document.lineVariant != .arc
+    }
+
+    /// The Edit tour step opens the move panel even when nothing is selected.
+    private var showsEditCommandPanel: Bool {
+        guard store.document.activeCategory == .move else { return false }
+        if designOnboarding.isActive, designOnboarding.currentTarget == .tool(.move) {
+            return true
+        }
+        return !store.document.selectionIsEmpty
     }
 
     private var canvasOverlayAcceptsHits: Bool {

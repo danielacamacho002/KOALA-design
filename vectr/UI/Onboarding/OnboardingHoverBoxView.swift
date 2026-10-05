@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct OnboardingHoverBoxView: View {
     let step: OnboardingStep
@@ -47,6 +48,12 @@ struct OnboardingHoverBoxView: View {
             }
         }
         .toolPanelChrome(width: panelWidth)
+        .overlay {
+            if step.target == .none {
+                Rectangle()
+                    .strokeBorder(.black, lineWidth: 1)
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(step.title), step \(stepNumber) of \(stepCount)")
     }
@@ -77,6 +84,7 @@ struct OnboardingTourOverlay: View {
                 canGoBack: !controller.isFirstStep
             )
             .padding(boxPadding(for: step, followOrigin: origin))
+            .offset(freeFloatingScreenOffset(for: step))
             .alignmentGuide(.leading) { guide in
                 guard let origin else { return guide[.leading] }
                 return -origin.x
@@ -85,6 +93,7 @@ struct OnboardingTourOverlay: View {
                 guard let origin else { return guide[.top] }
                 return -origin.y
             }
+            .id(step.id)
             .transition(.identity)
             .transaction { $0.animation = nil }
         }
@@ -122,6 +131,30 @@ struct OnboardingTourOverlay: View {
         }
     }
 
+    /// Moves the centered intro from the middle of the canvas (below the toolbar,
+    /// where the grid sits) to the middle of the window.
+    private func freeFloatingScreenOffset(for step: OnboardingStep) -> CGSize {
+        guard step.target == .none,
+              overlayFrame.width > 0, overlayFrame.height > 0,
+              let window = Self.keyWindow
+        else { return .zero }
+
+        let windowOnScreen = window.convert(window.bounds, to: window.screen.coordinateSpace)
+        let overlayCenter = CGPoint(x: overlayFrame.midX, y: overlayFrame.midY)
+        let screenFrame = windowOnScreen.contains(overlayCenter) ? windowOnScreen : window.bounds
+        return CGSize(
+            width: screenFrame.midX - overlayCenter.x,
+            height: screenFrame.midY - overlayCenter.y
+        )
+    }
+
+    private static var keyWindow: UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)
+    }
+
     /// Top-leading origin used only when the box follows a measured toolbar target.
     private func followOrigin(for step: OnboardingStep) -> CGPoint? {
         guard step.target.boxPlacement == .followTarget,
@@ -131,7 +164,11 @@ struct OnboardingTourOverlay: View {
         else { return nil }
 
         switch step.target {
-        case .modes, .paperGrid, .margins, .printTool, .export, .designChip:
+        case .designChip:
+            let y = max(8, target.maxY - overlayFrame.minY + 8)
+            return CGPoint(x: trailingLeading(aligningTo: target), y: y)
+
+        case .printTool, .export:
             let x = clampedLeading(centeringOn: target)
             let y = max(8, target.maxY - overlayFrame.minY + 8)
             return CGPoint(x: x, y: y)
@@ -145,6 +182,14 @@ struct OnboardingTourOverlay: View {
         let centered = target.midX - overlayFrame.minX - panelWidth / 2
         let maxX = max(margin, overlayFrame.width - panelWidth - margin)
         return min(max(margin, centered), maxX)
+    }
+
+    /// Leading edge that puts the box’s trailing edge on the icon’s trailing edge.
+    private func trailingLeading(aligningTo target: CGRect) -> CGFloat {
+        let maxX = max(margin, overlayFrame.width - panelWidth - margin)
+        guard target.width > 1 else { return maxX }
+        let aligned = target.maxX - overlayFrame.minX - panelWidth
+        return min(max(margin, aligned), maxX)
     }
 }
 
