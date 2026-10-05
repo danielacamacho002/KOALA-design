@@ -29,12 +29,13 @@ final class DrawingCanvasUIView: UIView {
             if oldValue == .curve, activeCategory != .curve {
                 // Don't discard an in-progress curve when leaving the tool: commit it
                 // so the drawn strokes persist. Deferred to avoid mutating document
-                // state during a SwiftUI view update.
-                let anchors = curveDraft?.anchors ?? []
+                // state during a SwiftUI view update. A resumed curve with no new
+                // points finishes as nil and is left unchanged.
+                let finish = curveDraft?.makeFinish()
                 resetCurve()
-                if anchors.count >= 2 {
+                if let finish {
                     DispatchQueue.main.async { [weak self] in
-                        self?.onCurveCommitted?(anchors)
+                        self?.onCurveCommitted?(finish)
                     }
                 }
             }
@@ -76,8 +77,8 @@ final class DrawingCanvasUIView: UIView {
             updateCurvePreview()
         }
     }
-    /// Emitted when a curve is finished (double-tap) with its drawn anchor points.
-    var onCurveCommitted: (([CGPoint]) -> Void)?
+    /// Emitted when a curve is finished (double-tap or leaving the tool).
+    var onCurveCommitted: ((CurveDraftFinish) -> Void)?
     /// Bounds size and safe-area insets in this view's own coordinate space.
     var onLayoutMetrics: ((CGSize, UIEdgeInsets) -> Void)?
 
@@ -235,6 +236,7 @@ final class DrawingCanvasUIView: UIView {
         reloadStrokesHighlight()
         reloadTextElements()
         reloadReferenceImages()
+        applyContinuationVisibility()
     }
 
     func reloadTextElements() {
@@ -892,10 +894,14 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func commitCurve() {
-        let anchors = curveDraft?.anchors ?? []
+        let finish = curveDraft?.makeFinish()
         resetCurve()
-        guard anchors.count >= 2 else { return }
-        onCurveCommitted?(anchors)
+        guard let finish else { return }
+        onCurveCommitted?(finish)
+    }
+
+    func refreshCurvePreview() {
+        updateCurvePreview()
     }
 
     private func resetCurve() {
@@ -934,6 +940,7 @@ final class DrawingCanvasUIView: UIView {
     private func updateCurvePreview() {
         curveAnchorLayers.forEach { $0.removeFromSuperlayer() }
         curveAnchorLayers.removeAll()
+        defer { applyContinuationVisibility() }
 
         let anchors = previewCurveAnchors()
 
@@ -959,6 +966,7 @@ final class DrawingCanvasUIView: UIView {
                 )
             ).cgPath
             dot.fillColor = UIColor.systemTeal.cgColor
+            dot.zPosition = Self.previewZPosition
             layer.addSublayer(dot)
             curveAnchorLayers.append(dot)
         }
@@ -977,20 +985,61 @@ final class DrawingCanvasUIView: UIView {
             newLayer.fillColor = UIColor.clear.cgColor
             newLayer.lineCap = .round
             newLayer.lineJoin = .round
+            newLayer.zPosition = Self.previewZPosition
             self.layer.addSublayer(newLayer)
             curvePreviewLayer = newLayer
             pathLayer = newLayer
         }
+        pathLayer.zPosition = Self.previewZPosition
 
-        let smoothed = ShapeGeometry.smoothCurvePoints(anchors: anchors)
+        let smoothed = previewCurvePoints(anchors)
         pathLayer.path = StrokeRenderer.livePath(
             points: smoothed,
             viewport: document.viewport,
             closed: false
         ).cgPath
-        pathLayer.strokeColor = document.strokeColor.platformCGColor
-        pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
-        pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
+        let style = continuationPreviewStyle()
+        pathLayer.strokeColor = style.color
+        pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: style.width))
+        pathLayer.opacity = style.opacity
+    }
+
+    /// Seeded curves keep their stored tangents. A new draft still uses the cardinal spline.
+    private func previewCurvePoints(_ anchors: [CGPoint]) -> [CGPoint] {
+        guard let handles = curveDraft?.continuation?.originalHandles, anchors.count >= 2 else {
+            return ShapeGeometry.smoothCurvePoints(anchors: anchors)
+        }
+        let merged = ShapeGeometry.continuationHandles(
+            originalHandles: handles,
+            anchors: anchors,
+            closed: false
+        )
+        return ShapeGeometry.curvePoints(anchors: anchors, handles: merged, closed: false)
+    }
+
+    private func continuationPreviewStyle() -> (color: CGColor, width: CGFloat, opacity: Float) {
+        let fallbackWidth = document.strokeWidth
+        let fallbackOpacity = Float(document.opacity(forLayerID: document.activeLayerID))
+        guard let id = curveDraft?.continuationStrokeID,
+              let stroke = document.stroke(with: id) else {
+            return (document.strokeColor.platformCGColor, fallbackWidth, fallbackOpacity)
+        }
+        return (
+            stroke.strokeColor.platformCGColor,
+            stroke.strokeWidth,
+            Float(document.opacity(forLayerID: stroke.layerID))
+        )
+    }
+
+    /// The source stroke is hidden while its anchors are in the draft, so it is not drawn twice.
+    private func applyContinuationVisibility() {
+        let hiddenID = curveDraft?.continuationStrokeID
+        for (id, strokeLayer) in strokeLayers {
+            let hidden = id == hiddenID
+            if strokeLayer.isHidden != hidden {
+                strokeLayer.isHidden = hidden
+            }
+        }
     }
 
     // MARK: - Command preview

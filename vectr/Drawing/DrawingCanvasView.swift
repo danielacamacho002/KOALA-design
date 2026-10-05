@@ -37,7 +37,8 @@ struct DrawingCanvasView: UIViewRepresentable {
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
     var curveDraft: CurveDraftSession?
-    var onCurveCommitted: (([CGPoint]) -> Void)?
+    var curveDraftRevision: Int = 0
+    var onCurveCommitted: ((CurveDraftFinish) -> Void)?
     var onLayoutMetrics: ((CGSize, UIEdgeInsets) -> Void)?
     var viewportHandle: CanvasViewportHandle?
 
@@ -74,6 +75,10 @@ struct DrawingCanvasView: UIViewRepresentable {
         )
         let commandChanged = context.coordinator.consumeCommandChange(
             commandRevision: commandRevision,
+            didSwapDocument: didSwapDocument
+        )
+        let curveDraftChanged = context.coordinator.consumeCurveDraftChange(
+            revision: curveDraftRevision,
             didSwapDocument: didSwapDocument
         )
         let selectionChanged = context.coordinator.consumeSelectionChange(
@@ -118,6 +123,10 @@ struct DrawingCanvasView: UIViewRepresentable {
 
         if commandChanged && !didRefreshViewport {
             uiView.refreshCommandPreview()
+        }
+
+        if curveDraftChanged && !didRefreshViewport {
+            uiView.refreshCurvePreview()
         }
 
         if selectionChanged && !didRefreshViewport && !geometryChanged {
@@ -194,6 +203,7 @@ struct DrawingCanvasView: UIViewRepresentable {
         private var lastStrokeCount: Int?
         private var lastGeometryRevision: Int?
         private var lastCommandRevision: Int?
+        private var lastCurveDraftRevision: Int?
         private var lastSelectedStrokeID: UUID?
         private var lastSelectedTextID: UUID?
         private var lastSelectedStrokeIDs: Set<UUID> = []
@@ -225,6 +235,13 @@ struct DrawingCanvasView: UIViewRepresentable {
             if didSwapDocument { return true }
             guard let lastCommandRevision else { return true }
             return lastCommandRevision != commandRevision
+        }
+
+        func consumeCurveDraftChange(revision: Int, didSwapDocument: Bool) -> Bool {
+            defer { lastCurveDraftRevision = revision }
+            if didSwapDocument { return true }
+            guard let lastCurveDraftRevision else { return true }
+            return lastCurveDraftRevision != revision
         }
 
         func consumeSelectionChange(
