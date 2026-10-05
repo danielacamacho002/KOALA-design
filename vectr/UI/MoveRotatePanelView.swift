@@ -12,6 +12,8 @@ struct MoveRotatePanelView: View {
 
     /// Thickness step in document points so behavior is consistent across measurement units.
     private static let thicknessStepPoints: CGFloat = 0.5
+    /// Fill opacity step as a fraction of fully opaque (5 percentage points).
+    private static let fillOpacityStep: CGFloat = 0.05
 
     /// Font size / stroke weight stepping for the selected text.
     private static let fontSizeStep: CGFloat = 1
@@ -20,11 +22,13 @@ struct MoveRotatePanelView: View {
     private static let textStrokeRange: ClosedRange<CGFloat> = 0.5...48
 
     @State private var degreesText = ""
+    @State private var isEditingDegrees = false
     @State private var thicknessText = ""
-    @State private var fillOpacity: Double = Double(VectorStroke.defaultFillOpacity)
+    @State private var fillOpacityText = ""
     @State private var showTextFillPicker = false
     @State private var showTextStrokePicker = false
     @State private var showColorPicker = false
+    @State private var showFillColorPicker = false
 
     private var selectedStroke: VectorStroke? {
         guard let id = document.selectedStrokeID else { return nil }
@@ -47,15 +51,27 @@ struct MoveRotatePanelView: View {
         return selectedStroke?.rotationDegrees ?? 0
     }
 
-    private var pivotLabel: String {
-        if let index = document.moveRotationPivotAnchorIndex {
-            return "Anchor \(index + 1)"
+    /// Angle shown in the rotate stepper. One object uses its absolute rotation.
+    /// A multi-selection uses the degrees applied since it was selected.
+    private var displayedRotationDegrees: Double {
+        if document.hasMultiSelection {
+            return document.groupHandleRotationDegrees ?? 0
         }
-        return "Center"
+        return currentDegrees
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            ToolPanelLabelButton(
+                title: document.moveAxisLockEnabled ? "Axis locked" : "Lock to XY axis",
+                prominent: document.moveAxisLockEnabled,
+                fullWidth: true
+            ) {
+                document.moveAxisLockEnabled.toggle()
+            }
+
+            Divider()
+
             rotateSection
 
             if !document.selectedTextIDs.isEmpty {
@@ -73,6 +89,9 @@ struct MoveRotatePanelView: View {
 
             if document.hasClosedFillableSelection {
                 Divider()
+                fillColorSection
+
+                Divider()
                 fillOpacitySection
             }
 
@@ -85,21 +104,25 @@ struct MoveRotatePanelView: View {
 
             arrangeSection
         }
-        .toolPanelChrome(width: 172)
+        .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
         .onChange(of: document.selectedStrokeID) { _, _ in
             syncDegreesField()
             syncThicknessText()
             syncFillOpacity()
         }
         .onChange(of: document.selectedStrokeIDs) { _, _ in
+            syncDegreesField()
             syncThicknessText()
             syncFillOpacity()
         }
         .onChange(of: document.selectedTextID) { _, _ in
             syncDegreesField()
         }
+        .onChange(of: document.selectedTextIDs) { _, _ in
+            syncDegreesField()
+        }
         .onChange(of: document.geometryRevision) { _, _ in
-            syncDegreesFieldFromCurrent()
+            syncDegreesField()
             syncThicknessTextIfNeeded()
         }
         .onAppear {
@@ -305,95 +328,56 @@ struct MoveRotatePanelView: View {
 
     @ViewBuilder
     private var thicknessSection: some View {
-        ToolPanelHeader("Thickness")
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Thickness")
 
-        HStack(spacing: 4) {
-            Text("Current:")
-            Text(currentThicknessText)
-                .fontWeight(.semibold)
-                .monospacedDigit()
-        }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-
-        HStack(spacing: 4) {
-            ToolPanelIconButton(systemImage: "minus") {
-                stepThickness(by: -Self.thicknessStepPoints)
-            }
-
-            FingerOnlyTextField(
-                placeholder: units.shortLabel,
+            ToolPanelNumericStepper(
                 text: $thicknessText,
-                keyboardType: .decimalPad,
-                fontSize: 12,
-                cornerRadius: 0,
+                placeholder: "0",
+                unitLabel: units.shortLabel,
+                onMinus: { stepThickness(by: -Self.thicknessStepPoints) },
+                onPlus: { stepThickness(by: Self.thicknessStepPoints) },
                 onSubmit: applyThickness
             )
-            .frame(height: 28)
-
-            ToolPanelIconButton(systemImage: "plus") {
-                stepThickness(by: Self.thicknessStepPoints)
-            }
-        }
-
-        ToolPanelLabelButton(title: "Apply", fullWidth: true) {
-            applyThickness()
         }
     }
 
     @ViewBuilder
     private var colorSection: some View {
-        ToolPanelHeader("Color")
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Color")
 
-        HStack(spacing: 8) {
-            Rectangle()
-                .fill(currentStrokeColor)
-                .frame(width: 26, height: 26)
-                .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
+            HStack(spacing: 2) {
+                Rectangle()
+                    .fill(currentStrokeColor)
+                    .frame(width: 26, height: 26)
+                    .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
 
-            Button {
-                showColorPicker = true
-            } label: {
-                colorWheel
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Line and border color")
-            .sheet(isPresented: $showColorPicker) {
-                SystemColorPickerSheet(
-                    color: strokeColorBinding,
-                    onBeginEditing: { document.beginInteractiveEdit() }
-                )
-            }
-
-            if isStrokeColorMixed {
-                Text("Mixed")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var colorWheel: some View {
-        Circle()
-            .fill(
-                AngularGradient(
-                    colors: (0...12).map { Color(hue: Double($0) / 12.0, saturation: 0.85, brightness: 0.95) },
-                    center: .center
-                )
-            )
-            .overlay(
-                Circle().fill(
-                    RadialGradient(
-                        colors: [Color.white.opacity(0.85), Color.white.opacity(0)],
-                        center: .center,
-                        startRadius: 0,
-                        endRadius: 14
+                Button {
+                    showColorPicker = true
+                } label: {
+                    Image(systemName: "eyedropper")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.blue)
+                        .frame(width: 24, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Line and border color")
+                .sheet(isPresented: $showColorPicker) {
+                    SystemColorPickerSheet(
+                        color: strokeColorBinding,
+                        onBeginEditing: { document.beginInteractiveEdit() }
                     )
-                )
-            )
+                }
+
+                if isStrokeColorMixed {
+                    Text("Mixed")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     private var currentStrokeColor: Color {
@@ -417,96 +401,104 @@ struct MoveRotatePanelView: View {
     }
 
     @ViewBuilder
-    private var fillOpacitySection: some View {
-        ToolPanelHeader("Fill opacity")
+    private var fillColorSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Fill")
 
-        HStack(spacing: 4) {
-            Text("Current:")
-            Text(currentFillOpacityText)
-                .fontWeight(.semibold)
-                .monospacedDigit()
-        }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
+            HStack(spacing: 2) {
+                Rectangle()
+                    .fill(currentFillColor)
+                    .frame(width: 26, height: 26)
+                    .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
 
-        Slider(
-            value: fillOpacityBinding,
-            in: 0...1,
-            onEditingChanged: { editing in
-                if editing {
-                    // Snapshot once at drag start so the whole drag is a single undo step.
-                    document.beginInteractiveEdit()
-                } else {
-                    onApply()
+                Button {
+                    showFillColorPicker = true
+                } label: {
+                    Image(systemName: "eyedropper")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.blue)
+                        .frame(width: 24, height: 32)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Fill color")
+                .sheet(isPresented: $showFillColorPicker) {
+                    SystemColorPickerSheet(
+                        color: fillColorBinding,
+                        onBeginEditing: { document.beginInteractiveEdit() }
+                    )
+                }
+
+                if isFillColorMixed {
+                    Text("Mixed")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var currentFillColor: Color {
+        if let color = document.representativeSelectedFillColor() {
+            return color.color
+        }
+        return Color(uiColor: .systemGray)
+    }
+
+    private var isFillColorMixed: Bool {
+        document.selectedFillColorSummary() == .mixed
+    }
+
+    /// Writes the picked color onto selected closed shapes. One undo snapshot is taken
+    /// when the picker opens (`onBeginEditing`); later samples do not record again.
+    private var fillColorBinding: Binding<Color> {
+        Binding(
+            get: { currentFillColor },
+            set: { newColor in
+                document.setSelectedStrokesFillColor(CodableColor(newColor), recordUndo: false)
+                onApply()
             }
         )
     }
 
     @ViewBuilder
+    private var fillOpacitySection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Fill opacity")
+
+            ToolPanelNumericStepper(
+                text: $fillOpacityText,
+                placeholder: "0",
+                unitLabel: "%",
+                onMinus: { stepFillOpacity(by: -Self.fillOpacityStep) },
+                onPlus: { stepFillOpacity(by: Self.fillOpacityStep) },
+                onSubmit: applyFillOpacity
+            )
+        }
+    }
+
+    @ViewBuilder
     private var rotateSection: some View {
-        ToolPanelHeader("Rotate")
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Rotate")
 
-        if document.usesGroupTransform {
-            Text("Enter degrees to rotate the selection around its center.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            FingerOnlyTextField(
-                placeholder: "Degrees",
+            ToolPanelNumericStepper(
                 text: $degreesText,
+                placeholder: "0",
+                unitLabel: "°",
                 keyboardType: .numbersAndPunctuation,
-                fontSize: 13,
-                cornerRadius: 0,
-                onSubmit: apply
+                onMinus: { stepRotation(by: -1) },
+                onPlus: { stepRotation(by: 1) },
+                onSubmit: apply,
+                onEditingChanged: { isEditingDegrees = $0 }
             )
-            .frame(height: 30)
 
-            HStack(spacing: 4) {
-                ToolPanelLabelButton(title: "Rotate", fullWidth: true) {
-                    applyGroupRotation()
-                }
-            }
-        } else {
-            Text("0° is the original drawn angle. Drag the handle or enter an absolute degree.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("Current: \(String(format: "%.1f°", currentDegrees))")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-
-            FingerOnlyTextField(
-                placeholder: "Degrees",
-                text: $degreesText,
-                keyboardType: .numbersAndPunctuation,
-                fontSize: 13,
-                cornerRadius: 0,
-                onSubmit: apply
-            )
-            .frame(height: 30)
-
-            if !isTextSelected {
-                Text("Pivot: \(pivotLabel)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 4) {
-                ToolPanelLabelButton(title: "Reset to 0°") {
-                    resetToOriginal()
-                }
-
-                if !isTextSelected {
-                    ToolPanelLabelButton(
-                        title: "Center pivot",
-                        isDisabled: document.moveRotationPivotAnchorIndex == nil
-                    ) {
-                        document.moveRotationPivotAnchorIndex = nil
-                    }
-                }
+            ToolPanelLabelButton(
+                title: "Rotate",
+                prominent: document.isMoveRotateMode,
+                fullWidth: true
+            ) {
+                document.isMoveRotateMode.toggle()
             }
         }
     }
@@ -514,11 +506,6 @@ struct MoveRotatePanelView: View {
     @ViewBuilder
     private var multiSelectionSection: some View {
         ToolPanelHeader("\(document.selectionCount) selected")
-
-        Text("Drag to move the group. Tap a shape to add or remove it.")
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
 
         HStack(spacing: 4) {
             ToolPanelLabelButton(
@@ -548,51 +535,32 @@ struct MoveRotatePanelView: View {
             ) {
                 if document.joinSelectedShapes() { onApply() }
             }
-
-            Text("Welds touching anchors into one shape. Unlike Group, this is permanent.")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    @ViewBuilder
     private var arrangeSection: some View {
-        HStack(spacing: 4) {
-            ToolPanelLabelButton(title: "Duplicate", fullWidth: true) {
-                let offset = max(document.grid.spacing, 1)
-                document.duplicateSelectedElements(offset: CGPoint(x: offset, y: offset))
-                onApply()
-            }
-
-            ToolPanelLabelButton(title: "Delete", fullWidth: true) {
-                document.deleteSelectedElements()
-                onApply()
-            }
-        }
-
-        HStack(spacing: 4) {
-            ToolPanelLabelButton(title: "Flip H", fullWidth: true) {
-                document.flipSelection(horizontal: true)
-                onApply()
-            }
-
-            ToolPanelLabelButton(title: "Flip V", fullWidth: true) {
-                document.flipSelection(horizontal: false)
-                onApply()
-            }
-        }
-    }
-
-    private var currentThicknessText: String {
-        switch document.selectedStrokeWidthSummary() {
-        case .none:
-            return "—"
-        case .mixed:
-            return "Mixed"
-        case .uniform(let width):
-            return "\(displayString(units.fromDocumentUnits(width))) \(units.shortLabel)"
-        }
+        ToolPanelJoinedActions(rows: [
+            .init([
+                .init(title: "Mirror") {
+                    document.mirrorSelectedElements()
+                    onApply()
+                },
+                .init(title: "Delete") {
+                    document.deleteSelectedElements()
+                    onApply()
+                },
+            ]),
+            .init([
+                .init(title: "Flip H") {
+                    document.flipSelection(horizontal: true)
+                    onApply()
+                },
+                .init(title: "Flip V") {
+                    document.flipSelection(horizontal: false)
+                    onApply()
+                },
+            ]),
+        ])
     }
 
     /// Formats a display-unit value with just enough precision (tiny units like inches need more).
@@ -639,75 +607,76 @@ struct MoveRotatePanelView: View {
         onApply()
     }
 
-    private var currentFillOpacityText: String {
-        switch document.selectedFillOpacitySummary() {
-        case .none:
-            return "—"
-        case .mixed:
-            return "Mixed"
-        case .uniform(let value):
-            return "\(Int((value * 100).rounded()))%"
-        }
-    }
-
-    /// Writing goes through this binding only for user drags; programmatic sync sets the
-    /// `fillOpacity` state directly so it never rewrites the selected shapes.
-    private var fillOpacityBinding: Binding<Double> {
-        Binding(
-            get: { fillOpacity },
-            set: { newValue in
-                fillOpacity = newValue
-                document.setSelectedStrokesFillOpacity(CGFloat(newValue), recordUndo: false)
-                onApply()
-            }
-        )
+    private func fillOpacityDisplayString(_ opacity: CGFloat) -> String {
+        "\(Int((opacity * 100).rounded()))"
     }
 
     private func syncFillOpacity() {
-        switch document.selectedFillOpacitySummary() {
-        case .uniform(let value):
-            fillOpacity = Double(value)
-        case .mixed, .none:
-            if let representative = document.representativeSelectedFillOpacity() {
-                fillOpacity = Double(representative)
-            }
+        if case .uniform(let value) = document.selectedFillOpacitySummary() {
+            fillOpacityText = fillOpacityDisplayString(value)
+        } else if let value = document.representativeSelectedFillOpacity() {
+            fillOpacityText = fillOpacityDisplayString(value)
         }
+    }
+
+    private func applyFillOpacity() {
+        let cleaned = fillOpacityText
+            .replacingOccurrences(of: "%", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let value = Double(cleaned) else {
+            syncFillOpacity()
+            return
+        }
+        let opacity = min(1, max(0, CGFloat(value) / 100))
+        document.setSelectedStrokesFillOpacity(opacity)
+        syncFillOpacity()
+        onApply()
+    }
+
+    private func stepFillOpacity(by delta: CGFloat) {
+        let base = document.representativeSelectedFillOpacity() ?? VectorStroke.defaultFillOpacity
+        let opacity = min(1, max(0, base + delta))
+        document.setSelectedStrokesFillOpacity(opacity)
+        syncFillOpacity()
+        onApply()
     }
 
     private func syncDegreesField() {
-        // For a group / multi-selection the field takes a relative rotation, so start at 0.
-        if document.usesGroupTransform {
-            degreesText = "0"
-        } else {
-            degreesText = String(format: "%.1f", currentDegrees)
-        }
-    }
-
-    private func syncDegreesFieldFromCurrent() {
-        guard degreesText.isEmpty
-            || Double(degreesText.trimmingCharacters(in: .whitespaces)) == nil else { return }
-        syncDegreesField()
+        guard !isEditingDegrees else { return }
+        degreesText = String(format: "%.1f", displayedRotationDegrees)
     }
 
     private func apply() {
         guard let value = Double(degreesText.trimmingCharacters(in: .whitespaces)) else { return }
-        if document.usesGroupTransform {
-            applyGroupRotation()
+        if document.hasMultiSelection {
+            applyGroupRotation(toDegrees: value)
         } else {
             setRotation(toDegrees: value)
         }
     }
 
-    private func applyGroupRotation() {
-        guard let value = Double(degreesText.trimmingCharacters(in: .whitespaces)),
-              abs(value) > 0 else { return }
-        document.rotateSelectedElements(byDegrees: value)
-        degreesText = "0"
+    /// Multi-selection: the field is the rotation applied since the selection was made.
+    /// Submitting the value already shown does not rotate again.
+    private func applyGroupRotation(toDegrees value: Double) {
+        let current = document.groupHandleRotationDegrees ?? 0
+        let delta = value - current
+        guard abs(delta) > 0.05 else { return }
+        document.groupHandleRotationDegrees = current + delta
+        document.rotateSelectedElements(byDegrees: delta)
+        syncDegreesField()
         onApply()
     }
 
-    private func resetToOriginal() {
-        setRotation(toDegrees: 0)
+    private func stepRotation(by delta: Double) {
+        if document.hasMultiSelection {
+            let current = document.groupHandleRotationDegrees ?? 0
+            document.groupHandleRotationDegrees = current + delta
+            document.rotateSelectedElements(byDegrees: delta)
+            syncDegreesField()
+            onApply()
+        } else {
+            setRotation(toDegrees: currentDegrees + delta)
+        }
     }
 
     private func setRotation(toDegrees value: Double) {
@@ -738,38 +707,11 @@ struct MoveRotatePanelView: View {
     }
 }
 
-/// Full system color picker (wheel, sliders, eyedropper) presented as a sheet
-/// for editing a selected text element's fill or stroke color.
-private struct TextStyleColorPickerSheet: UIViewControllerRepresentable {
+/// Full system color picker, styled like Settings and New Canvas.
+private struct TextStyleColorPickerSheet: View {
     @Binding var color: Color
 
-    func makeUIViewController(context: Context) -> UIColorPickerViewController {
-        let picker = UIColorPickerViewController()
-        picker.delegate = context.coordinator
-        picker.selectedColor = UIColor(color)
-        picker.supportsAlpha = false
-        return picker
-    }
-
-    func updateUIViewController(_ picker: UIColorPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(color: $color)
-    }
-
-    final class Coordinator: NSObject, UIColorPickerViewControllerDelegate {
-        @Binding var color: Color
-
-        init(color: Binding<Color>) {
-            _color = color
-        }
-
-        func colorPickerViewController(
-            _ viewController: UIColorPickerViewController,
-            didSelect selectedColor: UIColor,
-            continuously: Bool
-        ) {
-            color = Color(selectedColor)
-        }
+    var body: some View {
+        SystemColorPickerSheet(color: $color)
     }
 }

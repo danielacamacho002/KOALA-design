@@ -6,8 +6,19 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		A49864082FC9318400C5E008 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2498643F2FC9318400C5E982 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 249864462FC9318400C5E982;
+			remoteInfo = vectr;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		249864472FC9318400C5E982 /* vectr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = vectr.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A49864012FC9318400C5E001 /* vectrTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = vectrTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +27,22 @@
 			path = vectr;
 			sourceTree = "<group>";
 		};
+		A49864022FC9318400C5E002 /* vectrTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = vectrTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		249864442FC9318400C5E982 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A49864032FC9318400C5E003 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				249864492FC9318400C5E982 /* vectr */,
+				A49864022FC9318400C5E002 /* vectrTests */,
 				249864482FC9318400C5E982 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				249864472FC9318400C5E982 /* vectr.app */,
+				A49864012FC9318400C5E001 /* vectrTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +95,29 @@
 			productReference = 249864472FC9318400C5E982 /* vectr.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A49864062FC9318400C5E006 /* vectrTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A498640B2FC9318400C5E00B /* Build configuration list for PBXNativeTarget "vectrTests" */;
+			buildPhases = (
+				A49864042FC9318400C5E004 /* Sources */,
+				A49864032FC9318400C5E003 /* Frameworks */,
+				A49864052FC9318400C5E005 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A49864072FC9318400C5E007 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A49864022FC9318400C5E002 /* vectrTests */,
+			);
+			name = vectrTests;
+			packageProductDependencies = (
+			);
+			productName = vectrTests;
+			productReference = A49864012FC9318400C5E001 /* vectrTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -83,9 +131,13 @@
 					249864462FC9318400C5E982 = {
 						CreatedOnToolsVersion = 26.5;
 					};
+					A49864062FC9318400C5E006 = {
+						CreatedOnToolsVersion = 26.5;
+						TestTargetID = 249864462FC9318400C5E982;
+					};
 				};
 			};
-			buildConfigurationList = 249864422FC9318400C5E982 /* Build configuration list for PBXProject "vectr" */;
+			buildConfigurationList = 249864422FC9318600C5E982 /* Build configuration list for PBXProject "vectr" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -100,12 +152,20 @@
 			projectRoot = "";
 			targets = (
 				249864462FC9318400C5E982 /* vectr */,
+				A49864062FC9318400C5E006 /* vectrTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		249864452FC9318400C5E982 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A49864052FC9318400C5E005 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +182,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A49864042FC9318400C5E004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A49864072FC9318400C5E007 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 249864462FC9318400C5E982 /* vectr */;
+			targetProxy = A49864082FC9318400C5E008 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		249864502FC9318600C5E982 /* Debug */ = {
@@ -248,7 +323,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 8K2PYWYUS6;
+				DEVELOPMENT_TEAM = 7PJNZT4YR2;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -265,6 +340,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UIUserInterfaceStyle = Light;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
@@ -293,7 +369,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 8K2PYWYUS6;
+				DEVELOPMENT_TEAM = 7PJNZT4YR2;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -310,6 +386,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UIUserInterfaceStyle = Light;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
@@ -331,10 +408,58 @@
 			};
 			name = Release;
 		};
+		A49864092FC9318400C5E009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8K2PYWYUS6;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ysdwysd.earthwrm.vectrTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/vectr.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/vectr";
+			};
+			name = Debug;
+		};
+		A498640A2FC9318400C5E00A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 8K2PYWYUS6;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ysdwysd.earthwrm.vectrTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/vectr.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/vectr";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		249864422FC9318400C5E982 /* Build configuration list for PBXProject "vectr" */ = {
+		249864422FC9318600C5E982 /* Build configuration list for PBXProject "vectr" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				249864502FC9318600C5E982 /* Debug */,
@@ -348,6 +473,15 @@
 			buildConfigurations = (
 				249864532FC9318600C5E982 /* Debug */,
 				249864542FC9318600C5E982 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A498640B2FC9318400C5E00B /* Build configuration list for PBXNativeTarget "vectrTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A49864092FC9318400C5E009 /* Debug */,
+				A498640A2FC9318400C5E00A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

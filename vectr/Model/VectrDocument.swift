@@ -24,8 +24,11 @@ final class VectrDocument {
     var grid: GridSettings
     var settings: DocumentSettings = DocumentSettings()
 
-    var strokeWidth: CGFloat = 1.5
+    var strokeWidth: CGFloat = VectorStroke.defaultStrokeWidth
     var strokeColor: CodableColor = CodableColor(.primary)
+    /// Session-only. While Move is dragging a selection, motion locks to the
+    /// nearer of the X or Y axis after a short threshold. Not persisted.
+    var moveAxisLockEnabled = false
     var selectedStrokeID: UUID? {
         didSet {
             guard !isSyncingSelection else { return }
@@ -36,6 +39,7 @@ final class VectrDocument {
                 selectedStrokeIDs = [id]
                 selectedTextID = nil
                 selectedTextIDs = []
+                selectedReferenceImageID = nil
             } else {
                 selectedStrokeIDs = []
             }
@@ -61,11 +65,9 @@ final class VectrDocument {
     var endpointSnapEnabled: Bool = false
     var midpointSnapEnabled: Bool = false
     var intersectionSnapEnabled: Bool = false
-    /// Curved-geometry snap toggles: circle/ellipse/arc center, quadrant apexes, and
-    /// tangent contact for an in-progress line.
+    /// Curved-geometry snap toggles: circle/ellipse/arc center, and on-rim / compass snap.
     var centerSnapEnabled: Bool = false
     var quadrantSnapEnabled: Bool = false
-    var tangentSnapEnabled: Bool = false
     var dimensionsVisible: Bool = false
     // Document-space offsets of dragged dimension labels, keyed by "<strokeID>:<dimensionID>".
     var dimensionOffsets: [String: CGPoint] = [:]
@@ -79,6 +81,9 @@ final class VectrDocument {
     var selectedFilletCornerIndices: Set<Int> = []
     /// When set, move-tool rotation pivots around this anchor index; nil uses shape center.
     var moveRotationPivotAnchorIndex: Int?
+    /// Degrees the current multi-selection has been rotated since it was selected.
+    /// Session-only; the rotate stepper shows this while the group handle is used.
+    var groupHandleRotationDegrees: Double?
     /// Session clipboard for copying items from one layer and pasting onto another.
     /// Not persisted; switching layers clears selection, so copies live here until paste.
     var clipboard: ElementClipboard = ElementClipboard()
@@ -88,6 +93,9 @@ final class VectrDocument {
     /// Move is the idle default, so its toolbar icon stays off until the user
     /// taps it or starts using it. Launch and "exit tool → Move" leave this false.
     var isMoveToolHighlighted = false
+    /// When true, the Move tool shows the rotation handle. Off by default so
+    /// the handle is not in the way during ordinary move/edit.
+    var isMoveRotateMode = false
     var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
@@ -100,6 +108,7 @@ final class VectrDocument {
                 selectedTextIDs = [id]
                 selectedStrokeID = nil
                 selectedStrokeIDs = []
+                selectedReferenceImageID = nil
             } else {
                 selectedTextIDs = []
             }
@@ -107,13 +116,21 @@ final class VectrDocument {
     }
     var activeFontRef: FontRef = .default
     var activeFontSize: CGFloat = 24
-    var referenceImageData: Data?
-    var referenceImageFrame: CGRect?
+    /// Defaults applied to the next text placed with the Type tool.
+    var activeTextIsOutline = false
+    var activeTextStrokeWidth: CGFloat = TextElement.defaultStrokeWidth
+    var referenceImages: [ReferenceImage] = []
+    var selectedReferenceImageID: UUID?
 
     var printLayout: PrintLayoutSettings = PrintLayoutSettings()
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
     var printSelectedStrokeID: UUID?
     var printSelectedTextID: UUID?
+    /// Full print-layout stroke selection. Always includes `printSelectedStrokeID`
+    /// when a print stroke is selected.
+    var printSelectedStrokeIDs: Set<UUID> = []
+    /// Full print-layout text selection, kept in sync with `printSelectedTextID`.
+    var printSelectedTextIDs: Set<UUID> = []
     var printLayoutRevision = 0
     /// Print-layout-only sliced fragments produced by the Cut tool. Each is a fresh
     /// polyline in base (design) space; laid over the design strokes and never
@@ -122,10 +139,15 @@ final class VectrDocument {
     /// Original design strokes that have been cut and are hidden in Print Layout
     /// (replaced by their `printPieces`). They remain fully intact in Design mode.
     var printHiddenStrokeIDs: Set<UUID> = []
+    /// Piece ID → original design stroke ID, so join/delete can prune cut fragments.
+    var printPieceSourceIDs: [UUID: UUID] = [:]
 
     private var undoStack: [DocumentSnapshot] = []
     private var redoStack: [DocumentSnapshot] = []
     private let undoLimit = 50
+    /// Live raster bytes by image id. Undo snapshots omit payloads; this map
+    /// reattaches them so add/remove/move stay undoable without 50× copies.
+    private var referenceImagePayloads: [UUID: Data] = [:]
     /// Bumped when undo/redo stacks change to keep toolbar state in sync.
     var undoRevision = 0
 
@@ -168,12 +190,13 @@ final class VectrDocument {
         strokeWidth = snapshot.strokeWidth
         strokeColor = snapshot.strokeColor
         selectedStrokeID = snapshot.selectedStrokeID
-        referenceImageData = snapshot.referenceImageData
-        referenceImageFrame = snapshot.referenceImageFrame
+        referenceImages = snapshot.resolvedReferenceImages()
+        rememberReferenceImagePayloads(referenceImages)
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
         printPieces = snapshot.printPieces
         printHiddenStrokeIDs = snapshot.printHiddenStrokeIDs
+        printPieceSourceIDs = snapshot.printPieceSourceIDs ?? [:]
         dimensionOffsets = snapshot.dimensionOffsets
         dimensionLocks = snapshot.dimensionLocks ?? []
         syncGridFromSettings()
@@ -187,17 +210,7 @@ final class VectrDocument {
     /// Strokes on visible layers, ordered back-to-front by layer (index 0 = backmost layer),
     /// stable within a layer by insertion order.
     func visibleStrokes() -> [VectorStroke] {
-        let order = layerIndexByID()
-        let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
-        return strokes
-            .enumerated()
-            .filter { visibleLayerIDs.contains($0.element.layerID) && !$0.element.isHiddenFromCanvas }
-            .sorted { lhs, rhs in
-                let l = order[lhs.element.layerID] ?? 0
-                let r = order[rhs.element.layerID] ?? 0
-                return l == r ? lhs.offset < rhs.offset : l < r
-            }
-            .map(\.element)
+        DocumentQueries.visibleStrokes(layers: layers, strokes: strokes)
     }
 
     /// Visible strokes on the active layer that isn't locked, for hit-testing/selection.
@@ -214,6 +227,10 @@ final class VectrDocument {
     /// True when a text element can be selected or edited on the current layer.
     func isSelectableText(_ text: TextElement) -> Bool {
         isSelectableLayer(text.layerID)
+    }
+
+    func isSelectableReferenceImage(_ image: ReferenceImage) -> Bool {
+        isSelectableLayer(image.layerID)
     }
 
     /// Active layer that is visible and unlocked.
@@ -238,6 +255,26 @@ final class VectrDocument {
         return visibleTextElements().filter { (order[$0.layerID] ?? 0) >= activeIndex }
     }
 
+    /// Rasters rebound onto a known layer so hide/opacity/hit-testing match strokes.
+    func resolvedReferenceImages() -> [ReferenceImage] {
+        DocumentQueries.bindReferenceImages(referenceImages, layers: layers, fallback: activeLayerID)
+    }
+
+    func visibleReferenceImages() -> [ReferenceImage] {
+        DocumentQueries.visibleReferenceImages(layers: layers, images: resolvedReferenceImages())
+    }
+
+    func referenceImages(for layerID: UUID) -> [ReferenceImage] {
+        resolvedReferenceImages().filter { $0.layerID == layerID }
+    }
+
+    /// Visible images on the active layer and any layers stacked in front of it.
+    func occupyingReferenceImages() -> [ReferenceImage] {
+        let order = layerIndexByID()
+        let activeIndex = order[activeLayerID] ?? 0
+        return visibleReferenceImages().filter { (order[$0.layerID] ?? 0) >= activeIndex }
+    }
+
     /// Geometry that editing tools, snaps, and constraints may interact with.
     /// Restricted to the active, visible, unlocked layer so other layers stay fully
     /// independent until they are grouped and merged into this one.
@@ -253,10 +290,12 @@ final class VectrDocument {
     /// visible design strokes that have not been cut, followed by print-layout pieces
     /// (filtered to visible layers). Design mode never uses this.
     func printLayoutStrokes() -> [VectorStroke] {
-        let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
-        var result = visibleStrokes().filter { !printHiddenStrokeIDs.contains($0.id) }
-        result.append(contentsOf: printPieces.filter { visibleLayerIDs.contains($0.layerID) })
-        return result
+        DocumentQueries.printLayoutStrokes(
+            layers: layers,
+            strokes: strokes,
+            printPieces: printPieces,
+            printHiddenStrokeIDs: printHiddenStrokeIDs
+        )
     }
 
     /// Resolves a print-layout stroke id, preferring pieces over design strokes.
@@ -268,7 +307,7 @@ final class VectrDocument {
     // MARK: - Layers
 
     private func layerIndexByID() -> [UUID: Int] {
-        Dictionary(uniqueKeysWithValues: layers.enumerated().map { ($1.id, $0) })
+        DocumentQueries.layerIndexByID(layers)
     }
 
     @discardableResult
@@ -293,15 +332,22 @@ final class VectrDocument {
         guard layers.count > 1,
               let index = layers.firstIndex(where: { $0.id == id }) else { return }
         pushUndo()
+        let removedStrokeIDs = Set(strokes.filter { $0.layerID == id }.map(\.id))
+        let removedTextIDs = Set(textElements.filter { $0.layerID == id }.map(\.id))
         layers.remove(at: index)
         strokes.removeAll { $0.layerID == id }
         textElements.removeAll { $0.layerID == id }
+        referenceImages.removeAll { $0.layerID == id }
         pruneGroups()
+        retireDesignStrokeIDs(removedStrokeIDs, textIDs: removedTextIDs, droppedLayerID: id)
         if let selected = selectedStrokeID, stroke(with: selected) == nil {
             selectedStrokeID = nil
         }
         if let selectedText = selectedTextID, textElement(with: selectedText) == nil {
             selectedTextID = nil
+        }
+        if let selectedImage = selectedReferenceImageID, referenceImage(with: selectedImage) == nil {
+            selectedReferenceImageID = nil
         }
         if activeLayerID == id {
             activeLayerID = layers[min(index, layers.count - 1)].id
@@ -323,6 +369,11 @@ final class VectrDocument {
         guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
         pushUndo()
         layers[index].isVisible.toggle()
+        if !layers[index].isVisible,
+           let selected = selectedReferenceImage,
+           selected.layerID == id {
+            selectedReferenceImageID = nil
+        }
         geometryRevision += 1
     }
 
@@ -335,7 +386,7 @@ final class VectrDocument {
 
     /// Resolved 0...1 opacity for a layer; missing layers are treated as fully opaque.
     func opacity(forLayerID id: UUID) -> CGFloat {
-        layers.first { $0.id == id }?.resolvedOpacity ?? 1
+        DocumentQueries.opacity(layers: layers, forLayerID: id)
     }
 
     func setLayerOpacity(id: UUID, opacity: CGFloat, recordUndo: Bool = true) {
@@ -362,6 +413,9 @@ final class VectrDocument {
         let selectedTextOnActive = selectedTextIDs.filter { textElement(with: $0)?.layerID == id }
         if selectedOnActive.count != selectedStrokeIDs.count || selectedTextOnActive.count != selectedTextIDs.count {
             setElementSelection(strokeIDs: selectedOnActive, textIDs: selectedTextOnActive)
+        } else if let imageID = selectedReferenceImageID,
+                  referenceImage(with: imageID)?.layerID != id {
+            selectedReferenceImageID = nil
         }
     }
 
@@ -527,11 +581,16 @@ final class VectrDocument {
                                                layerID: { $0.layerID }, setLayerID: { $0.layerID = $1 })
         textElements = mergedContentPreservingOrder(textElements, mergedIDs: mergedIDs, targetID: targetID, order: order,
                                                     layerID: { $0.layerID }, setLayerID: { $0.layerID = $1 })
+        referenceImages = mergedContentPreservingOrder(referenceImages, mergedIDs: mergedIDs, targetID: targetID, order: order,
+                                                       layerID: { $0.layerID }, setLayerID: { $0.layerID = $1 })
 
         layers.removeAll { mergedIDs.contains($0.id) && $0.id != targetID }
         pruneGroups()
         if let selected = selectedStrokeID, stroke(with: selected) == nil { selectedStrokeID = nil }
         if let selectedText = selectedTextID, textElement(with: selectedText) == nil { selectedTextID = nil }
+        if let selectedImage = selectedReferenceImageID, referenceImage(with: selectedImage) == nil {
+            selectedReferenceImageID = nil
+        }
         if mergedIDs.contains(activeLayerID) { activeLayerID = targetID }
         normalizeLayerGrouping()
         geometryRevision += 1
@@ -581,17 +640,7 @@ final class VectrDocument {
 
     /// Text elements on visible layers, ordered back-to-front by layer like `visibleStrokes()`.
     func visibleTextElements() -> [TextElement] {
-        let order = layerIndexByID()
-        let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
-        return textElements
-            .enumerated()
-            .filter { visibleLayerIDs.contains($0.element.layerID) && !$0.element.isHidden }
-            .sorted { lhs, rhs in
-                let l = order[lhs.element.layerID] ?? 0
-                let r = order[rhs.element.layerID] ?? 0
-                return l == r ? lhs.offset < rhs.offset : l < r
-            }
-            .map(\.element)
+        DocumentQueries.visibleTextElements(layers: layers, textElements: textElements)
     }
 
     /// Visible text elements on the active layer that isn't locked, for hit-testing/selection.
@@ -608,6 +657,21 @@ final class VectrDocument {
         pushUndo()
         textElements.append(element)
         geometryRevision += 1
+    }
+
+    /// Builds a text element using the Type tool's current font, color, outline, and stroke defaults.
+    func makeTextElement(at position: CGPoint, layerID: UUID? = nil) -> TextElement {
+        TextElement(
+            layerID: layerID ?? activeLayerID,
+            text: "",
+            position: position,
+            fontRef: activeFontRef,
+            fontSize: activeFontSize,
+            color: strokeColor,
+            strokeColor: strokeColor,
+            strokeWidth: activeTextStrokeWidth,
+            isOutline: activeTextIsOutline
+        )
     }
 
     func updateTextElement(_ element: TextElement, recordUndo: Bool = true) {
@@ -642,6 +706,120 @@ final class VectrDocument {
         if recordUndo { pushUndo() }
         textElements[index].position = position
         geometryRevision += 1
+    }
+
+    // MARK: - Reference image
+
+    private static let minReferenceImageDimension: CGFloat = 8
+    private static let additionalImageStagger: CGFloat = 36
+
+    var hasReferenceImage: Bool { !referenceImages.isEmpty }
+
+    var isReferenceImageSelected: Bool { selectedReferenceImageID != nil }
+
+    /// Combined stroke/text selection plus the imported image, used by move/scale chrome.
+    var hasCanvasSelection: Bool {
+        !selectionIsEmpty || isReferenceImageSelected
+    }
+
+    var selectedReferenceImage: ReferenceImage? {
+        guard let id = selectedReferenceImageID else { return nil }
+        return referenceImage(with: id)
+    }
+
+    var resolvedReferenceImageFrame: CGRect? {
+        guard let frame = selectedReferenceImage?.frame ?? referenceImages.last?.frame,
+              frame.width > 0, frame.height > 0 else {
+            return nil
+        }
+        return frame
+    }
+
+    func referenceImage(with id: UUID) -> ReferenceImage? {
+        referenceImages.first { $0.id == id }
+    }
+
+    /// Front-most occupying imported image under `point` (last in the array is on top).
+    func referenceImageHit(at point: CGPoint) -> ReferenceImage? {
+        occupyingReferenceImages().reversed().first { $0.contains(point) }
+    }
+
+    func referenceImageContains(_ point: CGPoint) -> Bool {
+        referenceImageHit(at: point) != nil
+    }
+
+    func referenceImageCorners() -> [CGPoint]? {
+        guard let frame = resolvedReferenceImageFrame else { return nil }
+        return [
+            CGPoint(x: frame.minX, y: frame.minY),
+            CGPoint(x: frame.maxX, y: frame.minY),
+            CGPoint(x: frame.maxX, y: frame.maxY),
+            CGPoint(x: frame.minX, y: frame.maxY)
+        ]
+    }
+
+    func selectReferenceImage() {
+        guard let id = selectedReferenceImageID ?? referenceImages.last?.id,
+              referenceImage(with: id) != nil else {
+            selectedReferenceImageID = nil
+            return
+        }
+        selectReferenceImage(id: id)
+    }
+
+    func selectReferenceImage(id: UUID) {
+        guard referenceImage(with: id) != nil else {
+            selectedReferenceImageID = nil
+            return
+        }
+        setElementSelection(strokeIDs: [], textIDs: [])
+        selectedReferenceImageID = id
+    }
+
+    func setReferenceImageFrame(_ frame: CGRect, id: UUID? = nil, recordUndo: Bool = false) {
+        guard let index = targetReferenceImageIndex(id: id) else { return }
+        if recordUndo { pushUndo() }
+        let width = max(abs(frame.width), Self.minReferenceImageDimension)
+        let height = max(abs(frame.height), Self.minReferenceImageDimension)
+        referenceImages[index].frame = CGRect(x: frame.minX, y: frame.minY, width: width, height: height)
+    }
+
+    func scaleReferenceImage(factorX: CGFloat, factorY: CGFloat, about center: CGPoint, id: UUID? = nil) {
+        guard let index = targetReferenceImageIndex(id: id) else { return }
+        let frame = referenceImages[index].frame
+        let width = max(abs(frame.width * factorX), Self.minReferenceImageDimension)
+        let height = max(abs(frame.height * factorY), Self.minReferenceImageDimension)
+        setReferenceImageFrame(
+            CGRect(
+                x: center.x - width / 2,
+                y: center.y - height / 2,
+                width: width,
+                height: height
+            ),
+            id: referenceImages[index].id,
+            recordUndo: false
+        )
+    }
+
+    func removeReferenceImage(id: UUID? = nil, recordUndo: Bool = true) {
+        let targetID = id ?? selectedReferenceImageID ?? referenceImages.last?.id
+        guard let targetID, referenceImages.contains(where: { $0.id == targetID }) else { return }
+        if recordUndo { pushUndo() }
+        referenceImages.removeAll { $0.id == targetID }
+        if selectedReferenceImageID == targetID {
+            selectedReferenceImageID = nil
+        }
+        geometryRevision += 1
+    }
+
+    private func targetReferenceImageIndex(id: UUID?) -> Int? {
+        if let id {
+            return referenceImages.firstIndex { $0.id == id }
+        }
+        if let selected = selectedReferenceImageID {
+            return referenceImages.firstIndex { $0.id == selected }
+        }
+        return referenceImages.indices.last
     }
 
     func setTextRotation(id: UUID, radians: CGFloat, recordUndo: Bool = false) {
@@ -763,6 +941,55 @@ final class VectrDocument {
         ClosedShapeDetector.reconcile(document: self)
         DonutDetector.reconcile(document: self)
         geometryRevision += 1
+    }
+
+    /// Merges imported artwork into the active layer. Vector items get new IDs;
+    /// rasters are appended on the active layer. `offset` is added in document space.
+    @discardableResult
+    func importContent(_ content: ImportRouter.ImportedContent, offset: CGPoint = .zero) throws -> Int {
+        let hasVectors = content.hasVectorContent
+        if (hasVectors || content.hasReferenceImage) && activeLayer?.isLocked == true {
+            throw ImportRouter.ImportError.layerLocked
+        }
+        guard hasVectors || content.hasReferenceImage else {
+            throw ImportRouter.ImportError.noVectorContent
+        }
+
+        pushUndo()
+
+        var newStrokeIDs: Set<UUID> = []
+        var newTextIDs: Set<UUID> = []
+
+        for stroke in content.strokes {
+            var copy = stroke.duplicated(offset: offset)
+            copy.layerID = activeLayerID
+            strokes.append(ShapeGeometry.captureRotationBaseIfNeeded(copy))
+            newStrokeIDs.insert(copy.id)
+        }
+        for text in content.textElements {
+            var copy = text
+            copy.id = UUID()
+            copy.layerID = activeLayerID
+            copy.position = CGPoint(x: copy.position.x + offset.x, y: copy.position.y + offset.y)
+            textElements.append(copy)
+            newTextIDs.insert(copy.id)
+        }
+        for image in content.referenceImages {
+            let stagger = CGFloat(referenceImages.count) * Self.additionalImageStagger
+            var copy = image
+            copy.id = UUID()
+            copy.layerID = activeLayerID
+            copy.frame = copy.frame.offsetBy(dx: offset.x + stagger, dy: offset.y + stagger)
+            referenceImages.append(copy)
+        }
+
+        geometryRevision += 1
+        if !newStrokeIDs.isEmpty || !newTextIDs.isEmpty {
+            setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs, compactAnchors: false)
+        } else if let lastImage = referenceImages.last, content.hasReferenceImage {
+            selectReferenceImage(id: lastImage.id)
+        }
+        return newStrokeIDs.count + newTextIDs.count
     }
 
     /// Adds a line segment, extending an open polyline when an endpoint connects.
@@ -902,7 +1129,7 @@ final class VectrDocument {
         for id in ids {
             guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
             let stroke = strokes[index]
-            let compacted = ShapeGeometry.withCompactedCircularAnchors(stroke)
+            let compacted = ShapeGeometry.withCompactedCircularAnchors(stroke, rewritingPartialRuns: false)
             if compacted != stroke {
                 strokes[index] = compacted
                 changed = true
@@ -1083,9 +1310,7 @@ final class VectrDocument {
     func translateStroke(id: UUID, delta: CGPoint, recordUndo: Bool = false) {
         guard let index = strokes.firstIndex(where: { $0.id == id }) else { return }
         if recordUndo { pushUndo() }
-        strokes[index].points = strokes[index].points.map {
-            CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
-        }
+        strokes[index] = strokes[index].offsettingGeometry(by: delta)
         if recordUndo {
             reconcileIntersectionAnchors(around: [id])
         }
@@ -1224,6 +1449,12 @@ final class VectrDocument {
         guard handles.indices.contains(index) else { return false }
         let handle = handles[index]
         let handleDistance = hypot(handle.x - documentPoint.x, handle.y - documentPoint.y)
+        // A filleted corner's anchor sits outside the outline — the arc cut that corner off —
+        // so a tap out there never landed on the shape. Deleting it would drop both edges the
+        // corner joins, which is how a single trim tap used to flatten a rounded rectangle.
+        guard AnchorPointEngine.roundedOutlineDistance(from: stroke, to: handle) <= 0.01 else {
+            return false
+        }
         let droppingRedundant = PolygonBoolean.isRedundantContourVertex(
             handles,
             index: index,
@@ -1271,11 +1502,11 @@ final class VectrDocument {
 
         pushUndo()
         if let index = strokes.firstIndex(where: { $0.id == result.strokeID }) {
-            strokes[index] = ShapeGeometry.withCompactedCircularAnchors(result.stroke)
+            strokes[index] = compactedTrimLeftover(result.stroke)
         }
         var affected: Set<UUID> = [result.stroke.id]
         if let additional = result.additionalStroke {
-            strokes.append(ShapeGeometry.withCompactedCircularAnchors(additional))
+            strokes.append(compactedTrimLeftover(additional))
             affected.insert(additional.id)
         }
         selectedStrokeID = result.stroke.id
@@ -1284,6 +1515,29 @@ final class VectrDocument {
         DonutDetector.reconcile(document: self)
         geometryRevision += 1
         return true
+    }
+
+    /// A leftover whose fillet arcs are already stored as anchors is finished geometry:
+    /// re-running circular run detection over it fits one wide arc across the straight
+    /// edges between two fillets.
+    private func compactedTrimLeftover(_ stroke: VectorStroke) -> VectorStroke {
+        stroke.hasBakedSmoothCorners ? stroke : ShapeGeometry.withCompactedCircularAnchors(stroke)
+    }
+
+    /// Geometry of the span `trimAt` would remove at the same point. Read-only: no undo,
+    /// no revision bump. Non-`nil` exactly when `trimAt` would accept the tap, so callers
+    /// can use it to decide between trimming and the edge-delete fallback; a degenerate
+    /// span comes back with no points rather than `nil`.
+    func trimRemovalPreview(at documentPoint: CGPoint, threshold: CGFloat) -> TrimEngine.RemovedSegmentGeometry? {
+        if isHitOnInactiveLayer(near: documentPoint, threshold: threshold) { return nil }
+        guard let result = TrimEngine.trim(
+            at: documentPoint,
+            threshold: threshold,
+            strokes: interactiveStrokes(),
+            preferredStrokeID: selectedStrokeID
+        ) else { return nil }
+        return result.removedSegment
+            ?? TrimEngine.RemovedSegmentGeometry(points: [], strokeWidth: result.stroke.strokeWidth)
     }
 
     func currentAnchorCount(for stroke: VectorStroke) -> Int {
@@ -1440,7 +1694,7 @@ final class VectrDocument {
     /// Replaces the entire element selection, picking a stable primary so the
     /// single-object tools (fillet/trim/scale/rotate panel) keep working.
     /// Off-layer items are dropped so Move/Edit cannot target another layer.
-    func setElementSelection(strokeIDs: Set<UUID>, textIDs: Set<UUID>) {
+    func setElementSelection(strokeIDs: Set<UUID>, textIDs: Set<UUID>, compactAnchors: Bool = true) {
         let strokeIDs = strokeIDs.filter { stroke(with: $0).map(isSelectableStroke) ?? false }
         let textIDs = textIDs.filter { textElement(with: $0).map(isSelectableText) ?? false }
         isSyncingSelection = true
@@ -1458,8 +1712,12 @@ final class VectrDocument {
             selectedTextID = nil
         }
         isSyncingSelection = false
+        selectedReferenceImageID = nil
+        groupHandleRotationDegrees = nil
         clearAnchorSelection()
-        compactCircularAnchors(for: strokeIDs)
+        if compactAnchors {
+            compactCircularAnchors(for: strokeIDs)
+        }
     }
 
     func toggleStrokeSelection(_ id: UUID) {
@@ -1527,7 +1785,7 @@ final class VectrDocument {
         return isSelectableStroke(hit) ? hit : nil
     }
 
-    /// Non-mutating topmost element hit (text preferred over strokes).
+    /// Non-mutating topmost element hit (text preferred over strokes, image behind both).
     func elementHit(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
         switch occupyingElementHit(near: documentPoint, threshold: threshold) {
         case .text(let id):
@@ -1536,18 +1794,25 @@ final class VectrDocument {
         case .stroke(let id):
             guard let stroke = stroke(with: id), isSelectableStroke(stroke) else { return .none }
             return .stroke(id)
+        case .referenceImage(let id):
+            guard let image = referenceImage(with: id), isSelectableReferenceImage(image) else { return .none }
+            return .referenceImage(id)
         case .none:
             return .none
         }
     }
 
-    /// Front-most text or stroke on the active layer or stacked in front of it.
+    /// Front-most text or stroke on the active layer or stacked in front of it;
+    /// imported images are hit only when nothing vector is on top of the point.
     func occupyingElementHit(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
         if let text = occupyingTextElements().reversed().first(where: { $0.contains(documentPoint) }) {
             return .text(text.id)
         }
         if let stroke = topmostOccupyingStroke(near: documentPoint, threshold: threshold) {
             return .stroke(stroke.id)
+        }
+        if let image = occupyingReferenceImages().reversed().first(where: { $0.contains(documentPoint) }) {
+            return .referenceImage(image.id)
         }
         return .none
     }
@@ -1563,6 +1828,8 @@ final class VectrDocument {
             return stroke(with: id).map { !isSelectableStroke($0) } ?? false
         case .text(let id):
             return textElement(with: id).map { !isSelectableText($0) } ?? false
+        case .referenceImage(let id):
+            return referenceImage(with: id).map { !isSelectableReferenceImage($0) } ?? false
         }
     }
 
@@ -1578,6 +1845,9 @@ final class VectrDocument {
             if let text = textElement(with: id), text.contains(point) {
                 return true
             }
+        }
+        if let selected = selectedReferenceImage, selected.contains(point) {
+            return true
         }
         return false
     }
@@ -1595,6 +1865,13 @@ final class VectrDocument {
             if Self.rectsOverlap(text.boundingBox(), rect) {
                 textIDs.insert(text.id)
             }
+        }
+        if strokeIDs.isEmpty, textIDs.isEmpty,
+           let image = occupyingReferenceImages().reversed().first(where: {
+               isSelectableReferenceImage($0) && Self.rectsOverlap($0.frame, rect)
+           }) {
+            selectReferenceImage(id: image.id)
+            return
         }
         let expanded = expandedSelectionForGroups(strokeIDs: strokeIDs, textIDs: textIDs)
         setElementSelection(strokeIDs: expanded.strokeIDs, textIDs: expanded.textIDs)
@@ -1660,10 +1937,18 @@ final class VectrDocument {
         }
         pushUndo()
         let removeIDs = Set(selected.map(\.id))
+        let sharedTransform = sharedPrintTransform(for: removeIDs)
         strokes.removeAll { removeIDs.contains($0.id) }
         strokes.append(contentsOf: joined)
         pruneGroups()
         let joinedIDs = Set(joined.map(\.id))
+        retireDesignStrokeIDs(removeIDs.subtracting(joinedIDs))
+        if let sharedTransform, sharedTransform != .identity {
+            for stroke in joined where !removeIDs.contains(stroke.id) {
+                printStrokeTransforms[stroke.id] = sharedTransform
+            }
+            printLayoutRevision += 1
+        }
         reconcileIntersectionAnchors(around: joinedIDs)
         geometryRevision += 1
         setElementSelection(strokeIDs: joinedIDs, textIDs: [])
@@ -1771,6 +2056,10 @@ final class VectrDocument {
 
     /// Deletes every selected stroke and text element in one undoable step.
     func deleteSelectedElements() {
+        if isReferenceImageSelected && selectionIsEmpty {
+            removeReferenceImage()
+            return
+        }
         expandSelectionToGroupsIfNeeded()
         guard !selectionIsEmpty else { return }
         pushUndo()
@@ -1779,12 +2068,14 @@ final class VectrDocument {
         strokes.removeAll { strokeIDs.contains($0.id) }
         textElements.removeAll { textIDs.contains($0.id) }
         pruneGroups()
+        retireDesignStrokeIDs(strokeIDs, textIDs: textIDs)
         isSyncingSelection = true
         selectedStrokeIDs = []
         selectedTextIDs = []
         selectedStrokeID = nil
         selectedTextID = nil
         isSyncingSelection = false
+        selectedReferenceImageID = nil
         clearAnchorSelection()
         geometryRevision += 1
     }
@@ -1814,26 +2105,27 @@ final class VectrDocument {
         !clipboard.isEmpty && activeLayer?.isLocked != true
     }
 
-    /// Pastes clipboard contents onto the active layer at the original document position.
-    /// Returns the number of items created, or 0 when paste is not possible.
+    /// Pastes clipboard contents onto the active layer, one grid step down and to
+    /// the right of the copied position. Returns the number of items created, or 0
+    /// when paste is not possible.
     @discardableResult
     func pasteClipboardToActiveLayer() -> Int {
         guard canPasteClipboard else { return 0 }
         pushUndo()
 
+        let step = max(grid.spacing, 1)
+        let offset = CGPoint(x: step, y: step)
         var strokeIDMap: [UUID: UUID] = [:]
         var textIDMap: [UUID: UUID] = [:]
         var newStrokeIDs: Set<UUID> = []
         var newTextIDs: Set<UUID> = []
 
         for stroke in clipboard.strokes {
-            var copy = stroke
-            let newID = UUID()
-            strokeIDMap[stroke.id] = newID
-            copy.id = newID
+            var copy = stroke.duplicated(offset: offset)
+            strokeIDMap[stroke.id] = copy.id
             copy.layerID = activeLayerID
             strokes.append(ShapeGeometry.captureRotationBaseIfNeeded(copy))
-            newStrokeIDs.insert(newID)
+            newStrokeIDs.insert(copy.id)
         }
         for text in clipboard.textElements {
             var copy = text
@@ -1841,6 +2133,7 @@ final class VectrDocument {
             textIDMap[text.id] = newID
             copy.id = newID
             copy.layerID = activeLayerID
+            copy.position = CGPoint(x: copy.position.x + offset.x, y: copy.position.y + offset.y)
             textElements.append(copy)
             newTextIDs.insert(newID)
         }
@@ -1856,7 +2149,8 @@ final class VectrDocument {
         return clipboard.itemCount
     }
 
-    /// Duplicates the selection, offsetting the copies and selecting them.
+    /// Duplicates the selection and selects the copies.
+    /// `offset` is `.zero` for an in-place duplicate; Mirror passes the reflection shift.
     /// Copies geometry and modifiers as-is (fillets, holes, curve handles, rotation).
     func duplicateSelectedElements(offset: CGPoint) {
         expandSelectionToGroupsIfNeeded()
@@ -1901,6 +2195,21 @@ final class VectrDocument {
 
         geometryRevision += 1
         setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs)
+    }
+
+    /// Reflects a copy of the selection across one edge of its bounding box and
+    /// selects the copy. Horizontal mirrors across the right edge; vertical across
+    /// the bottom. The original stays put. One undo step covers the whole copy.
+    func mirrorSelectedElements(horizontal: Bool = true) {
+        expandSelectionToGroupsIfNeeded()
+        guard let bbox = selectionBoundingBox() else { return }
+        let span = horizontal ? bbox.width : bbox.height
+        guard span > 1e-4 else { return }
+        let offset = horizontal
+            ? CGPoint(x: span, y: 0)
+            : CGPoint(x: 0, y: span)
+        duplicateSelectedElements(offset: offset)
+        flipSelection(horizontal: horizontal, recordUndo: false)
     }
 
     /// Copies document-level per-stroke data (print placement, dimension pins) onto a clone.
@@ -1956,10 +2265,10 @@ final class VectrDocument {
     }
 
     /// Mirrors the selection about its combined bounding-box center.
-    func flipSelection(horizontal: Bool) {
+    func flipSelection(horizontal: Bool, recordUndo: Bool = true) {
         expandSelectionToGroupsIfNeeded()
         guard let bbox = selectionBoundingBox() else { return }
-        pushUndo()
+        if recordUndo { pushUndo() }
         let cx = bbox.midX
         let cy = bbox.midY
         func flip(_ point: CGPoint) -> CGPoint {
@@ -2413,6 +2722,58 @@ final class VectrDocument {
         return nil
     }
 
+    // MARK: - Fill color editing
+
+    /// Shared fill color of the selected closed shapes. `uniform(nil)` is the default gray plane.
+    enum FillColorSelection: Equatable {
+        case none
+        case uniform(CodableColor?)
+        case mixed
+    }
+
+    func selectedFillColorSummary() -> FillColorSelection {
+        let ids = closedFillableSelectedStrokeIDs()
+        guard !ids.isEmpty else { return .none }
+        var seen: CodableColor??
+        for id in ids {
+            guard let stroke = stroke(with: id) else { continue }
+            if let existing = seen {
+                if existing != stroke.fillColor { return .mixed }
+            } else {
+                seen = .some(stroke.fillColor)
+            }
+        }
+        guard let seen else { return .none }
+        return .uniform(seen)
+    }
+
+    /// Stored fill of the first selected closed shape. `nil` means the default gray plane.
+    func representativeSelectedFillColor() -> CodableColor? {
+        for id in closedFillableSelectedStrokeIDs() {
+            if let stroke = stroke(with: id) { return stroke.fillColor }
+        }
+        return nil
+    }
+
+    /// Sets the fill color on every selected closed shape. Opacity stays on `fillOpacity`.
+    @discardableResult
+    func setSelectedStrokesFillColor(_ color: CodableColor, recordUndo: Bool = true) -> Bool {
+        let ids = closedFillableSelectedStrokeIDs()
+        guard !ids.isEmpty else { return false }
+        let willChange = ids.contains { id in
+            guard let stroke = stroke(with: id) else { return false }
+            return stroke.fillColor != color
+        }
+        guard willChange else { return false }
+        if recordUndo { pushUndo() }
+        for id in ids {
+            guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
+            strokes[index].fillColor = color
+        }
+        geometryRevision += 1
+        return true
+    }
+
     /// Sets the fill opacity (0...1) on every selected closed shape.
     @discardableResult
     func setSelectedStrokesFillOpacity(_ opacity: CGFloat, recordUndo: Bool = true) -> Bool {
@@ -2448,6 +2809,7 @@ final class VectrDocument {
         activeCategory = category
         if category != .move {
             isMoveToolHighlighted = false
+            isMoveRotateMode = false
         }
         if let lineVariant { self.lineVariant = lineVariant }
         if let circleVariant { self.circleVariant = circleVariant }
@@ -2502,11 +2864,13 @@ final class VectrDocument {
         pushUndo()
         strokes.removeAll { $0.id == id }
         pruneGroups()
+        retireDesignStrokeIDs([id])
         if selectedStrokeID == id {
             clearToolSelections()
             selectedStrokeID = nil
         }
         pruneRevealedDimensions(forElementID: id)
+        geometryRevision += 1
     }
 
     /// Interior fill tap for the Delete tool: when the topmost filled shape under
@@ -2562,6 +2926,7 @@ final class VectrDocument {
             )
             strokes.removeAll { $0.id == target.id }
             pruneGroups()
+            retireDesignStrokeIDs([target.id])
             deselectStrokeAfterMutation(target.id)
             geometryRevision += 1
             return true
@@ -2828,33 +3193,141 @@ final class VectrDocument {
 
     // MARK: - Print Layout
 
+    var printSelectionCount: Int {
+        printSelectedStrokeIDs.count + printSelectedTextIDs.count
+    }
+
+    var printSelectionIsEmpty: Bool {
+        printSelectedStrokeIDs.isEmpty && printSelectedTextIDs.isEmpty
+    }
+
+    var printSelectedIDs: Set<UUID> {
+        printSelectedStrokeIDs.union(printSelectedTextIDs)
+    }
+
     func printTransform(for strokeID: UUID) -> PrintStrokeTransform {
         printStrokeTransforms[strokeID] ?? .identity
     }
 
     func setPrintTransform(_ transform: PrintStrokeTransform, for strokeID: UUID, recordUndo: Bool = true) {
+        setPrintTransforms([strokeID: transform], recordUndo: recordUndo)
+    }
+
+    func setPrintTransforms(_ transforms: [UUID: PrintStrokeTransform], recordUndo: Bool = true) {
+        guard !transforms.isEmpty else { return }
         if recordUndo { pushUndo() }
-        if transform == .identity {
-            printStrokeTransforms.removeValue(forKey: strokeID)
-        } else {
-            printStrokeTransforms[strokeID] = transform
+        for (id, transform) in transforms {
+            if transform == .identity {
+                printStrokeTransforms.removeValue(forKey: id)
+            } else {
+                printStrokeTransforms[id] = transform
+            }
         }
         printLayoutRevision += 1
     }
 
-    func clearPrintSelection() {
-        printSelectedStrokeID = nil
-        printSelectedTextID = nil
+    func setPrintSelection(strokeIDs: Set<UUID>, textIDs: Set<UUID>) {
+        let validStrokeIDs = Set(strokeIDs.filter { printLayoutStroke(with: $0) != nil })
+        let validTextIDs = Set(textIDs.filter { textElement(with: $0) != nil })
+        printSelectedStrokeIDs = validStrokeIDs
+        printSelectedTextIDs = validTextIDs
+        if let current = printSelectedStrokeID, validStrokeIDs.contains(current) {
+            printSelectedStrokeID = current
+        } else {
+            printSelectedStrokeID = validStrokeIDs.first
+        }
+        if let current = printSelectedTextID, validTextIDs.contains(current) {
+            printSelectedTextID = current
+        } else {
+            printSelectedTextID = validTextIDs.first
+        }
         printLayoutRevision += 1
     }
 
+    func togglePrintStrokeSelection(_ id: UUID) {
+        var next = printSelectedStrokeIDs
+        if next.contains(id) { next.remove(id) } else { next.insert(id) }
+        setPrintSelection(strokeIDs: next, textIDs: printSelectedTextIDs)
+    }
+
+    func togglePrintTextSelection(_ id: UUID) {
+        var next = printSelectedTextIDs
+        if next.contains(id) { next.remove(id) } else { next.insert(id) }
+        setPrintSelection(strokeIDs: printSelectedStrokeIDs, textIDs: next)
+    }
+
+    func clearPrintSelection() {
+        setPrintSelection(strokeIDs: [], textIDs: [])
+    }
+
+    func rotatePrintSelection(
+        by radians: CGFloat,
+        around pivot: CGPoint,
+        originTransforms: [UUID: PrintStrokeTransform],
+        originCenters: [UUID: CGPoint],
+        recordUndo: Bool = false
+    ) {
+        guard abs(radians) > 1e-12 else { return }
+        let cosR = cos(radians)
+        let sinR = sin(radians)
+        var updates: [UUID: PrintStrokeTransform] = [:]
+        for id in printSelectedIDs {
+            guard var transform = originTransforms[id], let center = originCenters[id] else { continue }
+            let dx = center.x - pivot.x
+            let dy = center.y - pivot.y
+            let newCenter = CGPoint(
+                x: pivot.x + dx * cosR - dy * sinR,
+                y: pivot.y + dx * sinR + dy * cosR
+            )
+            transform.rotation += radians
+            transform.translation.x += newCenter.x - center.x
+            transform.translation.y += newCenter.y - center.y
+            updates[id] = transform
+        }
+        setPrintTransforms(updates, recordUndo: recordUndo)
+    }
+
+    /// Mirrors the print selection. A lone element flips in place; a multi-selection
+    /// mirrors about its group bounding box so the arrangement mirrors too, matching
+    /// how `rotatePrintSelection` pivots.
+    func flipPrintSelection(horizontal: Bool) {
+        let ids = printSelectedIDs
+        guard !ids.isEmpty else { return }
+        let pivot: CGPoint? = ids.count > 1
+            ? printSelectionBoundingBox().map { CGPoint(x: $0.midX, y: $0.midY) }
+            : nil
+
+        var updates: [UUID: PrintStrokeTransform] = [:]
+        for id in ids {
+            var transform = printTransform(for: id)
+            let before = printBounds(for: id)
+            if horizontal {
+                transform.flipHorizontal.toggle()
+            } else {
+                transform.flipVertical.toggle()
+            }
+            if let pivot, !before.isNull {
+                let after = printBounds(for: id, storedTransform: transform)
+                if !after.isNull {
+                    let target = CGPoint(
+                        x: horizontal ? 2 * pivot.x - before.midX : before.midX,
+                        y: horizontal ? before.midY : 2 * pivot.y - before.midY
+                    )
+                    transform.translation.x += target.x - after.midX
+                    transform.translation.y += target.y - after.midY
+                }
+            }
+            updates[id] = transform
+        }
+        setPrintTransforms(updates, recordUndo: false)
+    }
+
     func effectivePrintTransform(for strokeID: UUID) -> PrintStrokeTransform {
-        var transform = printTransform(for: strokeID)
-        transform.translation = CGPoint(
-            x: transform.translation.x + printLayout.contentOffset.x,
-            y: transform.translation.y + printLayout.contentOffset.y
+        DocumentQueries.effectivePrintTransform(
+            printStrokeTransforms: printStrokeTransforms,
+            contentOffset: printLayout.contentOffset,
+            for: strokeID
         )
-        return transform
     }
 
     func transformedPrintStroke(_ stroke: VectorStroke) -> VectorStroke {
@@ -2891,35 +3364,51 @@ final class VectrDocument {
     }
 
     #if canImport(UIKit)
-    /// Unified print-layout selection: prefers a hit text element, otherwise
-    /// falls back to stroke hit testing. Text and strokes each keep their own
-    /// print selection slot; selecting one kind clears the other.
-    @discardableResult
-    func selectPrintElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
+    /// Topmost print-layout hit without changing selection. Text is preferred over strokes.
+    func hitPrintElement(near documentPoint: CGPoint, threshold: CGFloat) -> ElementHit {
         for element in visibleTextElements().reversed() {
             let transform = effectivePrintTransform(for: element.id)
             let affine = PrintLayoutCoordinateSpace.textPrintTransform(for: element, transform: transform)
             let local = documentPoint.applying(affine.inverted())
             if element.contains(local) {
-                printSelectedTextID = element.id
-                printSelectedStrokeID = nil
                 return .text(element.id)
             }
         }
-        if let stroke = selectPrintStroke(near: documentPoint, threshold: threshold) {
-            printSelectedTextID = nil
+        if let stroke = printStrokeHit(near: documentPoint, threshold: threshold) {
             return .stroke(stroke.id)
         }
-        printSelectedTextID = nil
         return .none
     }
+
+    /// Tap-to-toggle print selection, matching design-canvas Move: add on a new
+    /// hit, toggle off a member of a multi-selection, keep a lone selection, clear
+    /// on empty canvas.
+    func handlePrintSelectTap(near documentPoint: CGPoint, threshold: CGFloat) {
+        switch hitPrintElement(near: documentPoint, threshold: threshold) {
+        case .stroke(let id):
+            if printSelectedStrokeIDs.contains(id) {
+                if printSelectionCount > 1 { togglePrintStrokeSelection(id) }
+            } else {
+                togglePrintStrokeSelection(id)
+            }
+        case .text(let id):
+            if printSelectedTextIDs.contains(id) {
+                if printSelectionCount > 1 { togglePrintTextSelection(id) }
+            } else {
+                togglePrintTextSelection(id)
+            }
+        case .referenceImage, .none:
+            // Print layout never hit-tests reference images, so this is a miss.
+            clearPrintSelection()
+        }
+    }
+
     #endif
 
-    func selectPrintStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
+    func printStrokeHit(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
         for stroke in printLayoutStrokes().reversed() {
             let transformed = transformedPrintStroke(stroke)
             if transformed.contains(documentPoint) {
-                printSelectedStrokeID = stroke.id
                 return stroke
             }
         }
@@ -2934,8 +3423,93 @@ final class VectrDocument {
                 best = stroke
             }
         }
-        printSelectedStrokeID = best?.id
         return best
+    }
+
+    func selectPrintElements(in rect: CGRect) {
+        var strokeIDs: Set<UUID> = []
+        var textIDs: Set<UUID> = []
+        for stroke in printLayoutStrokes() {
+            let points = ShapeGeometry.renderPoints(for: transformedPrintStroke(stroke))
+            let bbox = PrintLayoutCoordinateSpace.boundingRect(for: points)
+            if !bbox.isNull, Self.rectsOverlap(bbox, rect) {
+                strokeIDs.insert(stroke.id)
+            }
+        }
+        for element in visibleTextElements() {
+            let corners = PrintLayoutCoordinateSpace.transformedTextCorners(
+                element,
+                transform: effectivePrintTransform(for: element.id)
+            )
+            let bbox = PrintLayoutCoordinateSpace.boundingRect(for: corners)
+            if !bbox.isNull, Self.rectsOverlap(bbox, rect) {
+                textIDs.insert(element.id)
+            }
+        }
+        setPrintSelection(strokeIDs: strokeIDs, textIDs: textIDs)
+    }
+
+    func printBounds(for id: UUID) -> CGRect {
+        printBounds(for: id, storedTransform: printTransform(for: id))
+    }
+
+    /// Bounds under an arbitrary stored transform, so a candidate placement can be
+    /// measured before it is committed.
+    func printBounds(for id: UUID, storedTransform: PrintStrokeTransform) -> CGRect {
+        var effective = storedTransform
+        effective.translation = CGPoint(
+            x: effective.translation.x + printLayout.contentOffset.x,
+            y: effective.translation.y + printLayout.contentOffset.y
+        )
+        if let stroke = printLayoutStroke(with: id) {
+            let transformed = PrintLayoutCoordinateSpace.transformedStroke(stroke, transform: effective)
+            let points = ShapeGeometry.renderPoints(for: transformed)
+            return PrintLayoutCoordinateSpace.boundingRect(for: points)
+        }
+        if let element = textElement(with: id) {
+            let corners = PrintLayoutCoordinateSpace.transformedTextCorners(element, transform: effective)
+            return PrintLayoutCoordinateSpace.boundingRect(for: corners)
+        }
+        return .null
+    }
+
+    func printSelectionBoundingBox() -> CGRect? {
+        var rect: CGRect?
+        for id in printSelectedIDs {
+            let bbox = printBounds(for: id)
+            guard !bbox.isNull else { continue }
+            rect = rect.map { $0.union(bbox) } ?? bbox
+        }
+        return rect
+    }
+
+    /// True when `point` lands on the print selection, so a drag there moves it
+    /// instead of starting a marquee. Tested per element: the union bounding box of
+    /// a multi-selection would swallow the empty gaps between the shapes.
+    func printSelectionContains(point: CGPoint, threshold: CGFloat) -> Bool {
+        for id in printSelectedStrokeIDs {
+            guard let stroke = printLayoutStroke(with: id) else { continue }
+            let transformed = transformedPrintStroke(stroke)
+            if transformed.contains(point) || transformed.distance(to: point) <= threshold {
+                return true
+            }
+        }
+        for id in printSelectedTextIDs {
+            guard let element = textElement(with: id) else { continue }
+            let affine = PrintLayoutCoordinateSpace.textPrintTransform(
+                for: element,
+                transform: effectivePrintTransform(for: id)
+            )
+            if element.contains(point.applying(affine.inverted())) {
+                return true
+            }
+        }
+        // A lone selection keeps its whole bounding box draggable, so hollow and
+        // thin shapes stay easy to grab.
+        if printSelectionCount == 1, let bbox = printSelectionBoundingBox() {
+            return bbox.insetBy(dx: -threshold, dy: -threshold).contains(point)
+        }
+        return false
     }
 
     func updatePrintLayout(_ settings: PrintLayoutSettings, recordUndo: Bool = true) {
@@ -2963,9 +3537,53 @@ final class VectrDocument {
         return points
     }
 
-    /// Cut tool: slices every print-layout stroke that crosses the printable-margin
-    /// line nearest `point` (in document/print-grid space) into independent pieces.
-    /// Print-layout-only — the underlying design strokes are hidden, not mutated.
+    /// Drops print-layout copies and transforms for design strokes that no longer exist.
+    func retireDesignStrokeIDs(
+        _ strokeIDs: Set<UUID>,
+        textIDs: Set<UUID> = [],
+        droppedLayerID: UUID? = nil
+    ) {
+        guard !strokeIDs.isEmpty || !textIDs.isEmpty || droppedLayerID != nil else { return }
+
+        printHiddenStrokeIDs.subtract(strokeIDs)
+        for id in strokeIDs { printStrokeTransforms.removeValue(forKey: id) }
+        for id in textIDs { printStrokeTransforms.removeValue(forKey: id) }
+
+        let pieceIDsToRemove = Set(printPieces.compactMap { piece -> UUID? in
+            if let layerID = droppedLayerID, piece.layerID == layerID { return piece.id }
+            if strokeIDs.contains(piece.id) { return piece.id }
+            if let source = printPieceSourceIDs[piece.id], strokeIDs.contains(source) { return piece.id }
+            return nil
+        })
+        if !pieceIDsToRemove.isEmpty {
+            printPieces.removeAll { pieceIDsToRemove.contains($0.id) }
+            for id in pieceIDsToRemove {
+                printStrokeTransforms.removeValue(forKey: id)
+                printPieceSourceIDs.removeValue(forKey: id)
+            }
+        }
+        printPieceSourceIDs = printPieceSourceIDs.filter { !strokeIDs.contains($0.value) }
+
+        // Selection settles last, and its own revision bump covers the pruning above.
+        let retired = strokeIDs.union(textIDs).union(pieceIDsToRemove)
+        setPrintSelection(
+            strokeIDs: printSelectedStrokeIDs.subtracting(retired),
+            textIDs: printSelectedTextIDs.subtracting(retired)
+        )
+    }
+
+    private func sharedPrintTransform(for ids: Set<UUID>) -> PrintStrokeTransform? {
+        guard let firstID = ids.first else { return nil }
+        let first = printTransform(for: firstID)
+        for id in ids where printTransform(for: id) != first {
+            return nil
+        }
+        return first
+    }
+
+    /// Cut tool: slices the print-layout stroke nearest `point` that crosses the
+    /// printable-margin line nearest the tap. Print-layout-only — design strokes
+    /// are hidden, not mutated.
     @discardableResult
     func cutAlongNearestPrintBorder(near point: CGPoint, threshold: CGFloat) -> Bool {
         let rects = PrintPageGridEngine.printableRects(for: printLayout)
@@ -2999,38 +3617,54 @@ final class VectrDocument {
         guard let axis = bestAxis else { return false }
         let coordinate = bestCoordinate
 
-        var newPieces: [VectorStroke] = []
-        var hideIDs: [UUID] = []
-        var removePieceIDs: [UUID] = []
-
+        var bestStroke: VectorStroke?
+        var bestStrokeDistance = threshold
         for stroke in printLayoutStrokes() {
             let strokeInP = transformedPrintStroke(stroke)
-            guard let fragments = PrintSliceEngine.slice(strokeInP, axis: axis, coordinate: coordinate) else {
+            guard PrintSliceEngine.crosses(strokeInP, axis: axis, coordinate: coordinate) else {
                 continue
             }
-            // Convert each fragment from print-grid space back to base space so that
-            // `effectivePrintTransform` (identity per-piece + contentOffset) re-places it
-            // exactly where the sliced portion was — no visual jump.
-            let offset = printLayout.contentOffset
-            let basePieces = fragments.map { piece -> VectorStroke in
-                var copy = piece
-                copy.points = piece.points.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
-                if !copy.cutoutPoints.isEmpty {
-                    copy.cutoutPoints = copy.cutoutPoints.map { contour in
-                        contour.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
-                    }
+            let distance = strokeInP.contains(point) ? 0 : strokeInP.distance(to: point)
+            if distance < bestStrokeDistance {
+                bestStrokeDistance = distance
+                bestStroke = stroke
+            }
+        }
+        guard let stroke = bestStroke else { return false }
+
+        let strokeInP = transformedPrintStroke(stroke)
+        guard let fragments = PrintSliceEngine.slice(
+            strokeInP,
+            axis: axis,
+            coordinate: coordinate,
+            nearestCrossingTo: point
+        ) else { return false }
+
+        // Convert each fragment from print-grid space back to base space so that
+        // `effectivePrintTransform` (identity per-piece + contentOffset) re-places it
+        // exactly where the sliced portion was — no visual jump.
+        let offset = printLayout.contentOffset
+        let basePieces = fragments.map { piece -> VectorStroke in
+            var copy = piece
+            copy.points = piece.points.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
+            if !copy.cutoutPoints.isEmpty {
+                copy.cutoutPoints = copy.cutoutPoints.map { contour in
+                    contour.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
                 }
-                return copy
             }
-            if strokes.contains(where: { $0.id == stroke.id }) {
-                hideIDs.append(stroke.id)
-            } else {
-                removePieceIDs.append(stroke.id)
-            }
-            newPieces.append(contentsOf: basePieces)
+            return copy
         }
 
-        guard !newPieces.isEmpty else { return false }
+        let sourceID: UUID
+        var hideIDs: [UUID] = []
+        var removePieceIDs: [UUID] = []
+        if strokes.contains(where: { $0.id == stroke.id }) {
+            sourceID = stroke.id
+            hideIDs.append(stroke.id)
+        } else {
+            sourceID = printPieceSourceIDs[stroke.id] ?? stroke.id
+            removePieceIDs.append(stroke.id)
+        }
 
         pushUndo()
 
@@ -3042,16 +3676,15 @@ final class VectrDocument {
             printPieces.removeAll { removeSet.contains($0.id) }
             for id in removePieceIDs {
                 printStrokeTransforms.removeValue(forKey: id)
-                if printSelectedStrokeID == id { printSelectedStrokeID = nil }
+                printPieceSourceIDs.removeValue(forKey: id)
             }
         }
-        printPieces.append(contentsOf: newPieces)
+        printPieces.append(contentsOf: basePieces)
+        for piece in basePieces {
+            printPieceSourceIDs[piece.id] = sourceID
+        }
 
-        var settings = printLayout
-        settings.activeTool = .select
-        printLayout = settings
-        printSelectedStrokeID = nil
-        printSelectedTextID = nil
+        setPrintSelection(strokeIDs: Set(basePieces.map(\.id)), textIDs: [])
         printLayoutRevision += 1
         geometryRevision += 1
         return true
@@ -3063,6 +3696,7 @@ final class VectrDocument {
         redoStack.append(currentSnapshot())
         apply(snapshot)
         viewport = preservedViewport
+        groupHandleRotationDegrees = nil
         undoRevision += 1
         geometryRevision += 1
         printLayoutRevision += 1
@@ -3074,6 +3708,7 @@ final class VectrDocument {
         undoStack.append(currentSnapshot())
         apply(snapshot)
         viewport = preservedViewport
+        groupHandleRotationDegrees = nil
         undoRevision += 1
         geometryRevision += 1
         printLayoutRevision += 1
@@ -3096,7 +3731,8 @@ final class VectrDocument {
         }
     }
 
-    private func currentSnapshot() -> DocumentSnapshot {
+    /// Full snapshot including raster bytes; used by the codec, exporters, and last-saved tracking.
+    func makeSnapshot() -> DocumentSnapshot {
         DocumentSnapshot(
             layers: layers,
             strokes: strokes,
@@ -3110,15 +3746,30 @@ final class VectrDocument {
             strokeWidth: strokeWidth,
             strokeColor: strokeColor,
             selectedStrokeID: selectedStrokeID,
-            referenceImageData: referenceImageData,
-            referenceImageFrame: referenceImageFrame,
+            referenceImages: {
+                let images = resolvedReferenceImages()
+                return images.isEmpty ? nil : images
+            }(),
+            referenceImageData: nil,
+            referenceImageFrame: nil,
             printLayout: printLayout,
             printStrokeTransforms: printStrokeTransforms,
             printPieces: printPieces,
             printHiddenStrokeIDs: printHiddenStrokeIDs,
+            printPieceSourceIDs: printPieceSourceIDs,
             dimensionOffsets: dimensionOffsets,
             dimensionLocks: dimensionLocks
         )
+    }
+
+    /// Undo/redo snapshot. Omits raster bytes; codec and last-saved still include them.
+    private func currentSnapshot() -> DocumentSnapshot {
+        rememberReferenceImagePayloads(referenceImages)
+        var snapshot = makeSnapshot()
+        snapshot.referenceImages = snapshot.referenceImages?.map { $0.omittingPayload() }
+        snapshot.referenceImageData = nil
+        snapshot.referenceImageFrame = nil
+        return snapshot
     }
 
     private func apply(_ snapshot: DocumentSnapshot) {
@@ -3133,20 +3784,55 @@ final class VectrDocument {
         strokeWidth = snapshot.strokeWidth
         strokeColor = snapshot.strokeColor
         selectedStrokeID = snapshot.selectedStrokeID
-        referenceImageData = snapshot.referenceImageData
-        referenceImageFrame = snapshot.referenceImageFrame
+        applyReferenceImages(from: snapshot)
         printLayout = snapshot.printLayout
         printStrokeTransforms = snapshot.printStrokeTransforms
         printPieces = snapshot.printPieces
         printHiddenStrokeIDs = snapshot.printHiddenStrokeIDs
+        printPieceSourceIDs = snapshot.printPieceSourceIDs ?? [:]
         dimensionOffsets = snapshot.dimensionOffsets
         dimensionLocks = snapshot.dimensionLocks ?? []
         syncGridFromSettings()
         printLayoutRevision += 1
     }
+
+    private func rememberReferenceImagePayloads(_ images: [ReferenceImage]) {
+        for image in images where !image.data.isEmpty {
+            referenceImagePayloads[image.id] = image.data
+        }
+    }
+
+    /// Restore image ids/frames/layers from the snapshot; reattach live bytes by id.
+    private func applyReferenceImages(from snapshot: DocumentSnapshot) {
+        rememberReferenceImagePayloads(referenceImages)
+        let restored = snapshot.resolvedReferenceImages()
+        rememberReferenceImagePayloads(restored)
+        referenceImages = restored.map { image in
+            guard image.data.isEmpty, let cached = referenceImagePayloads[image.id] else {
+                return image
+            }
+            var copy = image
+            copy.data = cached
+            return copy
+        }
+        if let selected = selectedReferenceImageID,
+           !referenceImages.contains(where: { $0.id == selected }) {
+            selectedReferenceImageID = nil
+        }
+    }
+
+    /// Bytes of raster payloads held by undo/redo snapshots. Always 0.
+    var undoRetainedReferenceImageBytes: Int {
+        func retainedBytes(_ snapshot: DocumentSnapshot) -> Int {
+            let imageBytes = (snapshot.referenceImages ?? []).reduce(0) { $0 + $1.data.count }
+            return imageBytes + (snapshot.referenceImageData?.count ?? 0)
+        }
+        return undoStack.reduce(0) { $0 + retainedBytes($1) }
+            + redoStack.reduce(0) { $0 + retainedBytes($1) }
+    }
 }
 
-struct DocumentSnapshot: Codable {
+nonisolated struct DocumentSnapshot: Codable, Sendable {
     var layers: [Layer]
     var strokes: [VectorStroke]
     var textElements: [TextElement] = []
@@ -3159,12 +3845,18 @@ struct DocumentSnapshot: Codable {
     var strokeWidth: CGFloat
     var strokeColor: CodableColor
     var selectedStrokeID: UUID?
+    /// Current persisted rasters. Optional so documents saved before multiple-image
+    /// support still decode; missing key becomes nil rather than a throw.
+    var referenceImages: [ReferenceImage]?
+    /// Legacy single-image payload. Used only when `referenceImages` is empty.
     var referenceImageData: Data?
     var referenceImageFrame: CGRect?
     var printLayout: PrintLayoutSettings = PrintLayoutSettings()
     var printStrokeTransforms: [UUID: PrintStrokeTransform] = [:]
     var printPieces: [VectorStroke] = []
     var printHiddenStrokeIDs: Set<UUID> = []
+    /// Optional so projects saved before piece lineage shipped still open.
+    var printPieceSourceIDs: [UUID: UUID]?
     var dimensionOffsets: [String: CGPoint] = [:]
     /// Optional rather than defaulted: synthesized Codable throws on a missing key even
     /// when a default exists, so projects saved before locks shipped would fail to open.

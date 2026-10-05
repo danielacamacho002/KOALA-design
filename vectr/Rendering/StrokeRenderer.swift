@@ -14,11 +14,11 @@ enum StrokeRenderer {
         updateShapeLayer(layer, stroke: stroke, viewport: viewport, pointTransform: nil, opacity: 1)
     }
 
-    static func path(for stroke: VectorStroke, viewport: ViewportTransform) -> UIBezierPath {
+    nonisolated static func path(for stroke: VectorStroke, viewport: ViewportTransform) -> UIBezierPath {
         path(for: stroke, viewport: viewport, pointTransform: nil)
     }
 
-    static func path(
+    nonisolated static func path(
         for stroke: VectorStroke,
         viewport: ViewportTransform,
         pointTransform: PrintStrokeTransform?
@@ -44,7 +44,7 @@ enum StrokeRenderer {
         appendContour(
             to: path,
             points: ShapeGeometry.renderPoints(for: renderStroke),
-            closed: renderStroke.isClosed,
+            closed: renderStroke.isClosed && renderStroke.shapeType != .arc,
             viewport: viewport
         )
 
@@ -54,7 +54,7 @@ enum StrokeRenderer {
                 points: cutout,
                 strokeWidth: renderStroke.strokeWidth,
                 isClosed: true,
-                shapeType: .circle
+                shapeType: .polyline
             )
             appendContour(
                 to: path,
@@ -106,7 +106,7 @@ enum StrokeRenderer {
         layer.lineCap = .round
         layer.lineJoin = .round
         layer.contentsScale = UIScreen.main.scale
-        layer.fillRule = usesEvenOddFill(stroke) ? .evenOdd : .nonZero
+        layer.fillRule = stroke.resolvedCGFillRule == .evenOdd ? .evenOdd : .nonZero
         layer.opacity = Float(opacity)
 
         if hasCutEdges(stroke) {
@@ -137,7 +137,7 @@ enum StrokeRenderer {
     /// True when the stroke needs its fill and outline drawn from different paths:
     /// either it has cut edges on the outer contour, or it has punched (unstroked)
     /// holes. In both cases the outline must omit the cut geometry.
-    private static func hasCutEdges(_ stroke: VectorStroke) -> Bool {
+    private nonisolated static func hasCutEdges(_ stroke: VectorStroke) -> Bool {
         guard stroke.isClosed, !stroke.isConstruction else { return false }
         return (stroke.openEdgeStarts?.isEmpty == false) || (stroke.openCutoutIndices?.isEmpty == false)
     }
@@ -161,7 +161,7 @@ enum StrokeRenderer {
     /// The path to *stroke* for a shape: identical to `path(for:)` unless the stroke
     /// has cut edges, in which case the outer contour is split into open subpaths that
     /// omit the cut edges (nested cutout contours remain stroked as closed loops).
-    static func outlinePath(
+    nonisolated static func outlinePath(
         for stroke: VectorStroke,
         viewport: ViewportTransform,
         pointTransform: PrintStrokeTransform? = nil
@@ -201,7 +201,12 @@ enum StrokeRenderer {
                 }
             }
         } else {
-            appendContour(to: path, points: contour, closed: renderStroke.isClosed, viewport: viewport)
+            appendContour(
+                to: path,
+                points: contour,
+                closed: renderStroke.isClosed && renderStroke.shapeType != .arc,
+                viewport: viewport
+            )
         }
 
         let unstroked = renderStroke.openCutoutIndices ?? []
@@ -211,7 +216,7 @@ enum StrokeRenderer {
                 points: cutout,
                 strokeWidth: renderStroke.strokeWidth,
                 isClosed: true,
-                shapeType: .circle
+                shapeType: .polyline
             )
             appendContour(
                 to: path,
@@ -223,7 +228,7 @@ enum StrokeRenderer {
         return path
     }
 
-    static func transformedPath(for stroke: VectorStroke, viewport: ViewportTransform) -> UIBezierPath {
+    nonisolated static func transformedPath(for stroke: VectorStroke, viewport: ViewportTransform) -> UIBezierPath {
         path(for: stroke, viewport: viewport)
     }
 
@@ -283,7 +288,7 @@ enum StrokeRenderer {
         }
     }
 
-    private static func appendContour(
+    private nonisolated static func appendContour(
         to path: UIBezierPath,
         points: [CGPoint],
         closed: Bool,
@@ -299,11 +304,7 @@ enum StrokeRenderer {
         }
     }
 
-    private static func usesEvenOddFill(_ stroke: VectorStroke) -> Bool {
-        stroke.isClosed && !stroke.cutoutPoints.isEmpty
-    }
-
-    private static func constructionPath(for stroke: VectorStroke, viewport: ViewportTransform) -> UIBezierPath {
+    private nonisolated static func constructionPath(for stroke: VectorStroke, viewport: ViewportTransform) -> UIBezierPath {
         let path = UIBezierPath()
         guard let first = stroke.points.first, let last = stroke.points.last else { return path }
         guard hypot(last.x - first.x, last.y - first.y) > 0.001 else { return path }
@@ -320,13 +321,10 @@ enum StrokeRenderer {
     }
 
     private static func fillColor(for stroke: VectorStroke) -> CGColor {
-        if stroke.isClosed, !stroke.isConstruction {
-            return UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor
-        }
-        return UIColor.clear.cgColor
+        stroke.resolvedFillCGColor
     }
 
-    private static func transformDocumentPath(_ documentPath: CGPath, viewport: ViewportTransform) -> UIBezierPath {
+    private nonisolated static func transformDocumentPath(_ documentPath: CGPath, viewport: ViewportTransform) -> UIBezierPath {
         let result = UIBezierPath()
         documentPath.applyWithBlock { element in
             let points = element.pointee.points

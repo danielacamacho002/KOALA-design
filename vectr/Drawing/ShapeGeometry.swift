@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-enum ShapeGeometry {
+nonisolated enum ShapeGeometry: Sendable {
     static func requiredControlPoints(
         category: ToolCategory,
         lineVariant: LineVariant,
@@ -282,12 +282,12 @@ enum ShapeGeometry {
             }
             return stroke.points
         case .ellipse:
-            if stroke.points.count == 4, let ellipse = ellipseFromCardinalPoints(stroke.points) {
+            if stroke.points.count == 4, let axes = ellipseAxes(from: stroke.points) {
                 return orientedCardinalPoints(
-                    center: ellipse.center,
-                    rx: ellipse.rx,
-                    ry: ellipse.ry,
-                    rotation: stroke.resolvedShapeRotation
+                    center: axes.center,
+                    rx: axes.rx,
+                    ry: axes.ry,
+                    rotation: axes.rotation + stroke.resolvedShapeRotation
                 )
             }
             return stroke.points
@@ -297,7 +297,7 @@ enum ShapeGeometry {
             }
             return stroke.points
         default:
-            let compacted = withCompactedCircularAnchors(stroke)
+            let compacted = withCompactedCircularAnchors(stroke, rewritingPartialRuns: false)
             if compacted.shapeType == .circle
                 || compacted.shapeType == .ellipse
                 || compacted.shapeType == .arc {
@@ -308,41 +308,86 @@ enum ShapeGeometry {
     }
 
     /// Moves one stored anchor. Circles and ellipses stay parametric (radius /
-    /// axis resize). Adjacent Bézier handles are cleared on leftover curves so
-    /// joined circular segments do not implode from stale tangent offsets.
+    /// axis resize). On a `.curve` the tangent handles ride along with the anchor,
+    /// so reshaping never flattens a Bézier into corners.
     static func applyingMovedAnchor(
         _ stroke: VectorStroke,
         at index: Int,
         to point: CGPoint
     ) -> VectorStroke {
-        guard stroke.points.indices.contains(index) else { return stroke }
+        applyingMovedAnchors(stroke, moves: [index: point])
+    }
+
+    /// Moves several anchors as one edit.
+    ///
+    /// Arcs must be resolved in a single pass: an `.arc` re-derives its whole anchor set
+    /// from the circle it fits, so feeding anchors in one at a time would apply the second
+    /// index to an already-rewritten list. Dragging every anchor of an arc by the same
+    /// delta has to come out as a plain translation, and only a single refit gives that.
+    static func applyingMovedAnchors(
+        _ stroke: VectorStroke,
+        moves: [Int: CGPoint]
+    ) -> VectorStroke {
+        guard !moves.isEmpty else { return stroke }
+        // Displacing *every* anchor by one delta is a translation, not a reshape. Rewriting
+        // the anchors point-by-point would refit parametric shapes from scratch, so offset
+        // the whole stroke instead and keep its curvature intact.
+        if let offset = uniformAnchorTranslation(of: stroke, moves: moves) {
+            return stroke.offsettingGeometry(by: offset)
+        }
         switch stroke.shapeType {
         case .circle:
             var updated = stroke
-            updated.points = updateCircleHandle(at: index, to: point, stroke: stroke)
+            for (index, point) in moves.sorted(by: { $0.key < $1.key })
+            where updated.points.indices.contains(index) {
+                updated.points = updateCircleHandle(at: index, to: point, stroke: updated)
+            }
             return updated
         case .ellipse:
             var updated = stroke
-            updated.points = updateEllipseHandle(at: index, to: point, stroke: stroke)
+            for (index, point) in moves.sorted(by: { $0.key < $1.key })
+            where updated.points.indices.contains(index) {
+                updated.points = updateEllipseHandle(at: index, to: point, stroke: updated)
+            }
             return updated
+        case .arc:
+            // Arcs stay parametric like circles/ellipses. Writing raw points would leave
+            // anchors off the circle, and an `.arc` renders from the circle through
+            // (first, middle, last) plus an anchor-walk sweep — so off-circle anchors
+            // render as unrelated geometry instead of the shape under the finger.
+            return updateArcHandles(stroke, moves: moves) ?? stroke
         default:
             break
         }
+
         var updated = stroke
-        updated.points[index] = point
-        guard var handles = updated.curveHandles, handles.count == updated.points.count else {
-            return updated
+        for (index, point) in moves where updated.points.indices.contains(index) {
+            updated.points[index] = point
         }
-        let count = updated.points.count
-        handles[index] = CurveHandle()
-        if updated.isClosed || index > 0 {
-            handles[(index - 1 + count) % count].outOffset = .zero
-        }
-        if updated.isClosed || index < count - 1 {
-            handles[(index + 1) % count].inOffset = .zero
-        }
-        updated.curveHandles = handles
+        // `CurveHandle` offsets are relative to their anchor, so leaving them alone makes
+        // the tangents travel with the dragged anchor and the segment stays curved.
         return updated
+    }
+
+    /// The single delta shared by `moves` when they cover every anchor, else nil.
+    private static func uniformAnchorTranslation(
+        of stroke: VectorStroke,
+        moves: [Int: CGPoint]
+    ) -> CGPoint? {
+        guard moves.count == stroke.points.count else { return nil }
+        var offset: CGPoint?
+        for (index, target) in moves {
+            guard stroke.points.indices.contains(index) else { return nil }
+            let anchor = stroke.points[index]
+            let delta = CGPoint(x: target.x - anchor.x, y: target.y - anchor.y)
+            guard let current = offset else {
+                offset = delta
+                continue
+            }
+            guard abs(delta.x - current.x) <= 0.0001,
+                  abs(delta.y - current.y) <= 0.0001 else { return nil }
+        }
+        return offset
     }
 
     static func filletCornerIndices(for stroke: VectorStroke) -> [Int] {
@@ -483,10 +528,10 @@ enum ShapeGeometry {
                 updated.shapeRotation = stroke.resolvedShapeRotation + angle
             }
         case .ellipse:
-            if let ellipse = ellipseFromCardinalPoints(stroke.points) {
-                let newCenter = rotatePoint(ellipse.center, around: pivot, by: angle)
-                updated.points = ellipseCardinalPoints(center: newCenter, rx: ellipse.rx, ry: ellipse.ry)
-                updated.shapeRotation = stroke.resolvedShapeRotation + angle
+            if let axes = ellipseAxes(from: stroke.points) {
+                let newCenter = rotatePoint(axes.center, around: pivot, by: angle)
+                updated.points = ellipseCardinalPoints(center: newCenter, rx: axes.rx, ry: axes.ry)
+                updated.shapeRotation = axes.rotation + stroke.resolvedShapeRotation + angle
             } else {
                 updated.points = rotatePoints(stroke.points, around: pivot, by: angle)
                 updated.shapeRotation = stroke.resolvedShapeRotation + angle
@@ -529,18 +574,18 @@ enum ShapeGeometry {
             }
             return stroke.points
         case .ellipse:
-            if let ellipse = ellipseFromCardinalPoints(stroke.points) {
-                let rotation = stroke.resolvedShapeRotation
+            if let axes = ellipseAxes(from: stroke.points) {
+                let rotation = axes.rotation + stroke.resolvedShapeRotation
                 let axisEnd = CGPoint(
-                    x: ellipse.center.x + cos(rotation) * ellipse.rx,
-                    y: ellipse.center.y + sin(rotation) * ellipse.rx
+                    x: axes.center.x + cos(rotation) * axes.rx,
+                    y: axes.center.y + sin(rotation) * axes.rx
                 )
                 let secondAxisEnd = CGPoint(
-                    x: ellipse.center.x + cos(rotation + .pi / 2) * ellipse.ry,
-                    y: ellipse.center.y + sin(rotation + .pi / 2) * ellipse.ry
+                    x: axes.center.x + cos(rotation + .pi / 2) * axes.ry,
+                    y: axes.center.y + sin(rotation + .pi / 2) * axes.ry
                 )
                 return ellipsePoints(
-                    center: ellipse.center,
+                    center: axes.center,
                     axisEnd: axisEnd,
                     secondAxisEnd: secondAxisEnd,
                     segments: 64
@@ -557,7 +602,7 @@ enum ShapeGeometry {
                let sweep = signedCircularSweep(
                     of: stroke.points,
                     around: circle.center,
-                    closed: stroke.isClosed
+                    closed: false
                ),
                abs(sweep) > 0.0001 {
                 return arcPoints(
@@ -565,6 +610,16 @@ enum ShapeGeometry {
                     start: first,
                     end: last,
                     sweep: sweep
+                )
+            }
+            // Never stroke raw 3–4 rim anchors — those chords cut across the interior.
+            if stroke.points.count >= 3,
+               let first = stroke.points.first,
+               let last = stroke.points.last {
+                return arcPointsThrough(
+                    start: first,
+                    end: last,
+                    through: stroke.points[stroke.points.count / 2]
                 )
             }
             return stroke.points
@@ -585,8 +640,10 @@ enum ShapeGeometry {
         }
     }
 
-    /// Expands baked fillet corners (single midpoint anchors) into smooth circular arcs so the
+    /// Expands baked fillet / circular-run midpoints into smooth circular arcs so the
     /// rendered/exported contour looks curved, while the stored anchor set stays minimal.
+    /// Consecutive interiors (a 270° leftover after a circle quadrant trim) are one
+    /// sweep — expanding each midpoint alone jumps backward and draws a chord.
     static func smoothedContourPoints(
         points: [CGPoint],
         closed: Bool,
@@ -602,17 +659,29 @@ enum ShapeGeometry {
             result.append(point)
         }
 
-        for index in 0..<count {
-            let isEndpoint = !closed && (index == 0 || index == count - 1)
-            if smoothMiddles.contains(index), !isEndpoint {
-                let prev = points[(index - 1 + count) % count]
-                let next = points[(index + 1) % count]
-                for point in arcPointsThrough(start: prev, end: next, through: points[index], segments: segmentsPerArc) {
+        let runs = consecutiveSmoothRuns(count: count, smooth: smoothMiddles, closed: closed)
+        var consumed = Set<Int>()
+        var index = 0
+        while index < count {
+            if consumed.contains(index) {
+                index += 1
+                continue
+            }
+            if let run = runs.first(where: { $0.contains(index) }) {
+                for point in expandedSmoothRunPoints(
+                    points: points,
+                    run: run,
+                    closed: closed,
+                    segmentsPerArc: segmentsPerArc
+                ) {
                     append(point)
                 }
-            } else {
-                append(points[index])
+                consumed.formUnion(run)
+                index += 1
+                continue
             }
+            append(points[index])
+            index += 1
         }
 
         if closed,
@@ -625,6 +694,90 @@ enum ShapeGeometry {
         return result
     }
 
+    /// Groups consecutive smooth midpoints, merging a run that wraps the closed seam.
+    static func consecutiveSmoothRuns(
+        count: Int,
+        smooth: Set<Int>,
+        closed: Bool
+    ) -> [[Int]] {
+        guard count >= 3, !smooth.isEmpty else { return [] }
+
+        func isSmooth(_ index: Int) -> Bool {
+            if !closed, index == 0 || index == count - 1 { return false }
+            return smooth.contains(index)
+        }
+
+        var runs: [[Int]] = []
+        var current: [Int] = []
+        for index in 0..<count {
+            if isSmooth(index) {
+                current.append(index)
+            } else if !current.isEmpty {
+                runs.append(current)
+                current = []
+            }
+        }
+        if !current.isEmpty {
+            runs.append(current)
+        }
+
+        if closed,
+           runs.count >= 2,
+           let first = runs.first,
+           let last = runs.last,
+           first.first == 0,
+           last.last == count - 1 {
+            runs[0] = last + first
+            runs.removeLast()
+        }
+        return runs
+    }
+
+    /// Samples the circular sweep from the vertex before `run` to the vertex after it.
+    static func expandedSmoothRunPoints(
+        points: [CGPoint],
+        run: [Int],
+        closed: Bool,
+        segmentsPerArc: Int
+    ) -> [CGPoint] {
+        let count = points.count
+        guard let first = run.first, let last = run.last, count >= 3 else {
+            return run.map { points[$0] }
+        }
+
+        if closed, run.count == count {
+            if let circle = fitCircle(from: points)
+                ?? arcCenter(start: points[0], end: points[count / 3], through: points[(2 * count) / 3]) {
+                return circlePoints(center: circle.center, radius: circle.radius, segments: 64)
+            }
+            return points
+        }
+
+        let prevIndex = (first - 1 + count) % count
+        let nextIndex = (last + 1) % count
+        var chain = [points[prevIndex]]
+        chain.append(contentsOf: run.map { points[$0] })
+        chain.append(points[nextIndex])
+
+        if let circle = arcCenter(start: chain[0], end: chain[chain.count - 1], through: chain[chain.count / 2]),
+           let sweep = signedCircularSweep(of: chain, around: circle.center, closed: false),
+           abs(sweep) > 0.0001 {
+            return arcPoints(
+                center: circle.center,
+                start: chain[0],
+                end: chain[chain.count - 1],
+                sweep: sweep,
+                segments: max(segmentsPerArc, 16)
+            )
+        }
+        return arcPointsThrough(
+            start: chain[0],
+            end: chain[chain.count - 1],
+            through: chain[chain.count / 2],
+            segments: segmentsPerArc
+        )
+    }
+
     static func circleFromCardinalPoints(_ points: [CGPoint]) -> (center: CGPoint, radius: CGFloat)? {
         guard points.count == 4 else { return nil }
         let center = CGPoint(x: (points[0].x + points[2].x) / 2, y: (points[0].y + points[2].y) / 2)
@@ -634,7 +787,7 @@ enum ShapeGeometry {
     }
 
     /// Center and radius of the circle underlying a circle or arc stroke. Used by object
-    /// snapping (center / tangent) to locate curved geometry regardless of shape type.
+    /// snapping (center / on-rim) to locate curved geometry regardless of shape type.
     static func arcCircle(for stroke: VectorStroke) -> (center: CGPoint, radius: CGFloat)? {
         switch stroke.shapeType {
         case .circle:
@@ -676,6 +829,51 @@ enum ShapeGeometry {
             radius = max(0.001, hypot(point.x - center.x, point.y - center.y))
         }
         return circleCardinalPoints(center: center, radius: radius)
+    }
+
+    /// Reshapes an arc around the moved anchors, keeping it a true circular arc.
+    ///
+    /// A circular arc is fixed by three points, so the drag resolves to the circle through
+    /// the arc's two endpoints and one interior point: a moved interior anchor when there is
+    /// one, so the handle follows the finger, otherwise the existing middle anchor. Anchors
+    /// are then re-emitted from that circle so the stored set stays co-circular and ordered.
+    ///
+    /// Returns nil when the three points are collinear (no circle), leaving the arc alone
+    /// rather than storing anchors the renderer cannot interpret.
+    static func updateArcHandles(_ stroke: VectorStroke, moves: [Int: CGPoint]) -> VectorStroke? {
+        var anchors = stroke.points
+        guard anchors.count >= 3, !moves.isEmpty else { return nil }
+        for (index, point) in moves where anchors.indices.contains(index) {
+            anchors[index] = point
+        }
+
+        let lastIndex = anchors.count - 1
+        let movedInterior = moves.keys.filter { $0 > 0 && $0 < lastIndex }.min()
+        let throughIndex = movedInterior ?? anchors.count / 2
+        guard throughIndex > 0, throughIndex < lastIndex else { return nil }
+
+        let start = anchors[0]
+        let through = anchors[throughIndex]
+        let end = anchors[lastIndex]
+        // Measure the sweep across the whole anchor chain, not just the three defining
+        // points: start→through→end alone cannot express a span over half a turn, so a
+        // dragged 300° arc would come back as the short way round.
+        guard let circle = arcCenter(start: start, end: end, through: through),
+              let sweep = signedCircularSweep(of: anchors, around: circle.center),
+              abs(sweep) > 0.0001 else { return nil }
+
+        var updated = stroke
+        updated.points = defaultCircularAnchors(
+            center: circle.center,
+            radius: circle.radius,
+            start: start,
+            end: end,
+            sweep: sweep,
+            closed: false
+        )
+        updated.curveHandles = nil
+        updated.smoothCornerIndices = nil
+        return updated
     }
 
     static func updateEllipseHandle(at index: Int, to point: CGPoint, stroke: VectorStroke) -> [CGPoint] {
@@ -741,12 +939,22 @@ enum ShapeGeometry {
     }
 
     static func ellipseFromCardinalPoints(_ points: [CGPoint]) -> (center: CGPoint, rx: CGFloat, ry: CGFloat)? {
+        ellipseAxes(from: points).map { ($0.center, $0.rx, $0.ry) }
+    }
+
+    /// Radii and axis angle from the four stored cardinals. Uses distance, not
+    /// axis-aligned deltas, so a rotated handle set still yields the true oval.
+    static func ellipseAxes(
+        from points: [CGPoint]
+    ) -> (center: CGPoint, rx: CGFloat, ry: CGFloat, rotation: CGFloat)? {
         guard points.count == 4 else { return nil }
         let center = CGPoint(x: (points[0].x + points[2].x) / 2, y: (points[0].y + points[2].y) / 2)
-        let rx = abs(points[1].x - center.x)
-        let ry = abs(points[0].y - center.y)
+        let rxVec = CGPoint(x: points[1].x - center.x, y: points[1].y - center.y)
+        let ryVec = CGPoint(x: points[2].x - center.x, y: points[2].y - center.y)
+        let rx = hypot(rxVec.x, rxVec.y)
+        let ry = hypot(ryVec.x, ryVec.y)
         guard rx > 0.001, ry > 0.001 else { return nil }
-        return (center, rx, ry)
+        return (center, rx, ry, atan2(rxVec.y, rxVec.x))
     }
 
     static func axisAlignedEllipsePoints(center: CGPoint, rx: CGFloat, ry: CGFloat, segments: Int = 64) -> [CGPoint] {
@@ -942,6 +1150,19 @@ enum ShapeGeometry {
         return result
     }
 
+    /// Open `.curve` endpoint a tap can keep drawing from.
+    struct OpenCurveEndpoint: Equatable, Sendable {
+        var stroke: VectorStroke
+        var fromStart: Bool
+    }
+
+    /// Existing curve oriented so new anchors append at the live end.
+    struct CurveContinuationSeed: Sendable {
+        var anchors: [CGPoint]
+        var handles: [CurveHandle]
+        var reversed: Bool
+    }
+
     /// Derives editable tangent handles from the auto-computed cardinal spline so a
     /// freshly committed curve keeps its current look but becomes reshapeable.
     static func defaultCurveHandles(anchors: [CGPoint], closed: Bool = false) -> [CurveHandle] {
@@ -952,37 +1173,195 @@ enum ShapeGeometry {
 
         var handles = anchors.map { _ in CurveHandle() }
         let segmentCount = closed ? count : count - 1
-
         for index in 0..<segmentCount {
-            let nextIndex = (index + 1) % count
-            let p1 = anchors[index]
-            let p2 = anchors[nextIndex]
-            let p0: CGPoint
-            let p3: CGPoint
-            if closed {
-                p0 = anchors[(index - 1 + count) % count]
-                p3 = anchors[(index + 2) % count]
-            } else {
-                p0 = index > 0 ? anchors[index - 1] : p1
-                p3 = index < count - 2 ? anchors[index + 2] : p2
-            }
+            applyCardinalSegment(to: &handles, anchors: anchors, index: index, closed: closed)
+        }
+        return handles
+    }
 
-            let tension1 = curveTension(prev: p0, cur: p1, next: p2)
-            let tension2 = curveTension(prev: p1, cur: p2, next: p3)
-
-            // Outgoing handle at p1 for this segment.
-            handles[index].outOffset = CGPoint(
-                x: (p2.x - p0.x) * tension1 / 6,
-                y: (p2.y - p0.y) * tension1 / 6
-            )
-            // Incoming handle at p2 for this segment.
-            handles[nextIndex].inOffset = CGPoint(
-                x: -(p3.x - p1.x) * tension2 / 6,
-                y: -(p3.y - p1.y) * tension2 / 6
-            )
+    /// Handles for a curve that is being extended. Existing segment tangents are copied.
+    /// Cardinal handles are written only from the live end forward, including the
+    /// closing segment when `closed` is true.
+    static func continuationHandles(
+        originalHandles: [CurveHandle],
+        anchors: [CGPoint],
+        closed: Bool
+    ) -> [CurveHandle] {
+        let count = anchors.count
+        guard count >= 2 else {
+            return anchors.map { _ in CurveHandle() }
+        }
+        let preservedCount = min(originalHandles.count, count)
+        guard preservedCount >= 2 else {
+            return defaultCurveHandles(anchors: anchors, closed: closed)
+        }
+        if preservedCount == count, !closed {
+            return Array(originalHandles.prefix(count))
         }
 
+        var handles = Array(originalHandles.prefix(preservedCount))
+        if handles.count < count {
+            handles.append(contentsOf: Array(repeating: CurveHandle(), count: count - handles.count))
+        }
+        let junction = preservedCount - 1
+        let segmentCount = closed ? count : count - 1
+        guard junction < segmentCount else { return handles }
+        for index in junction..<segmentCount {
+            applyCardinalSegment(to: &handles, anchors: anchors, index: index, closed: closed)
+        }
         return handles
+    }
+
+    /// Anchors and handles ordered so new points append at the live end.
+    /// Continuing from the start reverses the path; `reversed` tells the commit to flip it back.
+    static func continuationSeed(for stroke: VectorStroke, fromStart: Bool) -> CurveContinuationSeed {
+        let anchors = stroke.points
+        let handles: [CurveHandle]
+        if let stored = stroke.curveHandles, stored.count == anchors.count {
+            handles = stored
+        } else {
+            handles = defaultCurveHandles(anchors: anchors, closed: false)
+        }
+        guard fromStart else {
+            return CurveContinuationSeed(anchors: anchors, handles: handles, reversed: false)
+        }
+        return CurveContinuationSeed(
+            anchors: Array(anchors.reversed()),
+            handles: reversedCurveHandles(handles),
+            reversed: true
+        )
+    }
+
+    /// Appends anchors to an open curve. Tangents that already draw the curve stay put.
+    /// A new end that lands on the other end closes the curve, using the same minimum
+    /// as a newly drawn loop: at least three anchors remain after the duplicate is dropped.
+    static func extendingOpenCurve(
+        _ stroke: VectorStroke,
+        anchorsInContinuationOrder: [CGPoint],
+        originalHandles: [CurveHandle],
+        reversed: Bool,
+        closeTolerance: CGFloat
+    ) -> VectorStroke {
+        guard stroke.shapeType == .curve, !stroke.isClosed, originalHandles.count >= 2 else {
+            return stroke
+        }
+        var anchors = anchorsInContinuationOrder
+        guard anchors.count >= originalHandles.count else { return stroke }
+
+        var closed = false
+        if anchors.count > originalHandles.count,
+           anchors.count >= 4,
+           let first = anchors.first,
+           let last = anchors.last,
+           hypot(first.x - last.x, first.y - last.y) <= closeTolerance {
+            anchors.removeLast()
+            closed = anchors.count >= 3
+        }
+        guard closed || anchors.count > originalHandles.count else { return stroke }
+
+        let handles = continuationHandles(
+            originalHandles: originalHandles,
+            anchors: anchors,
+            closed: closed
+        )
+        let prepended = reversed ? max(0, anchors.count - originalHandles.count) : 0
+
+        var updated = stroke
+        if reversed {
+            updated.points = Array(anchors.reversed())
+            updated.curveHandles = reversedCurveHandles(handles)
+        } else {
+            updated.points = anchors
+            updated.curveHandles = handles
+        }
+        updated.isClosed = closed
+        guard prepended != 0 else { return updated }
+        updated.smoothCornerIndices = shifted(updated.smoothCornerIndices, by: prepended)
+        updated.cornerRadiiByIndex = shifted(updated.cornerRadiiByIndex, by: prepended)
+        updated.openEdgeStarts = shifted(updated.openEdgeStarts, by: prepended)
+        return updated
+    }
+
+    /// Nearest open-curve endpoint within `radius`, preferring the front-most stroke on a tie.
+    /// `strokes` is back-to-front. Equal distance to both ends continues from the last anchor.
+    static func openCurveEndpoint(
+        in strokes: [VectorStroke],
+        near point: CGPoint,
+        radius: CGFloat
+    ) -> OpenCurveEndpoint? {
+        guard radius >= 0 else { return nil }
+        var best: OpenCurveEndpoint?
+        var bestDistance: CGFloat?
+        for stroke in strokes.reversed() {
+            guard stroke.shapeType == .curve,
+                  !stroke.isClosed,
+                  !stroke.isConstruction,
+                  stroke.points.count >= 2,
+                  let first = stroke.points.first,
+                  let last = stroke.points.last else { continue }
+            let startDistance = hypot(point.x - first.x, point.y - first.y)
+            let endDistance = hypot(point.x - last.x, point.y - last.y)
+            let fromStart = startDistance < endDistance
+            let distance = fromStart ? startDistance : endDistance
+            guard distance <= radius else { continue }
+            if let bestDistance, distance >= bestDistance { continue }
+            bestDistance = distance
+            best = OpenCurveEndpoint(stroke: stroke, fromStart: fromStart)
+        }
+        return best
+    }
+
+    private static func reversedCurveHandles(_ handles: [CurveHandle]) -> [CurveHandle] {
+        handles.reversed().map { CurveHandle(inOffset: $0.outOffset, outOffset: $0.inOffset) }
+    }
+
+    private static func shifted(_ indices: Set<Int>?, by delta: Int) -> Set<Int>? {
+        guard let indices, delta != 0 else { return indices }
+        return Set(indices.map { $0 + delta })
+    }
+
+    private static func shifted(_ radii: [Int: CGFloat]?, by delta: Int) -> [Int: CGFloat]? {
+        guard let radii, delta != 0 else { return radii }
+        return Dictionary(uniqueKeysWithValues: radii.map { ($0.key + delta, $0.value) })
+    }
+
+    private static func shifted(_ indices: [Int]?, by delta: Int) -> [Int]? {
+        guard let indices, delta != 0 else { return indices }
+        return indices.map { $0 + delta }
+    }
+
+    /// Writes the outgoing handle at `index` and the incoming handle at the next anchor.
+    private static func applyCardinalSegment(
+        to handles: inout [CurveHandle],
+        anchors: [CGPoint],
+        index: Int,
+        closed: Bool
+    ) {
+        let count = anchors.count
+        guard count >= 2, handles.count == count, index >= 0, index < count else { return }
+        let nextIndex = (index + 1) % count
+        let p1 = anchors[index]
+        let p2 = anchors[nextIndex]
+        let p0: CGPoint
+        let p3: CGPoint
+        if closed {
+            p0 = anchors[(index - 1 + count) % count]
+            p3 = anchors[(index + 2) % count]
+        } else {
+            p0 = index > 0 ? anchors[index - 1] : p1
+            p3 = index < count - 2 ? anchors[index + 2] : p2
+        }
+
+        let tension1 = curveTension(prev: p0, cur: p1, next: p2)
+        let tension2 = curveTension(prev: p1, cur: p2, next: p3)
+        handles[index].outOffset = CGPoint(
+            x: (p2.x - p0.x) * tension1 / 6,
+            y: (p2.y - p0.y) * tension1 / 6
+        )
+        handles[nextIndex].inOffset = CGPoint(
+            x: -(p3.x - p1.x) * tension2 / 6,
+            y: -(p3.y - p1.y) * tension2 / 6
+        )
     }
 
     /// Roundness factor in `0...1` for the corner at `cur`.

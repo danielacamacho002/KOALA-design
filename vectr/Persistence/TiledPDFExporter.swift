@@ -8,7 +8,11 @@ import UIKit
 enum TiledPDFExporter {
     /// Writes one PDF page per print-layout sheet.
     static func write(document: VectrDocument, to url: URL) throws {
-        let settings = document.printLayout
+        try write(snapshot: document.makeSnapshot(), to: url)
+    }
+
+    nonisolated static func write(snapshot: DocumentSnapshot, to url: URL) throws {
+        let settings = snapshot.printLayout
         let pageSize = PrintPageGridEngine.pageSize(for: settings)
         let pageRect = CGRect(origin: .zero, size: pageSize)
         let sheets = PrintPageGridEngine.sheets(for: settings)
@@ -23,13 +27,12 @@ enum TiledPDFExporter {
                 cgContext.setFillColor(UIColor.white.cgColor)
                 cgContext.fill(pageRect)
 
-                // Map document coordinates onto this page.
                 cgContext.translateBy(x: -sheet.frame.origin.x, y: -sheet.frame.origin.y)
 
                 let printable = PrintPageGridEngine.printableRect(for: sheet.frame, settings: settings)
                 cgContext.clip(to: printable)
 
-                drawPrintContent(document: document, in: cgContext)
+                drawPrintContent(snapshot: snapshot, in: cgContext)
 
                 cgContext.resetClip()
                 drawMarginGuide(settings.marginMode.printedStyle, in: printable, context: cgContext)
@@ -40,27 +43,27 @@ enum TiledPDFExporter {
         }
     }
 
-    private static func drawPrintContent(document: VectrDocument, in context: CGContext) {
+    private nonisolated static func drawPrintContent(snapshot: DocumentSnapshot, in context: CGContext) {
         var viewport = ViewportTransform()
         viewport.scale = 1
         viewport.translation = .zero
-        drawPrintStrokes(document: document, in: context, viewport: viewport)
-        drawPrintText(document: document, in: context)
+        drawPrintStrokes(snapshot: snapshot, in: context, viewport: viewport)
+        drawPrintText(snapshot: snapshot, in: context)
     }
 
-    private static func drawPrintStrokes(
-        document: VectrDocument,
+    private nonisolated static func drawPrintStrokes(
+        snapshot: DocumentSnapshot,
         in context: CGContext,
         viewport: ViewportTransform
     ) {
-        for stroke in document.printLayoutStrokes() {
-            let transform = document.effectivePrintTransform(for: stroke.id)
+        for stroke in snapshot.printLayoutStrokes() {
+            let transform = snapshot.effectivePrintTransform(for: stroke.id)
             context.saveGState()
-            context.setAlpha(document.opacity(forLayerID: stroke.layerID))
+            context.setAlpha(snapshot.opacity(forLayerID: stroke.layerID))
             if stroke.isClosed, !stroke.isConstruction {
                 context.addPath(StrokeRenderer.path(for: stroke, viewport: viewport, pointTransform: transform).cgPath)
-                context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
-                context.fillPath(using: stroke.cutoutPoints.isEmpty ? .winding : .evenOdd)
+                context.setFillColor(stroke.resolvedFillCGColor)
+                context.fillPath(using: stroke.resolvedCGFillRule)
             }
             context.addPath(StrokeRenderer.outlinePath(for: stroke, viewport: viewport, pointTransform: transform).cgPath)
             context.setStrokeColor(strokeColor(for: stroke))
@@ -76,18 +79,15 @@ enum TiledPDFExporter {
         }
     }
 
-    /// Draws text as filled vector glyph outlines, positioned by each element's
-    /// print transform (which includes the global `contentOffset`) so exports
-    /// match the on-screen print layout.
-    private static func drawPrintText(document: VectrDocument, in context: CGContext) {
-        for element in document.visibleTextElements() {
+    private nonisolated static func drawPrintText(snapshot: DocumentSnapshot, in context: CGContext) {
+        for element in snapshot.visibleTextElements() {
             var transform = PrintLayoutCoordinateSpace.textPrintTransform(
                 for: element,
-                transform: document.effectivePrintTransform(for: element.id)
+                transform: snapshot.effectivePrintTransform(for: element.id)
             )
             guard let path = TextOutline.path(for: element).copy(using: &transform) else { continue }
             context.saveGState()
-            context.setAlpha(document.opacity(forLayerID: element.layerID))
+            context.setAlpha(snapshot.opacity(forLayerID: element.layerID))
             context.addPath(path)
             if element.isOutline {
                 context.setStrokeColor(element.strokeCGColor)
@@ -103,9 +103,7 @@ enum TiledPDFExporter {
         }
     }
 
-    /// Draws the printable-area outline as a trim/alignment guide when enabled,
-    /// so the margin lines seen on screen also appear on the printed page.
-    private static func drawMarginGuide(_ style: PrintMarginGuideStyle, in printable: CGRect, context: CGContext) {
+    private nonisolated static func drawMarginGuide(_ style: PrintMarginGuideStyle, in printable: CGRect, context: CGContext) {
         guard style != .off else { return }
         context.saveGState()
         context.setStrokeColor(UIColor.black.cgColor)
@@ -118,9 +116,7 @@ enum TiledPDFExporter {
         context.restoreGState()
     }
 
-    /// Draws the page number in the bottom-right corner of the printable area so
-    /// it lands inside what the printer can actually render.
-    private static func drawPageNumber(_ number: Int, in printable: CGRect, context: CGContext) {
+    private nonisolated static func drawPageNumber(_ number: Int, in printable: CGRect, context: CGContext) {
         let text = "\(number)" as NSString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 10),
@@ -135,7 +131,7 @@ enum TiledPDFExporter {
         text.draw(at: origin, withAttributes: attributes)
     }
 
-    private static func strokeColor(for stroke: VectorStroke) -> CGColor {
+    private nonisolated static func strokeColor(for stroke: VectorStroke) -> CGColor {
         if stroke.isConstruction {
             return UIColor.systemBlue.withAlphaComponent(0.6).cgColor
         }

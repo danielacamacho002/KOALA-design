@@ -12,12 +12,12 @@ struct PrintLayoutView: View {
     var onBack: () -> Void
     var onUndo: () -> Void
     var onRedo: () -> Void
-    var onSave: () -> Void
     var onSwitchToDesign: () -> Void
     var onExport: () -> Void
     var onChanged: () -> Void
     var onLayoutReady: (CGRect) -> Void
     var onFitToGrid: (CGRect) -> Void
+    var viewportHandle: CanvasViewportHandle
 
     @State private var statusMessage: String?
     @State private var showPaperPanel = false
@@ -31,8 +31,11 @@ struct PrintLayoutView: View {
     @State private var onboardingOverlayFrame: CGRect = .zero
     @State private var printAxisLockEnabled = false
 
+    /// Drives the move/rotate panel. The Cut tool leaves its fresh pieces selected,
+    /// but the overlay handles are only live for Select, so the panel stays hidden
+    /// until the tool can actually use it.
     private var hasPrintSelection: Bool {
-        document.printSelectedStrokeID != nil || document.printSelectedTextID != nil
+        document.printLayout.activeTool == .select && !document.printSelectionIsEmpty
     }
 
     var body: some View {
@@ -45,8 +48,8 @@ struct PrintLayoutView: View {
                     document: document,
                     printLayoutRevision: document.printLayoutRevision,
                     geometryRevision: document.geometryRevision,
-                    onCanvasTap: handleCanvasTap,
-                    onTwoFingerTap: onUndo
+                    viewportHandle: viewportHandle,
+                    onCanvasTap: handleCanvasTap
                 )
                 .ignoresSafeArea()
                 .transaction { $0.animation = nil }
@@ -55,11 +58,23 @@ struct PrintLayoutView: View {
                     document: document,
                     rotateModeActive: printRotateMode,
                     axisLockEnabled: printAxisLockEnabled,
-                    onChanged: onChanged
+                    onChanged: onChanged,
+                    onSelectTap: {
+                        showPaperPanel = false
+                        showMarginPanel = false
+                    }
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(document.printLayout.activeTool == .select)
                 .transaction { $0.animation = nil }
+
+                ViewportNavigationInstaller(
+                    document: document,
+                    viewportHandle: viewportHandle,
+                    onTwoFingerTap: onUndo
+                )
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
             }
             .overlay(alignment: .topLeading) {
                 if showPaperPanel {
@@ -97,6 +112,7 @@ struct PrintLayoutView: View {
             .animation(.easeInOut(duration: 0.15), value: hasPrintSelection)
             .onChange(of: document.printSelectedStrokeID) { _, _ in printRotateMode = false }
             .onChange(of: document.printSelectedTextID) { _, _ in printRotateMode = false }
+            .onChange(of: document.printSelectionCount) { _, _ in printRotateMode = false }
             .overlay(alignment: .bottomTrailing) {
                 RecenterCanvasButton {
                     onFitToGrid(geometry.frame(in: .global))
@@ -141,7 +157,6 @@ struct PrintLayoutView: View {
                 onBack: onBack,
                 onUndo: onUndo,
                 onRedo: onRedo,
-                onSave: onSave,
                 onSwitchToDesign: onSwitchToDesign,
                 onExport: onExport,
                 onSettingsChanged: onChanged,
@@ -157,9 +172,7 @@ struct PrintLayoutView: View {
         if showMarginPanel { showMarginPanel = false }
         switch document.printLayout.activeTool {
         case .select:
-            let threshold = document.viewport.viewToDocument(distance: 16)
-            _ = document.selectPrintElement(near: documentPoint, threshold: threshold)
-            onChanged()
+            break
         case .cut:
             let threshold = document.viewport.viewToDocument(distance: 20)
             _ = document.cutAlongNearestPrintBorder(near: documentPoint, threshold: threshold)

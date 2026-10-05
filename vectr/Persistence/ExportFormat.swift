@@ -6,7 +6,7 @@
 import Foundation
 import UniformTypeIdentifiers
 
-enum ExportFormat: String, CaseIterable, Identifiable {
+nonisolated enum ExportFormat: String, CaseIterable, Identifiable, Sendable {
     case vectr
     case jpeg
     case pdf

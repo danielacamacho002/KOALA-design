@@ -62,10 +62,10 @@ struct EditorToolbarView: View {
                 .padding(.horizontal, 10)
 
             HStack(spacing: 4) {
-                toolbarIconButton("gearshape", action: onSettings)
+                toolbarIconButton("gearshape", action: onSettings, accessibilityLabel: "Settings")
                 if let onSwitchToPrintLayout {
                     toolbarIconButton(
-                        "square.grid.3x3",
+                        "rectangle.split.3x3",
                         action: onSwitchToPrintLayout,
                         accessibilityLabel: "Print Layout",
                         onboardingTarget: .printLayout

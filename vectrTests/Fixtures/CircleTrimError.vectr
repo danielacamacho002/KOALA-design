@@ -1,0 +1,140 @@
+{
+  "activeLayerID" : "7BFE1C91-28E0-4C46-A935-6F6B66E5CFDA",
+  "dimensionLocks" : [
+
+  ],
+  "dimensionOffsets" : {
+
+  },
+  "grid" : {
+    "angleSnapDegrees" : [
+      0,
+      90
+    ],
+    "angleSnapEnabled" : true,
+    "isVisible" : true,
+    "snapEnabled" : true,
+    "snapSubdivisions" : 8,
+    "spacing" : 72,
+    "subdivisions" : 1
+  },
+  "groups" : [
+
+  ],
+  "layerGroups" : [
+
+  ],
+  "layers" : [
+    {
+      "id" : "7BFE1C91-28E0-4C46-A935-6F6B66E5CFDA",
+      "isLocked" : false,
+      "isVisible" : true,
+      "name" : "Layer 1",
+      "opacity" : 1
+    }
+  ],
+  "printHiddenStrokeIDs" : [
+
+  ],
+  "printLayout" : {
+    "activeTool" : "select",
+    "columns" : 3,
+    "contentOffset" : [
+      0,
+      0
+    ],
+    "customPaperSize" : [
+      612,
+      792
+    ],
+    "marginMode" : "off",
+    "overlap" : 36,
+    "paperSize" : "letter",
+    "printableMargin" : 18,
+    "rows" : 3
+  },
+  "printPieces" : [
+
+  ],
+  "printStrokeTransforms" : [
+
+  ],
+  "settings" : {
+    "allowsFingerDrawing" : false,
+    "canvasHeight" : 1296,
+    "canvasWidth" : 1728,
+    "defaultCornerRadius" : 0,
+    "defaultGridSpacing" : 72,
+    "units" : "inches"
+  },
+  "strokeColor" : {
+    "alpha" : 1,
+    "blue" : 0,
+    "green" : 0,
+    "red" : 0
+  },
+  "strokes" : [
+    {
+      "cornerRadius" : 0,
+      "cutoutPoints" : [
+
+      ],
+      "id" : "CB430A42-E4EC-4F23-908D-4FD4821289AA",
+      "isClosed" : true,
+      "isConstruction" : false,
+      "layerID" : "7BFE1C91-28E0-4C46-A935-6F6B66E5CFDA",
+      "points" : [
+        [
+          -3.2297504385857394,
+          -38.768042679933984
+        ],
+        [
+          -247.08800047772985,
+          70.83948841759175
+        ],
+        [
+          -247.0875606222938,
+          50.00424807381693
+        ],
+        [
+          -17.99999999999999,
+          -166.45587811167525
+        ],
+        [
+          203.31669135312626,
+          2.4283719179924574
+        ],
+        [
+          -61.708069792559044,
+          -29.874411569783717
+        ],
+        [
+          -74.63692031873586,
+          -296.4144536294291
+        ]
+      ],
+      "shapeType" : "polyline",
+      "smoothCornerIndices" : [
+        5
+      ],
+      "strokeColor" : {
+        "alpha" : 1,
+        "blue" : 0,
+        "green" : 0,
+        "red" : 0
+      },
+      "strokeWidth" : 1.5
+    }
+  ],
+  "strokeWidth" : 1.5,
+  "textElements" : [
+
+  ],
+  "viewport" : {
+    "scale" : 2,
+    "translation" : [
+      713.7713091246037,
+      605.5749652118375
+    ]
+  }
+}

@@ -9,8 +9,8 @@ struct PrintLayoutCanvasView: UIViewRepresentable {
     @Bindable var document: VectrDocument
     var printLayoutRevision: Int
     var geometryRevision: Int
+    var viewportHandle: CanvasViewportHandle?
     var onCanvasTap: (CGPoint) -> Void
-    var onTwoFingerTap: (() -> Void)?
 
     func makeUIView(context: Context) -> PrintLayoutCanvasUIView {
         let view = PrintLayoutCanvasUIView(document: document)
@@ -19,7 +19,7 @@ struct PrintLayoutCanvasView: UIViewRepresentable {
             let docPoint = document.viewport.viewToDocument(viewPoint)
             onCanvasTap(docPoint)
         }
-        view.onTwoFingerTap = onTwoFingerTap
+        viewportHandle?.attach(view)
         return view
     }
 
@@ -36,7 +36,7 @@ struct PrintLayoutCanvasView: UIViewRepresentable {
             let docPoint = document.viewport.viewToDocument(viewPoint)
             onCanvasTap(docPoint)
         }
-        uiView.onTwoFingerTap = onTwoFingerTap
+        viewportHandle?.attach(uiView)
         if !didSwapDocument {
             uiView.reloadAll()
         }

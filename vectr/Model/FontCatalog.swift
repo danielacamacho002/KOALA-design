@@ -11,7 +11,7 @@ import UIKit
 #endif
 
 /// How a built-in font resolves to a concrete platform font.
-enum FontDesignKind: Equatable {
+nonisolated enum FontDesignKind: Equatable, Sendable {
     /// The default system font (San Francisco).
     case systemDefault
     /// The system serif design (New York).
@@ -20,7 +20,7 @@ enum FontDesignKind: Equatable {
     case named(String)
 }
 
-struct BuiltInFont: Identifiable, Equatable {
+nonisolated struct BuiltInFont: Identifiable, Equatable, Sendable {
     var id: String { displayName }
     let displayName: String
     let design: FontDesignKind
@@ -28,7 +28,7 @@ struct BuiltInFont: Identifiable, Equatable {
 
 /// The curated set of built-in fonts. All resolve from iOS system fonts,
 /// so no font files are bundled with the app.
-enum FontCatalog {
+nonisolated enum FontCatalog: Sendable {
     static let defaultFontName = "SF Pro"
 
     static let builtIn: [BuiltInFont] = [
@@ -51,7 +51,7 @@ enum FontCatalog {
 
 #if canImport(UIKit)
 extension BuiltInFont {
-    func uiFont(size: CGFloat) -> UIFont {
+    nonisolated func uiFont(size: CGFloat) -> UIFont {
         switch design {
         case .systemDefault:
             return UIFont.systemFont(ofSize: size)

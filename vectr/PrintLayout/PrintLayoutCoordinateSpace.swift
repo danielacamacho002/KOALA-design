@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-enum PrintLayoutCoordinateSpace {
+nonisolated enum PrintLayoutCoordinateSpace: Sendable {
     static func boundingRect(for points: [CGPoint]) -> CGRect {
         guard !points.isEmpty else { return .null }
         var rect = CGRect.null

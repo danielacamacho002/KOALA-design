@@ -18,6 +18,7 @@ struct EditorView: View {
     @State private var curveDraft = CurveDraftSession()
     private let objectSnapEngine = PathSnapEngine.makeDefault()
     @State private var showExportSheet = false
+    @State private var showImportPicker = false
     @State private var pendingShareAfterDismiss = false
     @State private var exportFormat: ExportFormat = .vectr
     @State private var exportQuality: ExportQuality = .medium
@@ -28,6 +29,8 @@ struct EditorView: View {
     @State private var canvasViewSize: CGSize = .zero
     @State private var canvasSafeAreaInsets: UIEdgeInsets = .zero
     @State private var showSettings = false
+    @State private var pendingImportAfterSettings = false
+    @State private var pendingExportAfterSettings = false
     @State private var chromeInsets = ViewportTransform.ChromeInsets()
     @State private var statusMessage: String?
     @State private var showUnsavedAlert = false
@@ -49,13 +52,23 @@ struct EditorView: View {
     @State private var lastSavedSnapshot: DocumentSnapshot?
     @State private var patternSettings = PatternSettings()
     @State private var patternPreviewStrokes: [VectorStroke] = []
-    @State private var autoSaveTask: Task<Void, Never>?
     @State private var designOnboarding = OnboardingController(
         tour: .design,
         completedKey: OnboardingSettings.designTourCompletedKey
     )
     @State private var onboardingAnchors: [String: CGRect] = [:]
     @State private var onboardingOverlayFrame: CGRect = .zero
+    @State private var trimPreviewPoints: [CGPoint] = []
+    @State private var trimPreviewStrokeWidth: CGFloat = 1
+    @State private var trimFlashTask: Task<Void, Never>?
+    @State private var pendingTrim: PendingTrim?
+    @State private var persistTask: Task<Void, Never>?
+    @State private var isLoadingProject = false
+    @State private var isExporting = false
+    @State private var didStartLoad = false
+    @State private var designCanvasHandle = CanvasViewportHandle()
+    @State private var printCanvasHandle = CanvasViewportHandle()
+    @State private var pendingThumbnailRefresh = false
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
 
     init(projectURL: URL? = nil, projectLibrary: ProjectLibrary? = nil) {
@@ -75,30 +88,68 @@ struct EditorView: View {
                     onRedo: {
                         store.document.redo()
                         store.markDirty()
-                        refreshCanvas()
                     },
-                    onSave: { saveDocumentNow() },
                     onSwitchToDesign: { switchToDesignMode() },
                     onExport: preparePrintExport,
                     onChanged: {
                         store.markDirty()
-                        refreshCanvas()
                     },
                     onLayoutReady: { rect in handlePrintLayoutReady(in: rect) },
-                    onFitToGrid: { rect in fitPrintLayoutToGrid(in: rect) }
+                    onFitToGrid: { rect in fitPrintLayoutToGrid(in: rect) },
+                    viewportHandle: printCanvasHandle
                 )
             } else {
                 designEditorBody
             }
         }
         .navigationBarBackButtonHidden(true)
-        .sheet(isPresented: $showSettings) {
+        .overlay {
+            if isLoadingProject || isExporting {
+                ZStack {
+                    Color.black.opacity(0.28)
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text(isExporting ? "Exporting…" : "Loading…")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .padding(24)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                }
+                .ignoresSafeArea()
+                .allowsHitTesting(true)
+            }
+        }
+        .sheet(isPresented: $showSettings, onDismiss: {
+            if pendingImportAfterSettings {
+                pendingImportAfterSettings = false
+                showImportPicker = true
+            } else if pendingExportAfterSettings {
+                pendingExportAfterSettings = false
+                showExportSheet = true
+            }
+        }) {
             SettingsView(
                 document: store.document,
                 fileName: $store.fileName,
                 onFileNameChanged: handleFileNameChanged,
-                onReplayTutorial: replayTutorials
+                onReplayTutorial: replayTutorials,
+                onImport: {
+                    pendingImportAfterSettings = true
+                    showSettings = false
+                },
+                onExport: {
+                    pendingExportAfterSettings = true
+                    showSettings = false
+                }
             )
+        }
+        .background {
+            DocumentImportSheet(
+                isPresented: $showImportPicker,
+                contentTypes: ImportRouter.supportedTypes
+            ) { url in
+                handleImport(.success([url]))
+            }
         }
         .sheet(isPresented: $showExportSheet, onDismiss: {
             guard pendingShareAfterDismiss else { return }
@@ -116,12 +167,12 @@ struct EditorView: View {
                 shareItems = []
             }
         }
-        .onChange(of: store.contentRevision) { _, _ in
-            if store.hasUnsavedChanges { scheduleAutoSave() }
+        .onAppear {
+            store.persistDocument = { Task { await persistDocument(refreshThumbnail: false) } }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background || phase == .inactive {
-                flushAutoSave()
+                flushAutoSaveInBackground()
             }
         }
         .alert("Unsaved Changes", isPresented: $showUnsavedAlert) {
@@ -154,7 +205,6 @@ struct EditorView: View {
 
                 DrawingCanvasView(
                     document: store.document,
-                    isCommandMode: commandSession.isActive,
                     activeCategory: store.document.activeCategory,
                     commandPreviewPoints: commandSession.previewPoints,
                     commandControlPoints: commandSession.displayControlPoints,
@@ -162,31 +212,36 @@ struct EditorView: View {
                     commandRevision: commandSession.revision,
                     strokeCount: store.document.strokes.count,
                     geometryRevision: store.document.geometryRevision,
-                    contentRevision: store.contentRevision,
+                    selectedStrokeID: store.document.selectedStrokeID,
+                    selectedTextID: store.document.selectedTextID,
+                    selectedStrokeIDs: store.document.selectedStrokeIDs,
+                    referenceImageIDs: store.document.visibleReferenceImages().map(\.id),
+                    referenceImageFrames: store.document.visibleReferenceImages().map(\.frame),
                     visualGridSpacing: UnitConversion.visualGridSpacing(
                         sliderValue: store.document.settings.defaultGridSpacingInUnits,
                         unit: store.document.settings.units
                     ),
                     measurementUnit: store.document.settings.units,
+                    gridVisible: store.document.grid.isVisible,
                     isConstructionPreview: store.document.activeCategory == .line
                         && store.document.lineVariant == .constructionLine,
                     commandPreviewClosed: commandSession.canFinish
                         && (store.document.activeCategory == .rectangle
                             || store.document.activeCategory == .circle),
                     allowsDragDraw: allowsDragDraw,
+                    trimPreviewPoints: trimPreviewPoints,
+                    trimPreviewStrokeWidth: trimPreviewStrokeWidth,
                     lineVariant: store.document.lineVariant,
                     circleVariant: store.document.circleVariant,
                     rectangleVariant: store.document.rectangleVariant,
                     canvasBackgroundColor: Color(hex: canvasColorHex),
                     onCanvasTap: handleCanvasTap,
-                    onTwoFingerTap: handleDesignUndo,
                     onStrokeSelected: { stroke in
                         if let stroke {
                             store.document.selectStrokeConsideringGroups(stroke.id)
                         } else {
                             store.document.clearElementSelection()
                         }
-                        store.markDirty()
                     },
                     onDragDrawBegan: { start in
                         if beginArcDragIfNeeded(at: start) {
@@ -217,8 +272,10 @@ struct EditorView: View {
                         dragDrawEnd = nil
                     },
                     curveDraft: curveDraft,
+                    curveDraftRevision: curveDraft.revision,
                     onCurveCommitted: commitCurve,
-                    onLayoutMetrics: updateCanvasLayoutMetrics
+                    onLayoutMetrics: updateCanvasLayoutMetrics,
+                    viewportHandle: designCanvasHandle
                 )
                 .ignoresSafeArea()
                 .transaction { $0.animation = nil }
@@ -230,6 +287,7 @@ struct EditorView: View {
                         start: start,
                         end: end,
                         category: category,
+                        lineVariant: store.document.lineVariant,
                         circleVariant: store.document.circleVariant,
                         rectangleVariant: store.document.rectangleVariant
                     )
@@ -256,23 +314,31 @@ struct EditorView: View {
                 .transaction { $0.animation = nil }
 
                 DimensionOverlayView(document: store.document) {
-                    refreshCanvas()
+                    store.markDirty()
                 }
                 .ignoresSafeArea()
                 .transaction { $0.animation = nil }
+
+                ViewportNavigationInstaller(
+                    document: store.document,
+                    viewportHandle: designCanvasHandle,
+                    onTwoFingerTap: handleDesignUndo
+                )
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .fillet {
                     FilletRadiusPanelView(
                         document: store.document,
                         units: store.document.settings.units,
+                        onChanged: { store.markDirty() },
                         onApply: {
                             store.document.clearToolSelections()
-                            refreshCanvas()
+                            store.markDirty()
                         },
                         onCancel: {
                             store.document.clearToolSelections()
-                            refreshCanvas()
                         }
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
@@ -282,16 +348,15 @@ struct EditorView: View {
                         document: store.document,
                         units: store.document.settings.units
                     ) {
-                        refreshCanvas()
+                        store.markDirty()
                     }
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .addAnchor {
                     AddAnchorPanelView(
                         document: store.document,
-                        onApply: { refreshCanvas() },
+                        onApply: { store.markDirty() },
                         onCancel: {
                             store.document.clearToolSelections()
-                            refreshCanvas()
                         },
                         onStatus: { statusMessage = $0 }
                     )
@@ -304,12 +369,11 @@ struct EditorView: View {
                         onPreviewChange: updatePatternPreview,
                         onApply: {
                             patternPreviewStrokes = []
-                            refreshCanvas()
+                            store.markDirty()
                         },
                         onCancel: {
                             patternPreviewStrokes = []
                             store.document.clearToolSelections()
-                            refreshCanvas()
                         },
                         onStatus: { statusMessage = $0 }
                     )
@@ -317,7 +381,7 @@ struct EditorView: View {
                 } else if store.document.activeCategory == .copy {
                     CopyPastePanelView(
                         document: store.document,
-                        onChanged: { refreshCanvas() },
+                        onChanged: { store.markDirty() },
                         onStatus: { statusMessage = $0 }
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
@@ -328,7 +392,7 @@ struct EditorView: View {
                     TextToolPanelView(
                         document: store.document,
                         elementID: editingTextID,
-                        onChanged: { refreshCanvas() },
+                        onChanged: { store.markDirty() },
                         onDone: { endTextEditingIfNeeded() }
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
@@ -348,7 +412,6 @@ struct EditorView: View {
                             onDone: { commitCommandShape(restart: true) },
                             onCancel: {
                                 updateChromeInsets()
-                                refreshCanvas()
                             },
                             onVariantChanged: { startDrawingSessionIfNeeded() },
                             isTourHighlighted: designOnboarding.currentTarget == .commandPanel
@@ -375,16 +438,22 @@ struct EditorView: View {
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .type && editingTextID == nil {
-                    FontPickerView(document: store.document, library: FontLibrary.shared) {
-                        refreshCanvas()
-                    }
+                    FontPickerView(
+                        document: store.document,
+                        library: FontLibrary.shared,
+                        onChanged: { store.markDirty() },
+                        onCancel: {
+                            store.document.clearActiveTool()
+                            updateChromeInsets()
+                        }
+                    )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .scale {
                     ScaleToolPanelView(document: store.document) {
-                        refreshCanvas()
+                        store.markDirty()
                     }
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
@@ -419,7 +488,7 @@ struct EditorView: View {
                     isExpanded: $showLayersPanel,
                     isTourHighlighted: designOnboarding.currentTarget == .layers
                 ) {
-                    refreshCanvas()
+                    store.markDirty()
                 }
             }
             .overlay(alignment: .bottomTrailing) {
@@ -430,17 +499,16 @@ struct EditorView: View {
                 .padding(.bottom, 16)
             }
             .overlay(alignment: .bottom) {
-                if let statusMessage {
-                    Text(statusMessage)
+                if statusMessage != nil {
+                    Text(statusMessage ?? "")
                         .font(.caption)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(.ultraThinMaterial, in: Capsule())
                         .padding(.bottom, 12)
-                        .onAppear {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                self.statusMessage = nil
-                            }
+                        .task(id: statusMessage) {
+                            try? await Task.sleep(for: .seconds(2))
+                            statusMessage = nil
                         }
                 }
             }
@@ -481,7 +549,6 @@ struct EditorView: View {
                 highlightedTarget: designOnboarding.currentTarget,
                 onVisibilityToggled: {
                     store.markDirty()
-                    refreshCanvas()
                 }
             )
         }
@@ -495,12 +562,11 @@ struct EditorView: View {
     private func switchToPrintLayoutMode() {
         savedDesignViewport = store.document.viewport
         editorMode = .printLayout
-        store.document.printSelectedStrokeID = nil
-        store.document.printSelectedTextID = nil
+        store.document.clearPrintSelection()
         store.document.autoPositionDesignOnPrintGrid()
         printLayoutNeedsInitialFit = true
         fitPrintLayoutToGrid()
-        refreshCanvas()
+        store.markDirty()
     }
 
     /// Fits all sheets into view the first time the layout appears, then only
@@ -522,7 +588,7 @@ struct EditorView: View {
         if let savedDesignViewport {
             store.document.viewport = savedDesignViewport
         }
-        refreshCanvas()
+        designCanvasHandle.refreshViewport()
     }
 
     private func fitPrintLayoutToGrid(in rect: CGRect? = nil) {
@@ -559,7 +625,8 @@ struct EditorView: View {
         printCanvasRect = layoutRect
 
         let points = store.document.allPrintLayoutPoints()
-        guard let bounds = boundingRect(for: points) else { return }
+        let bounds = PrintLayoutCoordinateSpace.boundingRect(for: points)
+        guard !bounds.isNull else { return }
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
         let currentScale = store.document.viewport.scale
         // The canvas is drawn full-screen (it ignores the safe area / toolbar),
@@ -570,27 +637,22 @@ struct EditorView: View {
             x: viewCenter.x - center.x * currentScale,
             y: viewCenter.y - center.y * currentScale
         )
-        refreshCanvas()
-    }
-
-    private func boundingRect(for points: [CGPoint]) -> CGRect? {
-        guard let first = points.first else { return nil }
-        var rect = CGRect(origin: first, size: .zero)
-        for point in points.dropFirst() {
-            rect = rect.union(CGRect(origin: point, size: .zero))
-        }
-        return rect
+        printCanvasHandle.refreshViewport()
     }
 
     private func preparePrintExport() {
+        Task { await exportPrintLayout() }
+    }
+
+    private func exportPrintLayout() async {
+        isExporting = true
+        defer { isExporting = false }
+        let snapshot = store.document.makeSnapshot()
         do {
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(store.fileName)-tiled.pdf")
-            if FileManager.default.fileExists(atPath: tempURL.path) {
-                try FileManager.default.removeItem(at: tempURL)
-            }
-            try TiledPDFExporter.write(document: store.document, to: tempURL)
-            presentShare(url: tempURL)
+            try await PersistenceWorker.shared.writeTiledPDF(snapshot: snapshot, to: tempURL)
+            await presentShare(url: tempURL)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -600,11 +662,10 @@ struct EditorView: View {
         store.document.snapEnabled && store.document.grid.snapEnabled
     }
 
-    /// Object snap (endpoints/midpoints) resolved from the committed point, so tap-to-place and
-    /// drag-draw commits land exactly on real geometry. Object snap takes priority over the grid.
+    /// Object snap (endpoints/midpoints/on-rim) resolved from the committed point, so tap-to-place,
+    /// drag-draw, and typed-coordinate commits land exactly on real geometry. Object snap takes priority over the grid.
     private func objectSnappedPoint(
         _ point: CGPoint,
-        referenceStart: CGPoint? = nil,
         alignmentOrigin: CGPoint? = nil,
         alignmentThrough: CGPoint? = nil
     ) -> CGPoint? {
@@ -621,7 +682,6 @@ struct EditorView: View {
             strokes: store.document.interactiveStrokes(),
             excludedStrokeID: commandSession.attachedStrokeID,
             enabledKinds: enabledKinds,
-            referenceStarts: referenceStart.map { [$0] } ?? [],
             alignmentOrigin: alignmentOrigin,
             alignmentThrough: alignmentThrough,
             alignmentTolerance: alignmentTolerance,
@@ -641,7 +701,6 @@ struct EditorView: View {
             objectSnap: { query, alignmentOrigin, alignmentThrough in
                 objectSnappedPoint(
                     query,
-                    referenceStart: referenceStart,
                     alignmentOrigin: alignmentOrigin,
                     alignmentThrough: alignmentThrough
                 )
@@ -651,18 +710,6 @@ struct EditorView: View {
 
     private var shouldAngleSnapDrawnSegment: Bool {
         store.document.activeCategory == .line && store.document.lineVariant != .arc
-    }
-
-    private func snapDrawingControlInput(_ raw: CGPoint, projected: CGPoint) -> CGPoint {
-        if let snapped = objectSnappedPoint(projected) { return snapped }
-        return snapDrawingControlPoint(
-            raw: raw,
-            projected: projected,
-            grid: store.document.grid,
-            settings: store.document.settings,
-            enabled: drawingSnapEnabled,
-            scale: store.document.viewport.scale
-        )
     }
 
     private var canvasOverlayAcceptsHits: Bool {
@@ -685,15 +732,8 @@ struct EditorView: View {
 
     private var allowsDragDraw: Bool {
         switch store.document.activeCategory {
-        case .curve:
+        case .line, .curve:
             return true
-        case .line:
-            switch store.document.lineVariant {
-            case .line, .constructionLine:
-                return true
-            case .arc:
-                return canBeginArcDrag
-            }
         case .circle:
             return store.document.circleVariant == .center
                 || store.document.circleVariant == .edge
@@ -747,7 +787,6 @@ struct EditorView: View {
         dragDrawStart = nil
         dragDrawEnd = nil
         isDragDrawing = false
-        refreshCanvas()
         return true
     }
 
@@ -777,7 +816,6 @@ struct EditorView: View {
             commandSession.movePoint(at: 2, to: end)
         }
         commandSession.setArcSweep(arcDragAccumulatedSweep)
-        refreshCanvas()
         return true
     }
 
@@ -801,22 +839,33 @@ struct EditorView: View {
     }
 
     private func loadProjectIfNeeded() {
-        guard store.fileURL == nil else { return }
+        guard store.fileURL == nil, !didStartLoad else { return }
+        didStartLoad = true
+        Task { await loadProject() }
+    }
+
+    private func loadProject() async {
+        isLoadingProject = true
+        defer { isLoadingProject = false }
         if let projectURL {
             do {
-                try store.load(from: projectURL)
+                let snapshot = try await PersistenceWorker.shared.readSnapshot(from: projectURL)
+                store.applyLoadedSnapshot(snapshot, from: projectURL)
                 syncDisplayName(for: projectURL)
-                lastSavedSnapshot = snapshotFromStore()
+                lastSavedSnapshot = snapshot
+                applyInitialViewportLayoutIfNeeded()
             } catch {
                 errorMessage = error.localizedDescription
             }
         } else if let library = projectLibrary {
             do {
-                let record = try library.createProject(name: store.fileName)
-                try store.load(from: record.fileURL)
+                let record = try await library.createProject(name: store.fileName)
+                let snapshot = try await PersistenceWorker.shared.readSnapshot(from: record.fileURL)
+                store.applyLoadedSnapshot(snapshot, from: record.fileURL)
                 store.fileName = record.name
                 store.needsInitialViewportLayout = true
-                lastSavedSnapshot = snapshotFromStore()
+                lastSavedSnapshot = snapshot
+                applyInitialViewportLayoutIfNeeded()
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -879,7 +928,7 @@ struct EditorView: View {
             )
         }
         store.needsInitialViewportLayout = false
-        refreshCanvas()
+        designCanvasHandle.refreshViewport()
     }
 
     private func recenterAnimated() {
@@ -891,70 +940,43 @@ struct EditorView: View {
             canvasSize: store.document.settings.canvasSize,
             visibleRect: visibleRect
         )
-
-        let startScale = store.document.viewport.scale
-        let startTranslation = store.document.viewport.translation
-        let endScale = target.scale
-        let endTranslation = target.translation
-
-        let translationDelta = hypot(endTranslation.x - startTranslation.x, endTranslation.y - startTranslation.y)
-        guard translationDelta > 0.5 || abs(endScale - startScale) > 0.0001 else { return }
-
-        Task { @MainActor in
-            let steps = 24
-            for step in 1...steps {
-                let t = CGFloat(step) / CGFloat(steps)
-                let eased = easeInOut(t)
-                store.document.viewport.scale = startScale + (endScale - startScale) * eased
-                store.document.viewport.translation = CGPoint(
-                    x: startTranslation.x + (endTranslation.x - startTranslation.x) * eased,
-                    y: startTranslation.y + (endTranslation.y - startTranslation.y) * eased
-                )
-                refreshCanvas()
-                try? await Task.sleep(nanoseconds: 12_000_000)
-            }
-            store.document.viewport = target
-            refreshCanvas()
-        }
-    }
-
-    private func easeInOut(_ t: CGFloat) -> CGFloat {
-        t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+        designCanvasHandle.animateViewport(to: target)
     }
 
     private func handleBack() {
-        flushAutoSave()
-        if store.hasUnsavedChanges {
-            showUnsavedAlert = true
-        } else {
-            dismiss()
+        Task { @MainActor in
+            await flushAutoSave()
+            if store.hasUnsavedChanges {
+                showUnsavedAlert = true
+            } else {
+                dismiss()
+            }
         }
     }
 
-    private func scheduleAutoSave() {
-        autoSaveTask?.cancel()
-        autoSaveTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard !Task.isCancelled else { return }
-            guard store.hasUnsavedChanges else { return }
-            saveDocument()
-        }
+    private func flushAutoSave() async {
+        store.cancelAutoSave()
+        await persistDocument(refreshThumbnail: true)
     }
 
-    private func flushAutoSave() {
-        autoSaveTask?.cancel()
-        autoSaveTask = nil
-        guard store.hasUnsavedChanges else { return }
-        saveDocument()
+    private func flushAutoSaveInBackground() {
+        Task { @MainActor in
+            let taskID = UIApplication.shared.beginBackgroundTask(withName: "vectr.autosave") {}
+            defer {
+                if taskID != .invalid {
+                    UIApplication.shared.endBackgroundTask(taskID)
+                }
+            }
+            await flushAutoSave()
+        }
     }
 
     private func saveDocumentNow() {
-        autoSaveTask?.cancel()
-        autoSaveTask = nil
-        saveDocument()
+        store.cancelAutoSave()
+        Task { await persistDocument(refreshThumbnail: true) }
     }
 
-    private func presentShare(url: URL, image: UIImage? = nil) {
+    private func presentShare(url: URL, image: UIImage? = nil) async {
         if let image {
             shareItems = [JPEGShareItem(image: image, fileURL: url)]
         } else {
@@ -963,28 +985,34 @@ struct EditorView: View {
         // Reset first so a second export can present again. Delay past any
         // just-dismissed format sheet so UIActivityViewController can present.
         showShareSheet = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            showShareSheet = true
-        }
+        try? await Task.sleep(for: .milliseconds(200))
+        showShareSheet = true
     }
 
     private func presentDesignShare() {
+        Task { await exportDesignShare() }
+    }
+
+    private func exportDesignShare() async {
+        isExporting = true
+        defer { isExporting = false }
+        let snapshot = store.document.makeSnapshot()
         do {
             if exportFormat == .jpeg {
-                let prepared = try JPEGExporter.prepareForSharing(
-                    document: store.document,
+                let prepared = try await PersistenceWorker.shared.prepareJPEGForSharing(
+                    snapshot: snapshot,
                     named: store.fileName,
                     quality: exportQuality
                 )
-                presentShare(url: prepared.fileURL, image: prepared.image)
+                await presentShare(url: prepared.fileURL, image: UIImage(data: prepared.jpegData))
             } else {
-                let tempURL = try ExportRouter.temporaryExportURL(
-                    document: store.document,
+                let tempURL = try await PersistenceWorker.shared.temporaryExportURL(
+                    snapshot: snapshot,
                     name: store.fileName,
                     format: exportFormat,
                     quality: exportQuality
                 )
-                presentShare(url: tempURL)
+                await presentShare(url: tempURL)
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -993,8 +1021,10 @@ struct EditorView: View {
 
     private func discardChangesAndDismiss() {
         pendingDismiss = false
-        autoSaveTask?.cancel()
-        autoSaveTask = nil
+        pendingThumbnailRefresh = false
+        store.cancelAutoSave()
+        persistTask?.cancel()
+        persistTask = nil
         if let lastSavedSnapshot {
             store.document = VectrDocument(snapshot: lastSavedSnapshot)
             store.hasUnsavedChanges = false
@@ -1004,7 +1034,7 @@ struct EditorView: View {
             do {
                 try store.load(from: url)
                 syncDisplayName(for: url)
-                lastSavedSnapshot = snapshotFromStore()
+                lastSavedSnapshot = store.document.makeSnapshot()
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -1016,7 +1046,7 @@ struct EditorView: View {
         let panelWidth: CGFloat
         switch store.document.activeCategory {
         case .fillet, .addAnchor, .pattern, .copy:
-            panelWidth = 188
+            panelWidth = ToolPanelMetrics.commandWidth
         default:
             panelWidth = 0
         }
@@ -1078,15 +1108,16 @@ struct EditorView: View {
         if category != .pattern {
             patternPreviewStrokes = []
         }
+        settlePendingTrim()
         switch category {
         case .type:
             commandSession.cancel()
             store.document.selectedStrokeID = nil
             statusMessage = "Tap to place or edit text; drag to move, corners to scale"
         case .delete:
-            if !store.document.selectionIsEmpty {
+            if store.document.hasCanvasSelection {
                 store.document.deleteSelectedElements()
-                refreshCanvas()
+                store.markDirty()
             } else {
                 statusMessage = "Select a shape or text to delete"
             }
@@ -1111,7 +1142,7 @@ struct EditorView: View {
             commandSession.cancel()
             store.document.clearToolSelections()
             if store.document.selectedStrokeID == nil {
-                statusMessage = "Select a closed shape, then tap an edge or enter total anchor count"
+                statusMessage = "Select a shape or line, then tap an edge or enter total anchor count"
             } else {
                 statusMessage = "Tap an edge to add an anchor, or enter total anchor count"
             }
@@ -1145,7 +1176,7 @@ struct EditorView: View {
         case .curve:
             commandSession.cancel()
             store.document.selectedStrokeID = nil
-            statusMessage = "Draw lines with Apple Pencil; double-tap to finish the curve"
+            statusMessage = "Draw with Apple Pencil; tap an open end to continue; double-tap to finish"
         case .dimensions:
             commandSession.cancel()
             store.document.revealDimensionsForCurrentSelection()
@@ -1165,6 +1196,7 @@ struct EditorView: View {
                 // when returning to the move tool from another tool. Expand to
                 // the parent group when that stroke is a group member.
                 if store.document.selectionIsEmpty,
+                   !store.document.isReferenceImageSelected,
                    let lastID = store.document.lastSelectedStrokeID,
                    store.document.stroke(with: lastID)?.layerID == store.document.activeLayerID {
                     store.document.selectStrokeConsideringGroups(lastID)
@@ -1172,9 +1204,11 @@ struct EditorView: View {
                     store.document.expandSelectionToGroupsIfNeeded()
                 }
                 if store.document.usesGroupTransform {
-                    statusMessage = "Drag to move the group, or use the handle to rotate; tap to add or remove"
+                    statusMessage = "Drag to move the group; tap to add or remove"
                 } else if store.document.selectedTextID != nil {
-                    statusMessage = "Drag to move the text, or use the handle to rotate"
+                    statusMessage = "Drag to move the text"
+                } else if store.document.isReferenceImageSelected {
+                    statusMessage = "Drag to move the image; corners to scale"
                 } else if store.document.selectedStrokeID == nil {
                     statusMessage = "Tap a shape to select; drag empty space to marquee-select"
                 } else {
@@ -1205,8 +1239,10 @@ struct EditorView: View {
         if let anchor {
             commandSession.addPoint(anchor)
         }
+        if category == .line, store.document.lineVariant == .arc, commandSession.controlPoints.count < 2 {
+            statusMessage = "Drag from the center to the start, then drag to set the sweep"
+        }
         updateChromeInsets()
-        refreshCanvas()
     }
 
     private var lineConnectTolerance: CGFloat {
@@ -1235,7 +1271,6 @@ struct EditorView: View {
             }
             return
         }
-        refreshCanvas()
         if commandSession.canFinish, shouldAutoCommitAfterPoint {
             commitCommandShape(restart: true)
         }
@@ -1256,18 +1291,44 @@ struct EditorView: View {
         if let element = store.document.textElement(with: id),
            element.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             store.document.removeTextElement(id: id)
-            refreshCanvas()
+            store.markDirty()
         }
     }
 
-    /// Closed-arc fallback may only drop the implied closing chord (last→first).
-    /// Opening at start→mid or mid→end would reorder the three anchors and flip
-    /// the arc to the other side of its chord.
-    private func closingEdgeFallbackAllowed(_ stroke: VectorStroke, edgeIndex: Int) -> Bool {
-        if stroke.shapeType == .arc {
-            return stroke.isClosed && edgeIndex == max(stroke.points.count - 1, 0)
+    /// A trim tap that has been previewed but not yet cut.
+    private struct PendingTrim {
+        var point: CGPoint
+        var threshold: CGFloat
+    }
+
+    /// Flash the span in red, then cut. `removal` already told us the trim will land, so
+    /// `trimAt` is re-run after the flash rather than being made asynchronous.
+    private func flashTrimRemoval(
+        _ removal: TrimEngine.RemovedSegmentGeometry,
+        at documentPoint: CGPoint,
+        threshold: CGFloat
+    ) {
+        trimPreviewStrokeWidth = removal.strokeWidth
+        trimPreviewPoints = removal.points
+        pendingTrim = PendingTrim(point: documentPoint, threshold: threshold)
+        trimFlashTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            settlePendingTrim()
         }
-        return true
+    }
+
+    /// Apply the cut the flash is previewing and take the highlight down. The flash is
+    /// cosmetic, so anything that interrupts it — another trim tap, leaving the tool —
+    /// still commits the tap the user already made.
+    private func settlePendingTrim() {
+        trimFlashTask?.cancel()
+        trimFlashTask = nil
+        trimPreviewPoints = []
+        guard let pending = pendingTrim else { return }
+        pendingTrim = nil
+        store.document.trimAt(pending.point, threshold: pending.threshold)
+        store.markDirty()
     }
 
     /// Tap on empty grid / outside every shape. Used to leave the current tool.
@@ -1291,7 +1352,6 @@ struct EditorView: View {
         curveDraft.discardRedo()
         store.document.undo()
         store.markDirty()
-        refreshCanvas()
     }
 
     private func handleDesignRedo() {
@@ -1301,7 +1361,6 @@ struct EditorView: View {
         }
         store.document.redo()
         store.markDirty()
-        refreshCanvas()
     }
 
     private func dismissActiveTool() {
@@ -1309,12 +1368,12 @@ struct EditorView: View {
         commandSession.cancel()
         resetArcDragState()
         patternPreviewStrokes = []
+        settlePendingTrim()
         showCommandPanel = false
         store.document.clearToolSelections()
         store.document.clearElementSelection()
         store.document.clearActiveTool()
         updateChromeInsets()
-        refreshCanvas()
     }
 
     private func handleCanvasTap(_ documentPoint: CGPoint) {
@@ -1328,6 +1387,9 @@ struct EditorView: View {
         case .move, nil:
             activateMoveIfHit(at: documentPoint)
         case .curve:
+            if resumeOpenCurve(at: documentPoint) {
+                return
+            }
             dismissActiveTool()
         case .type:
             endTextEditingIfNeeded()
@@ -1343,50 +1405,21 @@ struct EditorView: View {
             if let hit = store.document.selectTextElement(at: documentPoint) {
                 beginTextEditing(hit.id)
             } else {
-                let element = TextElement(
-                    layerID: store.document.activeLayerID,
-                    text: "",
-                    position: documentPoint,
-                    fontRef: store.document.activeFontRef,
-                    fontSize: store.document.activeFontSize,
-                    color: store.document.strokeColor
-                )
+                let element = store.document.makeTextElement(at: documentPoint)
                 store.document.addTextElement(element)
                 beginTextEditing(element.id)
                 store.markDirty()
-                refreshCanvas()
             }
         case .line, .circle, .rectangle:
-            guard let category = store.document.activeCategory else { return }
-            if commandSession.isRefiningAttachedStroke {
-                startDrawingSessionIfNeeded()
-            }
-            guard commandSession.isActive else {
+            if isEmptyCanvasTap(at: documentPoint) {
                 dismissActiveTool()
                 return
             }
-            let angleOrigin = shouldAngleSnapDrawnSegment ? commandSession.controlPoints.first : nil
-            let snapped = snapDrawingInput(documentPoint, referenceStart: angleOrigin)
-            if shouldAngleSnapDrawnSegment {
-                commandSession.addPoint(snapped)
-            } else {
-                let projected = ShapeGeometry.projectCommandPoint(
-                    snapped,
-                    controlPoints: commandSession.controlPoints,
-                    category: category,
-                    lineVariant: store.document.lineVariant,
-                    circleVariant: store.document.circleVariant,
-                    rectangleVariant: store.document.rectangleVariant
-                )
-                let final = snapDrawingControlInput(snapped, projected: projected)
-                commandSession.addPoint(final)
-            }
-            if commandSession.canFinish, shouldAutoCommitAfterPoint {
-                commitCommandShape(restart: true)
-            } else {
-                refreshCanvas()
-            }
+            activateMoveIfHit(at: documentPoint)
         case .trim:
+            // Commit any still-flashing cut first, so a fast second tap is measured
+            // against the geometry it will actually act on.
+            settlePendingTrim()
             if isEmptyCanvasTap(at: documentPoint) {
                 dismissActiveTool()
                 return
@@ -1398,30 +1431,41 @@ struct EditorView: View {
             // Anchor-first: tapping a vertex deletes it. A corner drops its two edges and
             // opens the shape; a collinear point is removed without changing the geometry.
             if store.document.deleteStrokeAnchor(near: documentPoint, threshold: threshold) {
-                refreshCanvas()
-            } else if store.document.trimAt(documentPoint, threshold: threshold) {
-                refreshCanvas()
+                store.markDirty()
+            } else if let removal = store.document.trimRemovalPreview(
+                at: documentPoint,
+                threshold: threshold
+            ) {
+                flashTrimRemoval(removal, at: documentPoint, threshold: threshold)
             } else if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
                 // Non-CAD shapes previously trimmed via edge/vertex handles. Keep that
                 // behavior by tapping the geometry itself (no overlay handles).
                 let usesCADTrim = stroke.shapeType == .circle
                     || stroke.shapeType == .ellipse
                     || (stroke.shapeType == .arc && !stroke.isClosed)
+                // `nearestEdgeIndex` measures the sharp corner edges, which on a filleted
+                // shape run through the empty space the arcs cut away. Require the tap to
+                // be on the outline as drawn so a miss near a rounded corner cannot drop a
+                // whole edge.
+                let onOutline = AnchorPointEngine.roundedOutlineDistance(
+                    from: stroke,
+                    to: documentPoint
+                ) <= threshold
                 if !usesCADTrim,
+                   onOutline,
                    let edgeIndex = StrokeEditor.nearestEdgeIndex(
                        in: stroke,
                        point: documentPoint,
                        threshold: threshold
                    ),
-                   closingEdgeFallbackAllowed(stroke, edgeIndex: edgeIndex) {
+                   EditorDrawingGeometry.closingEdgeFallbackAllowed(stroke, edgeIndex: edgeIndex) {
                     store.document.deleteStrokeEdge(at: edgeIndex)
-                    refreshCanvas()
+                    store.markDirty()
                 } else {
                     statusMessage = "Tap the line segment to trim away"
                 }
             } else {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
-                refreshCanvas()
             }
         case .addAnchor:
             if isEmptyCanvasTap(at: documentPoint, viewThreshold: 28) {
@@ -1436,16 +1480,15 @@ struct EditorView: View {
                 if AnchorPointEngine.canEditAnchors(on: stroke) {
                     let snapped = snapDrawingInput(documentPoint)
                     if store.document.insertAnchor(at: snapped, threshold: threshold) {
-                        refreshCanvas()
+                        store.markDirty()
                     } else {
                         statusMessage = "Tap closer to an edge between anchors"
                     }
                 } else {
-                    statusMessage = "Select a closed shape to add anchors"
+                    statusMessage = "Selected shape cannot receive anchors"
                 }
             } else {
                 _ = store.document.selectStroke(near: documentPoint, threshold: threshold)
-                refreshCanvas()
             }
         case .pattern:
             if isEmptyCanvasTap(at: documentPoint) {
@@ -1461,7 +1504,6 @@ struct EditorView: View {
                 patternPreviewStrokes = []
             }
             updatePatternPreview()
-            refreshCanvas()
         case .dimensions:
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             switch store.document.handleDimensionTap(at: documentPoint, threshold: threshold) {
@@ -1470,7 +1512,6 @@ struct EditorView: View {
             case .revealedEdge, .hiddenEdge, .autoRevealed, .dismissed, .ignored:
                 break
             }
-            refreshCanvas()
         case .copy:
             if isEmptyCanvasTap(at: documentPoint) {
                 dismissActiveTool()
@@ -1485,7 +1526,6 @@ struct EditorView: View {
                     statusMessage = "Copied \(count) \(noun). Switch layers, then Paste"
                 }
             }
-            refreshCanvas()
         case .delete:
             if isEmptyCanvasTap(at: documentPoint, viewThreshold: 24) {
                 dismissActiveTool()
@@ -1496,7 +1536,7 @@ struct EditorView: View {
             }
             if let text = store.document.textElement(at: documentPoint) {
                 store.document.removeTextElement(id: text.id)
-                refreshCanvas()
+                store.markDirty()
                 return
             }
             let threshold = store.document.viewport.viewToDocument(distance: 24)
@@ -1505,7 +1545,7 @@ struct EditorView: View {
             //    removed is bounded by the arc, so the tap is inherently near the arc line
             //    (which would otherwise be deleted as a whole shape).
             if store.document.sliceArcCut(at: documentPoint) {
-                refreshCanvas()
+                store.markDirty()
                 return
             }
             // 2. Interior fill tap over an overlap: punch a hole (base MINUS target).
@@ -1516,7 +1556,7 @@ struct EditorView: View {
             //    inside a top shape that overlaps a shape beneath, so true edge taps on
             //    standalone shapes still fall through to the outline delete below.
             if store.document.punchOverlapHole(at: documentPoint) {
-                refreshCanvas()
+                store.markDirty()
                 return
             }
             // 3. Edge/line tap: tapping on or near an outline deletes that shape entirely.
@@ -1529,20 +1569,26 @@ struct EditorView: View {
                 let fillUnderTap = store.document.strokeFillHit(at: documentPoint)
                 if fillUnderTap == nil || fillUnderTap?.id == outline.id {
                     store.document.removeStroke(id: outline.id)
-                    refreshCanvas()
+                    store.markDirty()
                     return
                 }
             }
             // 4. Interior fill tap with nothing beneath: delete the filled shape.
             if let fill = store.document.strokeFillHit(at: documentPoint) {
                 store.document.removeStroke(id: fill.id)
-                refreshCanvas()
+                store.markDirty()
                 return
             }
-            // 5. Fall back to the current selection.
-            if !store.document.selectionIsEmpty {
+            // 5. Imported raster behind the vectors.
+            if let image = store.document.referenceImageHit(at: documentPoint) {
+                store.document.removeReferenceImage(id: image.id)
+                store.markDirty()
+                return
+            }
+            // 6. Fall back to the current selection.
+            if store.document.hasCanvasSelection {
                 store.document.deleteSelectedElements()
-                refreshCanvas()
+                store.markDirty()
             }
         default:
             if isEmptyCanvasTap(at: documentPoint) {
@@ -1551,7 +1597,6 @@ struct EditorView: View {
             }
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             store.document.selectElement(near: documentPoint, threshold: threshold)
-            refreshCanvas()
         }
     }
 
@@ -1568,6 +1613,8 @@ struct EditorView: View {
             store.document.selectStrokeConsideringGroups(id)
         case .text(let id):
             store.document.selectTextConsideringGroups(id)
+        case .referenceImage(let id):
+            store.document.selectReferenceImage(id: id)
         case .none:
             if let groupHit {
                 store.document.selectGroup(groupHit)
@@ -1576,14 +1623,13 @@ struct EditorView: View {
 
         store.document.engageMoveTool()
         handleToolSelected(.move)
-        refreshCanvas()
     }
 
     private func commitDragDraw(start: CGPoint, end: CGPoint) {
         // The start was already resolved during the gesture. Re-running object snap
         // can pull it onto a nearby corner and turn a straight preview into a diagonal.
         let snappedStart = start
-        // Re-snap the end with the start as the axis / tangent reference so a live lock
+        // Re-snap the end with the start as the axis reference so a live lock
         // is preserved on release; without it the free end can be grid-snapped off-axis.
         let snappedEnd = snapDrawingInput(end, referenceStart: snappedStart)
         guard hypot(snappedEnd.x - snappedStart.x, snappedEnd.y - snappedStart.y) > 0.001 else {
@@ -1612,12 +1658,17 @@ struct EditorView: View {
             commandSession.addPoint(point)
         }
 
+        if category == .line, store.document.lineVariant == .arc, !commandSession.canFinish {
+            statusMessage = "Drag to set the sweep"
+            return
+        }
+
         guard commandSession.canFinish else {
             startDrawingSessionIfNeeded()
             return
         }
 
-        // Use the same commit pathway as point-by-point entry.
+        // Use the same commit pathway as typed point-by-point entry.
         commitCommandShape(restart: false)
 
         if store.document.isDrawingToolActive {
@@ -1627,7 +1678,45 @@ struct EditorView: View {
         }
     }
 
-    private func commitCurve(anchors rawAnchors: [CGPoint]) {
+    /// Tap an endpoint of an open curve to keep drawing from that end.
+    /// A tail already in progress still finishes and leaves the tool.
+    private func resumeOpenCurve(at documentPoint: CGPoint) -> Bool {
+        guard curveDraft.canResume else { return false }
+        let radius = store.document.viewport.viewToDocument(distance: 44)
+        guard let hit = ShapeGeometry.openCurveEndpoint(
+            in: store.document.interactiveStrokes(),
+            near: documentPoint,
+            radius: radius
+        ) else { return false }
+        let seed = ShapeGeometry.continuationSeed(for: hit.stroke, fromStart: hit.fromStart)
+        curveDraft.beginContinuation(
+            strokeID: hit.stroke.id,
+            anchors: seed.anchors,
+            handles: seed.handles,
+            reversed: seed.reversed
+        )
+        statusMessage = "Draw to continue the curve; double-tap to finish"
+        return true
+    }
+
+    private func commitCurve(_ finish: CurveDraftFinish) {
+        if let continuation = finish.continuation,
+           let existing = store.document.stroke(with: continuation.strokeID) {
+            let updated = ShapeGeometry.extendingOpenCurve(
+                existing,
+                anchorsInContinuationOrder: finish.anchors,
+                originalHandles: continuation.originalHandles,
+                reversed: continuation.reversed,
+                closeTolerance: store.document.grid.spacing * 0.5
+            )
+            guard updated != existing else { return }
+            store.document.updateStroke(updated)
+            store.document.selectedStrokeID = updated.id
+            store.markDirty()
+            return
+        }
+
+        let rawAnchors = finish.anchors
         guard rawAnchors.count >= 2 else { return }
 
         // Recognize a closed shape: if the curve loops back near its start, drop the
@@ -1658,44 +1747,16 @@ struct EditorView: View {
         // Select the new curve so its anchor + tangent handles are immediately editable.
         store.document.selectedStrokeID = stroke.id
         store.markDirty()
-        refreshCanvas()
     }
 
     private func dragControlPoints(start: CGPoint, end: CGPoint) -> [CGPoint] {
-        switch store.document.activeCategory {
-        case .line:
-            return [start, end]
-        case .circle:
-            switch store.document.circleVariant {
-            case .center:
-                return [start, end]
-            case .edge:
-                return [start, end]
-            case .ellipse:
-                let rx = max(0.001, abs(end.x - start.x))
-                let ry = max(0.001, abs(end.y - start.y))
-                return [
-                    start,
-                    CGPoint(x: start.x + rx, y: start.y),
-                    CGPoint(x: start.x, y: start.y + ry)
-                ]
-            }
-        case .rectangle:
-            switch store.document.rectangleVariant {
-            case .center:
-                let halfW = max(0.001, abs(end.x - start.x))
-                let halfH = max(0.001, abs(end.y - start.y))
-                return [
-                    start,
-                    CGPoint(x: start.x + halfW, y: start.y),
-                    CGPoint(x: start.x, y: start.y + halfH)
-                ]
-            case .edge:
-                return [start, end]
-            }
-        default:
-            return []
-        }
+        EditorDrawingGeometry.dragControlPoints(
+            category: store.document.activeCategory,
+            circleVariant: store.document.circleVariant,
+            rectangleVariant: store.document.rectangleVariant,
+            start: start,
+            end: end
+        )
     }
 
     private func handleFileNameChanged() {
@@ -1755,7 +1816,6 @@ struct EditorView: View {
         store.document.addStroke(stroke)
         commandSession.finish()
         store.markDirty()
-        refreshCanvas()
 
         if restart, store.document.isDrawingToolActive {
             startDrawingSessionIfNeeded()
@@ -1804,38 +1864,68 @@ struct EditorView: View {
     private func performUndo() {
         store.document.undo()
         store.markDirty()
-        refreshCanvas()
     }
 
-    private func refreshCanvas() {
-        store.markDirty()
+    private func handleImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let content = try ImportRouter.loadContent(
+                    from: url,
+                    layerID: store.document.activeLayerID
+                )
+                let count = try store.document.importContent(content, offset: importPlacementOffset)
+                store.markDirty()
+                if count > 0 {
+                    let noun = count == 1 ? "item" : "items"
+                    statusMessage = "Imported \(count) \(noun)"
+                } else {
+                    statusMessage = "Imported image — drag to move, corners to scale"
+                    if store.document.isReferenceImageSelected {
+                        store.document.engageMoveTool()
+                    }
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Places imported artwork at the visible canvas center so it is on-screen.
+    private var importPlacementOffset: CGPoint {
+        let rect = visibleRectInCanvasSpace
+        guard rect.width > 0, rect.height > 0 else { return .zero }
+        return store.document.viewport.viewToDocument(CGPoint(x: rect.midX, y: rect.midY))
     }
 
     private func snapshotFromStore() -> DocumentSnapshot {
-        DocumentSnapshot(
-            layers: store.document.layers,
-            strokes: store.document.strokes,
-            layerGroups: store.document.layerGroups,
-            activeLayerID: store.document.activeLayerID,
-            viewport: store.document.viewport,
-            grid: store.document.grid,
-            settings: store.document.settings,
-            strokeWidth: store.document.strokeWidth,
-            strokeColor: store.document.strokeColor,
-            selectedStrokeID: store.document.selectedStrokeID,
-            referenceImageData: store.document.referenceImageData,
-            referenceImageFrame: store.document.referenceImageFrame,
-            printLayout: store.document.printLayout,
-            printStrokeTransforms: store.document.printStrokeTransforms,
-            printPieces: store.document.printPieces,
-            printHiddenStrokeIDs: store.document.printHiddenStrokeIDs
-        )
+        store.document.makeSnapshot()
     }
 
-    private func saveDocument() {
+    private func persistDocument(refreshThumbnail: Bool) async {
+        if let persistTask {
+            await persistTask.value
+        }
+        if store.hasUnsavedChanges {
+            let task = Task { await performPersist(refreshThumbnail: refreshThumbnail) }
+            persistTask = task
+            await task.value
+            persistTask = nil
+        } else if refreshThumbnail {
+            await refreshGalleryThumbnailIfNeeded()
+        }
+    }
+
+    private func performPersist(refreshThumbnail: Bool) async {
+        guard store.hasUnsavedChanges else { return }
         do {
             if store.fileURL == nil, let library = projectLibrary {
-                let record = try library.createProject(name: store.fileName)
+                let record = try await library.createProject(name: store.fileName)
                 store.fileURL = record.fileURL
                 store.fileName = record.name
             }
@@ -1844,12 +1934,28 @@ struct EditorView: View {
                 store.fileURL = renamedURL
                 syncDisplayName(for: renamedURL)
             }
-            try store.save()
-            if let url = store.fileURL, let library = projectLibrary {
-                try library.updateAfterSave(document: store.document, fileURL: url, name: store.fileName)
+            guard let url = store.fileURL else { return }
+            let snapshot = store.document.makeSnapshot()
+            let revision = store.contentRevision
+            let name = store.fileName
+            let thumbnailURL = projectLibrary?.projects.first(where: {
+                $0.fileURL.standardizedFileURL.path == url.standardizedFileURL.path
+            })?.thumbnailURL
+            let thumbnailExists = thumbnailURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            let shouldWriteThumbnail = GalleryThumbnailPolicy.shouldWriteThumbnail(
+                refreshRequested: refreshThumbnail,
+                thumbnailExists: thumbnailExists
+            )
+
+            try await PersistenceWorker.shared.write(snapshot: snapshot, to: url)
+            if shouldWriteThumbnail, let thumbnailURL {
+                try await PersistenceWorker.shared.writeThumbnail(snapshot: snapshot, to: thumbnailURL)
             }
-            lastSavedSnapshot = snapshotFromStore()
-            if pendingDismiss {
+            lastSavedSnapshot = snapshot
+            store.markSaved(forRevision: revision)
+            projectLibrary?.updateMetadataAfterSave(fileURL: url, name: name, snapshot: snapshot)
+            pendingThumbnailRefresh = thumbnailURL != nil && !shouldWriteThumbnail
+            if pendingDismiss, !store.hasUnsavedChanges {
                 pendingDismiss = false
                 dismiss()
             }
@@ -1858,10 +1964,21 @@ struct EditorView: View {
         }
     }
 
+    private func refreshGalleryThumbnailIfNeeded() async {
+        guard pendingThumbnailRefresh else { return }
+        guard let url = store.fileURL, let library = projectLibrary else { return }
+        do {
+            try await library.refreshThumbnail(snapshot: store.document.makeSnapshot(), fileURL: url)
+            pendingThumbnailRefresh = false
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
 }
 
 extension UTType {
-    static var vectrDocument: UTType {
+    nonisolated static var vectrDocument: UTType {
         UTType(exportedAs: "earthwrm.vectr.document", conformingTo: .json)
     }
 }

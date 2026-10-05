@@ -7,18 +7,18 @@ import CoreGraphics
 import Foundation
 
 enum PrintPageGridEngine {
-    struct Sheet: Identifiable, Equatable {
+    struct Sheet: Identifiable, Equatable, Sendable {
         var id: Int
         var column: Int
         var row: Int
         var frame: CGRect
     }
 
-    static func pageSize(for settings: PrintLayoutSettings) -> CGSize {
+    nonisolated static func pageSize(for settings: PrintLayoutSettings) -> CGSize {
         settings.pageSizeInPoints
     }
 
-    static func sheets(for settings: PrintLayoutSettings) -> [Sheet] {
+    nonisolated static func sheets(for settings: PrintLayoutSettings) -> [Sheet] {
         let pageSize = pageSize(for: settings)
         let columns = settings.clampedColumns
         let rows = settings.clampedRows
@@ -44,7 +44,7 @@ enum PrintPageGridEngine {
         sheets(for: settings).map(\.frame)
     }
 
-    static func printableRect(for sheetFrame: CGRect, settings: PrintLayoutSettings) -> CGRect {
+    nonisolated static func printableRect(for sheetFrame: CGRect, settings: PrintLayoutSettings) -> CGRect {
         sheetFrame.insetBy(
             dx: settings.printableMargin,
             dy: settings.printableMargin

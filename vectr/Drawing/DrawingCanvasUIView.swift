@@ -18,24 +18,24 @@ final class DrawingCanvasUIView: UIView {
         didSet {
             performWithoutLayerAnimation {
                 reloadStrokes()
-                reloadReferenceImage()
+                reloadReferenceImages()
+                updateGridPresentation(forcePathRebuild: true)
             }
-            setNeedsDisplay()
         }
     }
 
-    var isCommandMode = false
     var activeCategory: ToolCategory? {
         didSet {
             if oldValue == .curve, activeCategory != .curve {
                 // Don't discard an in-progress curve when leaving the tool: commit it
                 // so the drawn strokes persist. Deferred to avoid mutating document
-                // state during a SwiftUI view update.
-                let anchors = curveDraft?.anchors ?? []
+                // state during a SwiftUI view update. A resumed curve with no new
+                // points finishes as nil and is left unchanged.
+                let finish = curveDraft?.makeFinish()
                 resetCurve()
-                if anchors.count >= 2 {
+                if let finish {
                     DispatchQueue.main.async { [weak self] in
-                        self?.onCurveCommitted?(anchors)
+                        self?.onCurveCommitted?(finish)
                     }
                 }
             }
@@ -54,11 +54,16 @@ final class DrawingCanvasUIView: UIView {
     var isConstructionPreview = false
     var commandPreviewClosed = false
     var allowsDragDraw = false
+    /// Span the trim tool is about to remove, flashed in red before the cut applies.
+    var trimPreviewPoints: [CGPoint] = [] {
+        didSet { updateTrimPreviewLayer() }
+    }
+    var trimPreviewStrokeWidth: CGFloat = 1 {
+        didSet { updateTrimPreviewLayer() }
+    }
     var circleVariant: CircleVariant = .center
     var rectangleVariant: RectangleVariant = .center
     var onCanvasTap: ((CGPoint) -> Void)?
-    /// Two-finger tap — same as the toolbar undo button (Procreate-style).
-    var onTwoFingerTap: (() -> Void)?
     var onDragDrawBegan: ((CGPoint) -> Void)?
     var onDragDrawChanged: ((CGPoint, CGPoint) -> Void)?
     var onDragDrawEnded: ((CGPoint, CGPoint) -> Void)?
@@ -72,8 +77,8 @@ final class DrawingCanvasUIView: UIView {
             updateCurvePreview()
         }
     }
-    /// Emitted when a curve is finished (double-tap) with its drawn anchor points.
-    var onCurveCommitted: (([CGPoint]) -> Void)?
+    /// Emitted when a curve is finished (double-tap or leaving the tool).
+    var onCurveCommitted: ((CurveDraftFinish) -> Void)?
     /// Bounds size and safe-area insets in this view's own coordinate space.
     var onLayoutMetrics: ((CGSize, UIEdgeInsets) -> Void)?
 
@@ -81,11 +86,8 @@ final class DrawingCanvasUIView: UIView {
     private var textLayers: [UUID: CAShapeLayer] = [:]
     private var commandPreviewLayer: CAShapeLayer?
     private var dragPreviewLayer: CAShapeLayer?
+    private var trimPreviewLayer: CAShapeLayer?
     private var commandPointLayers: [CAShapeLayer] = []
-    private var isPanning = false
-    private var lastPanLocation: CGPoint?
-    private var pinchStartScale: CGFloat = 1
-    private var pinchAnchor: CGPoint = .zero
     private var dragDrawStart: CGPoint?
     private var dragDrawCurrent: CGPoint?
     private var curveDragStart: CGPoint?
@@ -93,13 +95,23 @@ final class DrawingCanvasUIView: UIView {
     private var curvePreviewLayer: CAShapeLayer?
     private var curveAnchorLayers: [CAShapeLayer] = []
     private let gridLayer = CALayer()
-    private var referenceImageLayer: CALayer?
-    private var cachedReferenceImageData: Data?
-    private var cachedReferenceImage: UIImage?
+    private let sheetLayer = CALayer()
+    private let worldLayer = CALayer()
+    private let clipLayer = CALayer()
+    private var rankLayers: [CAShapeLayer] = []
+    private let axisXLayer = CAShapeLayer()
+    private let axisYLayer = CAShapeLayer()
+    private var cachedGridCoverage: CGRect = .null
+    private var cachedGridSubdiv: Int = -1
+    private var cachedGridMajor: CGFloat = -1
+    private var cachedCanvasSize: CGSize = .zero
+    private var referenceImageLayers: [UUID: CALayer] = [:]
+    private var cachedReferenceImages: [UUID: (data: Data, image: UIImage)] = [:]
     private var lastLaidOutSize: CGSize = .zero
     private var lastEmittedLayoutSize: CGSize = .zero
     private var lastEmittedSafeAreaInsets: UIEdgeInsets = .zero
     private var layoutMetricsWorkItem: DispatchWorkItem?
+    private var viewportAnimationTask: Task<Void, Never>?
 
     // Object snapping (endpoints/midpoints). Decoupled engine + per-gesture lock session +
     // visual/haptic feedback. Toggle globally via `document.isSnappingEnabled`.
@@ -113,7 +125,7 @@ final class DrawingCanvasUIView: UIView {
     var canvasFillColor: UIColor = UIColor(Color(hex: AppearanceSettings.defaultCanvasHex)) {
         didSet {
             guard canvasFillColor != oldValue else { return }
-            setNeedsDisplay()
+            sheetLayer.backgroundColor = canvasFillColor.resolvedColor(with: traitCollection).cgColor
         }
     }
 
@@ -123,6 +135,7 @@ final class DrawingCanvasUIView: UIView {
         backgroundColor = UIColor(Color(hex: AppearanceSettings.pasteboardHex))
         isMultipleTouchEnabled = true
         layer.addSublayer(gridLayer)
+        setupGridLayers()
         setupGestures()
     }
 
@@ -149,9 +162,9 @@ final class DrawingCanvasUIView: UIView {
             if sizeChanged {
                 if strokeLayers.isEmpty && textLayers.isEmpty {
                     reloadStrokes()
-                    reloadReferenceImage()
+                    reloadReferenceImages()
                     refreshCommandPreview()
-                    setNeedsDisplay()
+                    updateGridPresentation(forcePathRebuild: true)
                 } else {
                     refreshViewportContents()
                 }
@@ -164,60 +177,13 @@ final class DrawingCanvasUIView: UIView {
         scheduleLayoutMetricsNotification(immediate: lastEmittedLayoutSize == .zero)
     }
 
-    override func draw(_ rect: CGRect) {
-        guard let context = UIGraphicsGetCurrentContext() else { return }
-        drawCanvasSheet(in: context)
-        GridRenderer.drawGrid(
-            in: context,
-            bounds: bounds,
-            viewport: document.viewport,
-            grid: document.grid,
-            documentSettings: document.settings,
-            canvasSize: document.settings.canvasSize
-        )
-    }
-
-    /// Fills the canvas rectangle with the sheet color on top of the pasteboard background.
-    private func drawCanvasSheet(in context: CGContext) {
-        let size = document.settings.canvasSize
-        guard size.width > 0, size.height > 0 else { return }
-        let halfWidth = size.width / 2
-        let halfHeight = size.height / 2
-        let topLeft = document.viewport.documentToView(CGPoint(x: -halfWidth, y: -halfHeight))
-        let bottomRight = document.viewport.documentToView(CGPoint(x: halfWidth, y: halfHeight))
-        let rect = CGRect(
-            x: topLeft.x,
-            y: topLeft.y,
-            width: bottomRight.x - topLeft.x,
-            height: bottomRight.y - topLeft.y
-        )
-        context.saveGState()
-        context.setFillColor(canvasFillColor.cgColor)
-        context.fill(rect)
-        context.restoreGState()
-    }
-
-    // MARK: - Touch navigation
-
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        handleNavigationBegan(touches, with: event)
-    }
-
-    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if isPanning {
-            handleNavigationMoved(touches)
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        guard traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) else { return }
+        performWithoutLayerAnimation {
+            applyGridColors()
+            sheetLayer.backgroundColor = canvasFillColor.resolvedColor(with: traitCollection).cgColor
         }
-    }
-
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if isPanning {
-            handleNavigationEnded()
-        }
-    }
-
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        isPanning = false
-        lastPanLocation = nil
     }
 
     func handleSelection(at viewPoint: CGPoint) {
@@ -227,7 +193,7 @@ final class DrawingCanvasUIView: UIView {
         switch selection {
         case .stroke(let id):
             delegate?.canvasDidSelectStroke(document.stroke(with: id))
-        case .text, .none:
+        case .text, .referenceImage, .none:
             delegate?.canvasDidSelectStroke(nil)
         }
         reloadStrokesHighlight()
@@ -269,6 +235,8 @@ final class DrawingCanvasUIView: UIView {
         }
         reloadStrokesHighlight()
         reloadTextElements()
+        reloadReferenceImages()
+        applyContinuationVisibility()
     }
 
     func reloadTextElements() {
@@ -295,51 +263,53 @@ final class DrawingCanvasUIView: UIView {
         }
     }
 
-    private func reloadReferenceImage() {
-        guard let data = document.referenceImageData else {
-            referenceImageLayer?.removeFromSuperlayer()
-            referenceImageLayer = nil
-            cachedReferenceImageData = nil
-            cachedReferenceImage = nil
-            return
+    func reloadReferenceImages() {
+        let images = document.visibleReferenceImages()
+        let ids = Set(images.map(\.id))
+        let zPositions = layerZPositions()
+
+        for id in referenceImageLayers.keys where !ids.contains(id) {
+            referenceImageLayers[id]?.removeFromSuperlayer()
+            referenceImageLayers.removeValue(forKey: id)
+            cachedReferenceImages.removeValue(forKey: id)
         }
 
-        if cachedReferenceImageData != data {
-            cachedReferenceImageData = data
-            cachedReferenceImage = UIImage(data: data)
+        for (index, item) in images.enumerated() {
+            if cachedReferenceImages[item.id]?.data != item.data {
+                if let image = UIImage(data: item.data) {
+                    cachedReferenceImages[item.id] = (item.data, image)
+                } else {
+                    cachedReferenceImages.removeValue(forKey: item.id)
+                }
+            }
+            guard let image = cachedReferenceImages[item.id]?.image else {
+                referenceImageLayers[item.id]?.removeFromSuperlayer()
+                referenceImageLayers.removeValue(forKey: item.id)
+                continue
+            }
+
+            let layer: CALayer
+            if let existing = referenceImageLayers[item.id] {
+                layer = existing
+            } else {
+                let created = CALayer()
+                self.layer.insertSublayer(created, above: gridLayer)
+                referenceImageLayers[item.id] = created
+                layer = created
+            }
+
+            let frame = item.frame
+            let viewOrigin = document.viewport.documentToView(frame.origin)
+            let viewSize = CGSize(
+                width: document.viewport.documentToView(distance: frame.width),
+                height: document.viewport.documentToView(distance: frame.height)
+            )
+            layer.contents = image.cgImage
+            layer.frame = CGRect(origin: viewOrigin, size: viewSize)
+            layer.opacity = Float(document.opacity(forLayerID: item.layerID) * 0.85)
+            let layerZ = zPositions[item.layerID] ?? 1
+            layer.zPosition = layerZ - 0.5 + CGFloat(index) * 0.001
         }
-
-        guard let image = cachedReferenceImage else {
-            referenceImageLayer?.removeFromSuperlayer()
-            referenceImageLayer = nil
-            return
-        }
-
-        let frame = document.referenceImageFrame ?? CGRect(
-            x: -image.size.width / 2,
-            y: -image.size.height / 2,
-            width: image.size.width,
-            height: image.size.height
-        )
-        let viewOrigin = document.viewport.documentToView(frame.origin)
-        let viewSize = CGSize(
-            width: document.viewport.documentToView(distance: frame.width),
-            height: document.viewport.documentToView(distance: frame.height)
-        )
-
-        let layer: CALayer
-        if let existing = referenceImageLayer {
-            layer = existing
-        } else {
-            let created = CALayer()
-            self.layer.insertSublayer(created, above: gridLayer)
-            referenceImageLayer = created
-            layer = created
-        }
-
-        layer.contents = image.cgImage
-        layer.frame = CGRect(origin: viewOrigin, size: viewSize)
-        layer.opacity = 0.85
     }
 
     private func addStrokeLayer(_ stroke: VectorStroke) {
@@ -370,6 +340,37 @@ final class DrawingCanvasUIView: UIView {
         }
     }
 
+    func cancelViewportAnimation() {
+        viewportAnimationTask?.cancel()
+        viewportAnimationTask = nil
+    }
+
+    func animateViewport(to target: ViewportTransform) {
+        cancelViewportAnimation()
+        let start = document.viewport
+        let translationDelta = hypot(
+            target.translation.x - start.translation.x,
+            target.translation.y - start.translation.y
+        )
+        guard translationDelta > 0.5 || abs(target.scale - start.scale) > 0.0001 else { return }
+
+        viewportAnimationTask = Task { @MainActor [weak self] in
+            let steps = 24
+            for step in 1...steps {
+                if Task.isCancelled { return }
+                guard let self else { return }
+                let t = ViewportTransform.easeInOut(CGFloat(step) / CGFloat(steps))
+                self.document.viewport = start.interpolated(toward: target, t: t)
+                self.refreshViewport()
+                try? await Task.sleep(nanoseconds: 12_000_000)
+            }
+            if Task.isCancelled { return }
+            guard let self else { return }
+            self.document.viewport = target
+            self.refreshViewport()
+        }
+    }
+
     private func refreshViewportContents() {
         for (id, layer) in strokeLayers {
             if let stroke = document.stroke(with: id) {
@@ -392,11 +393,194 @@ final class DrawingCanvasUIView: UIView {
                 )
             }
         }
-        reloadReferenceImage()
+        reloadReferenceImages()
         updateCommandPreviewLayer()
         updateDragPreviewLayer()
+        updateTrimPreviewLayer()
         updateCurvePreview()
-        setNeedsDisplay()
+        updateGridPresentation()
+    }
+
+    // MARK: - Layer-backed grid
+
+    private func setupGridLayers() {
+        gridLayer.masksToBounds = true
+        gridLayer.addSublayer(sheetLayer)
+        gridLayer.addSublayer(worldLayer)
+
+        worldLayer.anchorPoint = .zero
+        worldLayer.position = .zero
+        worldLayer.masksToBounds = false
+
+        clipLayer.anchorPoint = .zero
+        clipLayer.masksToBounds = true
+        worldLayer.addSublayer(clipLayer)
+
+        configureGridShapeLayer(axisXLayer, color: GridRenderer.axisXColor, width: GridRenderer.axisLineWidth)
+        configureGridShapeLayer(axisYLayer, color: GridRenderer.axisYColor, width: GridRenderer.axisLineWidth)
+
+        clipLayer.addSublayer(axisXLayer)
+        clipLayer.addSublayer(axisYLayer)
+        sheetLayer.backgroundColor = canvasFillColor.resolvedColor(with: traitCollection).cgColor
+    }
+
+    private func configureGridShapeLayer(_ layer: CAShapeLayer, color: UIColor, width: CGFloat) {
+        layer.fillColor = nil
+        layer.strokeColor = color.resolvedColor(with: traitCollection).cgColor
+        layer.lineWidth = width
+        layer.lineCap = .butt
+        layer.lineJoin = .miter
+        layer.anchorPoint = .zero
+        layer.position = .zero
+        layer.contentsScale = traitCollection.displayScale
+    }
+
+    /// Pans and zooms via a world transform. Paths rebuild only when LOD, settings,
+    /// or the visible region walk off the cached padded coverage.
+    private func updateGridPresentation(forcePathRebuild: Bool = false) {
+        // Grid lines and axes honor the document's visibility toggle so thin
+        // strokes can be inspected on a clean sheet. The canvas sheet lives
+        // outside `clipLayer`, so the sheet extent stays visible.
+        let gridHidden = !document.grid.isVisible
+        clipLayer.isHidden = gridHidden
+        if gridHidden {
+            applyWorldTransform()
+            updateSheetFrame()
+            return
+        }
+        if forcePathRebuild || gridNeedsPathRebuild() {
+            rebuildGridPaths()
+        } else {
+            applyWorldTransform()
+        }
+        updateSheetFrame()
+    }
+
+    private func gridNeedsPathRebuild() -> Bool {
+        let viewport = document.viewport
+        let grid = document.grid
+        let settings = document.settings
+        let canvasSize = settings.canvasSize
+        let subdiv = grid.visibleSubdivisions(for: settings, scale: viewport.scale)
+        let major = grid.visualSpacing(for: settings)
+
+        if cachedGridSubdiv != subdiv { return true }
+        if cachedGridMajor != major { return true }
+        if cachedCanvasSize != canvasSize { return true }
+        if cachedGridSubdiv < 0 { return true }
+
+        let visible = GridRenderer.documentRect(fromViewBounds: bounds, viewport: viewport)
+        let clipped: CGRect
+        if let canvas = GridRenderer.canvasRect(size: canvasSize) {
+            clipped = visible.intersection(canvas)
+        } else {
+            clipped = visible
+        }
+        if clipped.isNull || clipped.isEmpty {
+            return false
+        }
+        if cachedGridCoverage.isNull || cachedGridCoverage.isEmpty {
+            return true
+        }
+        return !cachedGridCoverage.contains(clipped)
+    }
+
+    private func rebuildGridPaths() {
+        let viewport = document.viewport
+        let grid = document.grid
+        let settings = document.settings
+        let canvasSize = settings.canvasSize
+        let paths = GridRenderer.makeLayerPaths(
+            viewBounds: bounds,
+            viewport: viewport,
+            grid: grid,
+            documentSettings: settings,
+            canvasSize: canvasSize,
+            padScreens: 1
+        )
+
+        cachedGridCoverage = paths.coverage
+        cachedGridSubdiv = grid.visibleSubdivisions(for: settings, scale: viewport.scale)
+        cachedGridMajor = grid.visualSpacing(for: settings)
+        cachedCanvasSize = canvasSize
+
+        updateClipLayer(canvasRect: paths.canvasRect)
+
+        ensureRankLayerCount(paths.rankPaths.count)
+        for (index, path) in paths.rankPaths.enumerated() {
+            rankLayers[index].path = path
+            rankLayers[index].isHidden = path.isEmpty
+        }
+        for index in paths.rankPaths.count..<rankLayers.count {
+            rankLayers[index].isHidden = true
+            rankLayers[index].path = nil
+        }
+
+        axisXLayer.path = paths.axisX
+        axisYLayer.path = paths.axisY
+
+        applyGridColors()
+        applyWorldTransform()
+    }
+
+    private func ensureRankLayerCount(_ count: Int) {
+        while rankLayers.count < count {
+            let layer = CAShapeLayer()
+            configureGridShapeLayer(layer, color: GridRenderer.lineColor(rank: rankLayers.count), width: GridRenderer.gridLineWidth)
+            clipLayer.insertSublayer(layer, below: axisXLayer)
+            rankLayers.append(layer)
+        }
+    }
+
+    private func updateClipLayer(canvasRect: CGRect?) {
+        if let canvasRect, !canvasRect.isNull, !canvasRect.isEmpty {
+            clipLayer.masksToBounds = true
+            clipLayer.anchorPoint = .zero
+            clipLayer.bounds = canvasRect
+            clipLayer.position = CGPoint(x: canvasRect.minX, y: canvasRect.minY)
+        } else {
+            clipLayer.masksToBounds = false
+            clipLayer.anchorPoint = .zero
+            clipLayer.position = .zero
+            clipLayer.bounds = .zero
+        }
+    }
+
+    private func applyWorldTransform() {
+        let viewport = document.viewport
+        worldLayer.setAffineTransform(viewport.affineTransform)
+        let inv = 1 / max(viewport.scale, .leastNonzeroMagnitude)
+        let gridWidth = GridRenderer.gridLineWidth * inv
+        for layer in rankLayers {
+            layer.lineWidth = gridWidth
+        }
+        axisXLayer.lineWidth = GridRenderer.axisLineWidth * inv
+        axisYLayer.lineWidth = GridRenderer.axisLineWidth * inv
+    }
+
+    private func updateSheetFrame() {
+        let canvasSize = document.settings.canvasSize
+        guard canvasSize.width > 0, canvasSize.height > 0, bounds.width > 0, bounds.height > 0 else {
+            sheetLayer.isHidden = true
+            return
+        }
+        let canvasView = GridRenderer.canvasRectInView(viewport: document.viewport, canvasSize: canvasSize)
+        let visible = canvasView.intersection(bounds)
+        guard !visible.isNull, !visible.isEmpty else {
+            sheetLayer.isHidden = true
+            return
+        }
+        sheetLayer.isHidden = false
+        sheetLayer.frame = visible
+        sheetLayer.backgroundColor = canvasFillColor.resolvedColor(with: traitCollection).cgColor
+    }
+
+    private func applyGridColors() {
+        for (index, layer) in rankLayers.enumerated() {
+            layer.strokeColor = GridRenderer.lineColor(rank: index).resolvedColor(with: traitCollection).cgColor
+        }
+        axisXLayer.strokeColor = GridRenderer.axisXColor.resolvedColor(with: traitCollection).cgColor
+        axisYLayer.strokeColor = GridRenderer.axisYColor.resolvedColor(with: traitCollection).cgColor
     }
 
     private func performWithoutLayerAnimation(_ updates: () -> Void) {
@@ -450,26 +634,8 @@ final class DrawingCanvasUIView: UIView {
     // MARK: - Gestures
 
     private func setupGestures() {
-        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
-        pinch.delegate = self
-        addGestureRecognizer(pinch)
-
-        let twoFingerPan = UIPanGestureRecognizer(target: self, action: #selector(handleTwoFingerPan(_:)))
-        twoFingerPan.minimumNumberOfTouches = 2
-        twoFingerPan.maximumNumberOfTouches = 2
-        twoFingerPan.delegate = self
-        addGestureRecognizer(twoFingerPan)
-
-        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
-        twoFingerTap.numberOfTouchesRequired = 2
-        twoFingerTap.delegate = self
-        twoFingerTap.require(toFail: pinch)
-        twoFingerTap.require(toFail: twoFingerPan)
-        addGestureRecognizer(twoFingerTap)
-
         let tap = PreciseTapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.delegate = self
-        tap.require(toFail: twoFingerPan)
         addGestureRecognizer(tap)
 
         let dragDraw = PrecisePanGestureRecognizer(target: self, action: #selector(handleDragDraw(_:)))
@@ -484,60 +650,12 @@ final class DrawingCanvasUIView: UIView {
         addGestureRecognizer(curveFinish)
     }
 
-    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        switch gesture.state {
-        case .began:
-            pinchStartScale = document.viewport.scale
-            pinchAnchor = gesture.location(in: self)
-        case .changed:
-            let newScale = pinchStartScale * gesture.scale
-            document.viewport.zoom(to: newScale, anchorViewPoint: pinchAnchor)
-            clampViewportToCanvasExtent()
-            refreshViewport()
-            delegate?.canvasDidUpdate(document: document)
-        default:
-            break
-        }
-    }
-
-    @objc private func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
-        let translation = gesture.translation(in: self)
-        switch gesture.state {
-        case .began:
-            lastPanLocation = translation
-        case .changed:
-            let delta = CGPoint(
-                x: translation.x - (lastPanLocation?.x ?? 0),
-                y: translation.y - (lastPanLocation?.y ?? 0)
-            )
-            document.viewport.translation.x += delta.x
-            document.viewport.translation.y += delta.y
-            clampViewportToCanvasExtent()
-            lastPanLocation = translation
-            refreshViewport()
-            delegate?.canvasDidUpdate(document: document)
-        case .ended, .cancelled:
-            lastPanLocation = nil
-        default:
-            break
-        }
-    }
-
-    @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
-        guard gesture.state == .ended else { return }
-        onTwoFingerTap?()
-    }
-
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         let viewPoint = drawingViewPoint(from: gesture)
         let documentPoint = document.viewport.viewToDocument(viewPoint)
 
         switch activeCategory {
-        case .line, .circle, .rectangle:
-            if isCommandMode {
-                onCanvasTap?(documentPoint)
-            }
-        case .trim, .delete, .addAnchor, .type, .copy, .scale, .fillet, .pattern, .dimensions, .curve:
+        case .line, .circle, .rectangle, .trim, .delete, .addAnchor, .type, .copy, .scale, .fillet, .pattern, .dimensions, .curve:
             // Forward taps so empty-canvas / outside-shape hits can dismiss the tool.
             // Scale/fillet handles still win via the overlay's high-priority gestures.
             onCanvasTap?(documentPoint)
@@ -562,9 +680,7 @@ final class DrawingCanvasUIView: UIView {
 
         let viewPoint = drawingViewPoint(from: gesture)
         let rawPoint = document.viewport.viewToDocument(viewPoint)
-        // Tangent snapping needs the anchored end of the in-progress line, which is
-        // `dragDrawStart` once the drag is underway (nil during `.began`).
-        let documentPoint = snappedDragPoint(rawPoint, referenceStart: dragDrawStart)
+        let documentPoint = snappedDragPoint(rawPoint)
 
         switch gesture.state {
         case .began:
@@ -617,7 +733,6 @@ final class DrawingCanvasUIView: UIView {
             objectSnap: { query, alignmentOrigin, alignmentThrough in
                 resolveObjectSnap(
                     rawPoint: query,
-                    referenceStart: referenceStart,
                     alignmentOrigin: alignmentOrigin,
                     alignmentThrough: alignmentThrough
                 )
@@ -638,7 +753,6 @@ final class DrawingCanvasUIView: UIView {
     /// stays constant across zoom levels.
     private func resolveObjectSnap(
         rawPoint: CGPoint,
-        referenceStart: CGPoint? = nil,
         alignmentOrigin: CGPoint? = nil,
         alignmentThrough: CGPoint? = nil
     ) -> CGPoint? {
@@ -661,7 +775,6 @@ final class DrawingCanvasUIView: UIView {
             snapRadius: SnapTuning.snapRadiusPoints / scale,
             breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
             breakawayVelocity: SnapTuning.breakawayVelocityPoints / scale,
-            referenceStarts: referenceStart.map { [$0] } ?? [],
             alignmentOrigin: alignmentOrigin,
             alignmentThrough: alignmentThrough,
             alignmentTolerance: alignmentTolerance,
@@ -781,10 +894,14 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func commitCurve() {
-        let anchors = curveDraft?.anchors ?? []
+        let finish = curveDraft?.makeFinish()
         resetCurve()
-        guard anchors.count >= 2 else { return }
-        onCurveCommitted?(anchors)
+        guard let finish else { return }
+        onCurveCommitted?(finish)
+    }
+
+    func refreshCurvePreview() {
+        updateCurvePreview()
     }
 
     private func resetCurve() {
@@ -823,6 +940,7 @@ final class DrawingCanvasUIView: UIView {
     private func updateCurvePreview() {
         curveAnchorLayers.forEach { $0.removeFromSuperlayer() }
         curveAnchorLayers.removeAll()
+        defer { applyContinuationVisibility() }
 
         let anchors = previewCurveAnchors()
 
@@ -832,7 +950,10 @@ final class DrawingCanvasUIView: UIView {
             return
         }
 
-        let pointRadius: CGFloat = 4
+        let pointRadius = CanvasOverlayGeometry.anchorScreenLength(
+            base: 4,
+            scale: document.viewport.scale
+        )
         for point in curveAnchors {
             let dot = CAShapeLayer()
             let viewPoint = document.viewport.documentToView(point)
@@ -844,9 +965,8 @@ final class DrawingCanvasUIView: UIView {
                     height: pointRadius * 2
                 )
             ).cgPath
-            dot.fillColor = UIColor.systemBlue.cgColor
-            dot.strokeColor = UIColor.white.cgColor
-            dot.lineWidth = 1.5
+            dot.fillColor = UIColor.systemTeal.cgColor
+            dot.zPosition = Self.previewZPosition
             layer.addSublayer(dot)
             curveAnchorLayers.append(dot)
         }
@@ -865,20 +985,61 @@ final class DrawingCanvasUIView: UIView {
             newLayer.fillColor = UIColor.clear.cgColor
             newLayer.lineCap = .round
             newLayer.lineJoin = .round
+            newLayer.zPosition = Self.previewZPosition
             self.layer.addSublayer(newLayer)
             curvePreviewLayer = newLayer
             pathLayer = newLayer
         }
+        pathLayer.zPosition = Self.previewZPosition
 
-        let smoothed = ShapeGeometry.smoothCurvePoints(anchors: anchors)
+        let smoothed = previewCurvePoints(anchors)
         pathLayer.path = StrokeRenderer.livePath(
             points: smoothed,
             viewport: document.viewport,
             closed: false
         ).cgPath
-        pathLayer.strokeColor = document.strokeColor.platformCGColor
-        pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
-        pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
+        let style = continuationPreviewStyle()
+        pathLayer.strokeColor = style.color
+        pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: style.width))
+        pathLayer.opacity = style.opacity
+    }
+
+    /// Seeded curves keep their stored tangents. A new draft still uses the cardinal spline.
+    private func previewCurvePoints(_ anchors: [CGPoint]) -> [CGPoint] {
+        guard let handles = curveDraft?.continuation?.originalHandles, anchors.count >= 2 else {
+            return ShapeGeometry.smoothCurvePoints(anchors: anchors)
+        }
+        let merged = ShapeGeometry.continuationHandles(
+            originalHandles: handles,
+            anchors: anchors,
+            closed: false
+        )
+        return ShapeGeometry.curvePoints(anchors: anchors, handles: merged, closed: false)
+    }
+
+    private func continuationPreviewStyle() -> (color: CGColor, width: CGFloat, opacity: Float) {
+        let fallbackWidth = document.strokeWidth
+        let fallbackOpacity = Float(document.opacity(forLayerID: document.activeLayerID))
+        guard let id = curveDraft?.continuationStrokeID,
+              let stroke = document.stroke(with: id) else {
+            return (document.strokeColor.platformCGColor, fallbackWidth, fallbackOpacity)
+        }
+        return (
+            stroke.strokeColor.platformCGColor,
+            stroke.strokeWidth,
+            Float(document.opacity(forLayerID: stroke.layerID))
+        )
+    }
+
+    /// The source stroke is hidden while its anchors are in the draft, so it is not drawn twice.
+    private func applyContinuationVisibility() {
+        let hiddenID = curveDraft?.continuationStrokeID
+        for (id, strokeLayer) in strokeLayers {
+            let hidden = id == hiddenID
+            if strokeLayer.isHidden != hidden {
+                strokeLayer.isHidden = hidden
+            }
+        }
     }
 
     // MARK: - Command preview
@@ -898,7 +1059,10 @@ final class DrawingCanvasUIView: UIView {
             return
         }
 
-        let pointRadius: CGFloat = 5
+        let pointRadius = CanvasOverlayGeometry.anchorScreenLength(
+            base: 5,
+            scale: document.viewport.scale
+        )
         for point in dots {
             let dot = CAShapeLayer()
             let viewPoint = document.viewport.documentToView(point)
@@ -980,6 +1144,17 @@ final class DrawingCanvasUIView: UIView {
             return
         }
 
+        if activeCategory == .line, lineVariant == .arc {
+            // Sweep preview lives on the command session once center + start are parked.
+            if commandControlPoints.count >= 2 {
+                dragPreviewLayer?.removeFromSuperlayer()
+                dragPreviewLayer = nil
+                return
+            }
+            updateArcRadiusPreviewLayer(center: start, start: end)
+            return
+        }
+
         let previewPoints = dragPreviewPoints(start: start, end: end)
         guard previewPoints.count >= 2 else {
             dragPreviewLayer?.removeFromSuperlayer()
@@ -1022,12 +1197,96 @@ final class DrawingCanvasUIView: UIView {
         pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
     }
 
+    /// `trimPreviewPoints` arrive already flattened by `TrimEngine`, so a plain polyline
+    /// traces the removed span without re-fitting it through `StrokeRenderer`.
+    private func updateTrimPreviewLayer() {
+        guard trimPreviewPoints.count >= 2 else {
+            performWithoutLayerAnimation {
+                trimPreviewLayer?.removeFromSuperlayer()
+                trimPreviewLayer = nil
+            }
+            return
+        }
+
+        performWithoutLayerAnimation {
+            let pathLayer: CAShapeLayer
+            if let existing = trimPreviewLayer {
+                pathLayer = existing
+            } else {
+                let newLayer = CAShapeLayer()
+                newLayer.fillColor = UIColor.clear.cgColor
+                newLayer.lineCap = .round
+                newLayer.lineJoin = .round
+                newLayer.zPosition = Self.previewZPosition
+                self.layer.addSublayer(newLayer)
+                trimPreviewLayer = newLayer
+                pathLayer = newLayer
+            }
+
+            let viewPoints = trimPreviewPoints.map { document.viewport.documentToView($0) }
+            let path = UIBezierPath()
+            path.move(to: viewPoints[0])
+            for point in viewPoints.dropFirst() {
+                path.addLine(to: point)
+            }
+            pathLayer.path = path.cgPath
+            pathLayer.strokeColor = UIColor.systemRed.cgColor
+            pathLayer.lineWidth = max(
+                3,
+                document.viewport.documentToView(distance: trimPreviewStrokeWidth) + 2
+            )
+        }
+    }
+
+    private func updateArcRadiusPreviewLayer(center: CGPoint, start: CGPoint) {
+        let radius = hypot(start.x - center.x, start.y - center.y)
+        guard radius > 0.001 else {
+            dragPreviewLayer?.removeFromSuperlayer()
+            dragPreviewLayer = nil
+            return
+        }
+
+        let pathLayer: CAShapeLayer
+        if let existing = dragPreviewLayer {
+            pathLayer = existing
+        } else {
+            let newLayer = CAShapeLayer()
+            newLayer.fillColor = UIColor.clear.cgColor
+            newLayer.lineCap = .round
+            newLayer.lineJoin = .round
+            newLayer.zPosition = Self.previewZPosition
+            self.layer.addSublayer(newLayer)
+            dragPreviewLayer = newLayer
+            pathLayer = newLayer
+        }
+
+        let path = UIBezierPath()
+        path.append(
+            StrokeRenderer.livePath(
+                points: ShapeGeometry.circleCardinalPoints(center: center, radius: radius),
+                viewport: document.viewport,
+                closed: true,
+                shapeType: .circle
+            )
+        )
+        path.append(
+            StrokeRenderer.livePath(
+                points: [center, start],
+                viewport: document.viewport,
+                closed: false
+            )
+        )
+        pathLayer.path = path.cgPath
+        pathLayer.strokeColor = document.strokeColor.platformCGColor
+        pathLayer.fillColor = UIColor.systemGray.withAlphaComponent(0.15).cgColor
+        pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
+        pathLayer.lineDashPattern = nil
+        pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
+    }
+
     private func dragPreviewPoints(start: CGPoint, end: CGPoint) -> [CGPoint] {
         switch activeCategory {
         case .line:
-            if lineVariant == .arc {
-                return []
-            }
             return [start, end]
         case .circle:
             switch circleVariant {
@@ -1078,27 +1337,6 @@ final class DrawingCanvasUIView: UIView {
         dragPreviewShapeType
     }
 
-    private func handleNavigationBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let event, event.allTouches?.count ?? 0 >= 2 {
-            isPanning = true
-            if let touch = touches.first {
-                lastPanLocation = touch.location(in: self)
-            }
-        }
-    }
-
-    private func handleNavigationMoved(_ touches: Set<UITouch>) {
-        guard let touch = touches.first, let last = lastPanLocation else { return }
-        let current = touch.location(in: self)
-        let delta = CGPoint(x: current.x - last.x, y: current.y - last.y)
-        document.viewport.translation.x += delta.x
-        document.viewport.translation.y += delta.y
-        clampViewportToCanvasExtent()
-        lastPanLocation = current
-        refreshViewport()
-        delegate?.canvasDidUpdate(document: document)
-    }
-
     private func clampViewportToCanvasExtent() {
         applyViewportIfNeeded {
             $0.clampToCanvasSize(
@@ -1106,11 +1344,6 @@ final class DrawingCanvasUIView: UIView {
                 canvasSize: document.settings.canvasSize
             )
         }
-    }
-
-    private func handleNavigationEnded() {
-        isPanning = false
-        lastPanLocation = nil
     }
 
     private func shouldAcceptDrawingTouch(_ touch: UITouch) -> Bool {
@@ -1168,12 +1401,7 @@ extension DrawingCanvasUIView: UIGestureRecognizerDelegate {
                 return true
             }
             switch activeCategory {
-            case .line, .circle, .rectangle:
-                if isCommandMode {
-                    return shouldAcceptDrawingTouch(touch)
-                }
-            case .trim, .delete, .addAnchor, .copy, .scale, .fillet, .pattern, .dimensions:
-                // These tools used to hit-test via SwiftUI overlays (finger-friendly).
+            case .line, .circle, .rectangle, .trim, .delete, .addAnchor, .copy, .scale, .fillet, .pattern, .dimensions:
                 // Always accept finger taps so they keep working when "finger drawing"
                 // is off, including tap-empty-to-dismiss.
                 return true

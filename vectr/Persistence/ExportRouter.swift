@@ -12,22 +12,40 @@ enum ExportRouter {
         to url: URL,
         quality: ExportQuality = .medium
     ) throws {
+        try export(snapshot: document.makeSnapshot(), format: format, to: url, quality: quality)
+    }
+
+    nonisolated static func export(
+        snapshot: DocumentSnapshot,
+        format: ExportFormat,
+        to url: URL,
+        quality: ExportQuality = .medium
+    ) throws {
         switch format {
         case .vectr:
-            try DocumentCodec.write(document, to: url)
+            try DocumentCodec.write(snapshot, to: url)
         case .jpeg:
-            try JPEGExporter.write(document: document, to: url, quality: quality)
+            try JPEGExporter.write(snapshot: snapshot, to: url, quality: quality)
         case .pdf:
-            try PDFExporter.write(document: document, to: url)
+            try PDFExporter.write(snapshot: snapshot, to: url)
         case .svg:
-            try SVGExporter.write(document: document, to: url)
+            try SVGExporter.write(snapshot: snapshot, to: url)
         case .ai:
-            try PDFExporter.write(document: document, to: url)
+            try PDFExporter.write(snapshot: snapshot, to: url, opaqueFills: true)
         }
     }
 
     static func temporaryExportURL(
         document: VectrDocument,
+        name: String,
+        format: ExportFormat,
+        quality: ExportQuality = .medium
+    ) throws -> URL {
+        try temporaryExportURL(snapshot: document.makeSnapshot(), name: name, format: format, quality: quality)
+    }
+
+    nonisolated static func temporaryExportURL(
+        snapshot: DocumentSnapshot,
         name: String,
         format: ExportFormat,
         quality: ExportQuality = .medium
@@ -38,7 +56,7 @@ enum ExportRouter {
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
-        try export(document: document, format: format, to: url, quality: quality)
+        try export(snapshot: snapshot, format: format, to: url, quality: quality)
         return url
     }
 
@@ -49,7 +67,7 @@ enum ExportRouter {
         to destination: URL,
         quality: ExportQuality = .medium
     ) throws {
-        let document = try DocumentCodec.read(from: fileURL)
-        try export(document: document, format: format, to: destination, quality: quality)
+        let snapshot = try DocumentCodec.readSnapshot(from: fileURL)
+        try export(snapshot: snapshot, format: format, to: destination, quality: quality)
     }
 }

@@ -51,10 +51,6 @@ struct LayersPanelView: View {
                 selectedLayerIDs = []
             }
         }
-        .onAppear { syncOpacitySlider() }
-        .onChange(of: document.activeLayerID) { _, _ in syncOpacitySlider() }
-        .onChange(of: selectedLayerIDs) { _, _ in syncOpacitySlider() }
-        .onChange(of: document.geometryRevision) { _, _ in syncOpacitySlider() }
     }
 
     // MARK: - Collapsed toggle
@@ -88,6 +84,12 @@ struct LayersPanelView: View {
         .frame(width: panelWidth)
         .background(Rectangle().fill(Color(hex: AppearanceSettings.panelHex)))
         .overlay(Rectangle().stroke(Color.primary.opacity(0.08), lineWidth: 1))
+        // Scoped to the expanded card so the collapsed panel does not observe
+        // `geometryRevision` and wake on every frame of a canvas drag.
+        .onAppear { syncOpacitySlider() }
+        .onChange(of: document.activeLayerID) { _, _ in syncOpacitySlider() }
+        .onChange(of: selectedLayerIDs) { _, _ in syncOpacitySlider() }
+        .onChange(of: document.geometryRevision) { _, _ in syncOpacitySlider() }
     }
 
     private var panelHeader: some View {
@@ -713,14 +715,20 @@ struct LayersPanelView: View {
 }
 
 /// Small preview of a single layer's content, zoomed to fit that layer's
-/// drawing. Re-renders whenever document geometry changes.
+/// drawing. This is a passive preview of what was drawn: it deliberately does
+/// not track in-progress canvas work. Regeneration waits for edits to settle,
+/// so a drag that bumps `geometryRevision` every frame does no work at all.
 private struct LayerThumbnailView: View {
     let document: VectrDocument
     let layerID: UUID
 
+    @Environment(\.colorScheme) private var colorScheme
+
     @State private var image: UIImage?
 
     private let thumbnailSize = CGSize(width: 38, height: 30)
+    /// Matches the trailing-debounce interval used for canvas layout metrics.
+    private let settleDelay = Duration.milliseconds(80)
 
     var body: some View {
         ZStack {
@@ -738,15 +746,27 @@ private struct LayerThumbnailView: View {
         .frame(width: thumbnailSize.width, height: thumbnailSize.height)
         .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
         .contentShape(Rectangle())
-        .onAppear { regenerate() }
-        .onChange(of: document.geometryRevision) { _, _ in regenerate() }
+        .task(id: RenderKey(revision: document.geometryRevision, isDark: colorScheme == .dark)) {
+            // Continuous edits restart this task before the delay elapses, so a
+            // drag renders nothing until it settles. The first paint skips the
+            // delay so opening the panel stays snappy on a cold cache.
+            if image != nil {
+                try? await Task.sleep(for: settleDelay)
+                guard !Task.isCancelled else { return }
+            }
+            image = LayerThumbnailCache.shared.image(
+                document: document,
+                layerID: layerID,
+                size: thumbnailSize,
+                isDark: colorScheme == .dark
+            )
+        }
     }
 
-    private func regenerate() {
-        image = LayerThumbnailRenderer.render(
-            document: document,
-            layerID: layerID,
-            size: thumbnailSize
-        )
+    /// Both inputs the cached image depends on. Appearance is included because
+    /// the renderer bakes dynamic colors against the trait collection.
+    private struct RenderKey: Equatable {
+        var revision: Int
+        var isDark: Bool
     }
 }

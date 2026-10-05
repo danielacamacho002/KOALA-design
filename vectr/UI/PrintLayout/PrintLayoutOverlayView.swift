@@ -17,14 +17,21 @@ struct PrintLayoutOverlayView: View {
     /// When true, a drag locks onto the dominant axis after a short threshold.
     var axisLockEnabled: Bool = false
     var onChanged: () -> Void
+    var onSelectTap: (() -> Void)? = nil
 
-    @State private var moveDragOriginTransform = PrintStrokeTransform.identity
+    @State private var moveDragOriginTransforms: [UUID: PrintStrokeTransform] = [:]
     @State private var rotateDragOriginAngle: CGFloat = 0
-    @State private var rotateDragOriginRotation: CGFloat = 0
+    @State private var rotateDragOriginTransforms: [UUID: PrintStrokeTransform] = [:]
+    @State private var rotateDragOriginCenters: [UUID: CGPoint] = [:]
+    @State private var rotateGroupPivot: CGPoint = .zero
 
     @State private var isMoveDragging = false
     @State private var dragAxis: DragAxis = .free
     @State private var dragStartBounds: CGRect = .null
+    @State private var dragDecided = false
+    @State private var dragIsMarquee = false
+    @State private var marqueeStart: CGPoint?
+    @State private var marqueeCurrent: CGPoint?
 
     private let handleSize: CGFloat = 22
     private let rotateHandleOffset: CGFloat = 36
@@ -39,6 +46,17 @@ struct PrintLayoutOverlayView: View {
         GeometryReader { geo in
             ZStack {
                 if document.printLayout.activeTool == .select {
+                    SingleTouchCanvasCatcher(
+                        onTap: { handleSelectTap(at: $0) },
+                        onDragChanged: { handleBackgroundDragChanged($0) },
+                        onDragEnded: { handleBackgroundDragEnded($0) }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if let rect = marqueeViewRect {
+                        marqueeBox(rect)
+                    }
+
                     if axisLockEnabled, isMoveDragging, dragAxis != .free, let bounds = selectedElementBounds() {
                         axisGuideline(
                             axis: dragAxis,
@@ -46,12 +64,9 @@ struct PrintLayoutOverlayView: View {
                             size: geo.size
                         )
                     }
-                    if let strokeID = document.printSelectedStrokeID,
-                       let stroke = document.printLayoutStroke(with: strokeID) {
-                        strokeSelectionOverlay(strokeID: strokeID, stroke: stroke)
-                    } else if let textID = document.printSelectedTextID,
-                              let element = document.textElement(with: textID) {
-                        textSelectionOverlay(element: element)
+
+                    if let bbox = selectedElementBounds() {
+                        selectionChrome(bbox: bbox)
                     }
                 }
             }
@@ -61,63 +76,31 @@ struct PrintLayoutOverlayView: View {
     }
 
     @ViewBuilder
-    private func strokeSelectionOverlay(strokeID: UUID, stroke: VectorStroke) -> some View {
-        let transformed = document.transformedPrintStroke(stroke)
-        let points = ShapeGeometry.renderPoints(for: transformed)
-        selectionOverlay(
-            elementID: strokeID,
-            bbox: PrintLayoutCoordinateSpace.boundingRect(for: points)
-        )
-    }
-
-    @ViewBuilder
-    private func textSelectionOverlay(element: TextElement) -> some View {
-        let corners = PrintLayoutCoordinateSpace.transformedTextCorners(
-            element,
-            transform: document.effectivePrintTransform(for: element.id)
-        )
-        selectionOverlay(
-            elementID: element.id,
-            bbox: PrintLayoutCoordinateSpace.boundingRect(for: corners)
-        )
-    }
-
-    @ViewBuilder
-    private func selectionOverlay(elementID: UUID, bbox: CGRect) -> some View {
+    private func selectionChrome(bbox: CGRect) -> some View {
         let center = CGPoint(x: bbox.midX, y: bbox.midY)
         let viewCenter = document.viewport.documentToView(center)
         let boxViewWidth = document.viewport.documentToView(distance: bbox.width)
         let boxViewHeight = document.viewport.documentToView(distance: bbox.height)
 
-        // Draggable body: dragging anywhere inside the shape's bounds moves it.
-        // A small minimum distance lets simple taps fall through for (de)selection.
-        Rectangle()
-            .fill(Color.white.opacity(0.001))
-            .contentShape(Rectangle())
-            .frame(width: max(boxViewWidth, 24), height: max(boxViewHeight, 24))
-            .position(viewCenter)
-            .gesture(moveDrag(elementID: elementID, minimumDistance: 8))
-
-        // Bounding box
         RoundedRectangle(cornerRadius: 2)
-            .stroke(Color.accentColor.opacity(0.5), lineWidth: 1)
-            .frame(
-                width: boxViewWidth,
-                height: boxViewHeight
+            .stroke(
+                Color.accentColor.opacity(document.printSelectionCount > 1 ? 0.85 : 0.5),
+                style: StrokeStyle(
+                    lineWidth: document.printSelectionCount > 1 ? 1.5 : 1,
+                    dash: document.printSelectionCount > 1 ? [5, 3] : []
+                )
             )
+            .frame(width: boxViewWidth, height: boxViewHeight)
             .position(viewCenter)
             .allowsHitTesting(false)
 
-        // Move handle (center)
         Circle()
             .fill(Color.accentColor)
             .frame(width: centerHandleSize, height: centerHandleSize)
             .overlay(Circle().stroke(Color.white, lineWidth: 2))
             .position(viewCenter)
-            .gesture(moveDrag(elementID: elementID))
+            .allowsHitTesting(false)
 
-        // Rotation handle — only shown when the user has explicitly entered
-        // rotate mode from the command panel (not an always-on handle).
         if rotateModeActive {
             Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.system(size: 14, weight: .semibold))
@@ -128,112 +111,193 @@ struct PrintLayoutOverlayView: View {
                     x: viewCenter.x,
                     y: viewCenter.y - document.viewport.documentToView(distance: rotateHandleOffset)
                 )
-                .gesture(rotateDrag(elementID: elementID, center: center))
+                .gesture(rotateDrag(center: center))
         }
     }
 
     private var centerHandleSize: CGFloat { 18 }
 
-    private func moveDrag(elementID: UUID, minimumDistance: CGFloat = 0) -> some Gesture {
-        DragGesture(minimumDistance: minimumDistance, coordinateSpace: .named(coordinateSpaceName))
-            .onChanged { value in
-                if !isMoveDragging {
-                    isMoveDragging = true
-                    moveDragOriginTransform = document.printTransform(for: elementID)
-                    dragStartBounds = boundsForElement(elementID)
-                    dragAxis = .free
-                    document.beginInteractiveEdit()
-                }
-
-                // When axis lock is on, lock to a single axis once the drag
-                // passes the threshold, then stay locked for the gesture.
-                if axisLockEnabled, dragAxis == .free {
-                    let moved = value.translation
-                    if hypot(moved.width, moved.height) > axisLockThreshold {
-                        dragAxis = abs(moved.width) > abs(moved.height) ? .horizontal : .vertical
-                    }
-                }
-
-                let startDoc = document.viewport.viewToDocument(value.startLocation)
-                let currentDoc = document.viewport.viewToDocument(value.location)
-                var delta = CGPoint(
-                    x: currentDoc.x - startDoc.x,
-                    y: currentDoc.y - startDoc.y
-                )
-
-                if axisLockEnabled {
-                    switch dragAxis {
-                    case .horizontal: delta.y = 0
-                    case .vertical: delta.x = 0
-                    case .free: break
-                    }
-
-                    if dragAxis != .free, !dragStartBounds.isNull {
-                        delta = snappedDelta(delta, axis: dragAxis)
-                    }
-                }
-
-                var transform = moveDragOriginTransform
-                transform.translation = CGPoint(
-                    x: moveDragOriginTransform.translation.x + delta.x,
-                    y: moveDragOriginTransform.translation.y + delta.y
-                )
-                document.setPrintTransform(transform, for: elementID, recordUndo: false)
-                onChanged()
-            }
-            .onEnded { _ in
-                moveDragOriginTransform = .identity
-                isMoveDragging = false
-                dragAxis = .free
-                dragStartBounds = .null
-                onChanged()
-            }
+    private func handleSelectTap(at viewPoint: CGPoint) {
+        onSelectTap?()
+        let documentPoint = document.viewport.viewToDocument(viewPoint)
+        let threshold = document.viewport.viewToDocument(distance: 16)
+        document.handlePrintSelectTap(near: documentPoint, threshold: threshold)
     }
 
-    private func rotateDrag(elementID: UUID, center: CGPoint) -> some Gesture {
+    /// Background drag that either moves the current selection (when it starts over
+    /// it) or draws a marquee (when it starts on empty grid).
+    private func handleBackgroundDragChanged(_ value: OverlayPointerValue) {
+        if !dragDecided {
+            dragDecided = true
+            let startDoc = document.viewport.viewToDocument(value.startLocation)
+            let threshold = document.viewport.viewToDocument(distance: 12)
+            dragIsMarquee = !document.printSelectionContains(point: startDoc, threshold: threshold)
+            if dragIsMarquee {
+                marqueeStart = value.startLocation
+            } else {
+                beginMoveDrag()
+            }
+        }
+        if dragIsMarquee {
+            marqueeCurrent = value.location
+        } else {
+            applyMoveDrag(value)
+        }
+    }
+
+    private func handleBackgroundDragEnded(_ value: OverlayPointerValue) {
+        if dragIsMarquee {
+            if let rect = marqueeDocRect(start: value.startLocation, current: value.location) {
+                document.selectPrintElements(in: rect)
+            }
+            marqueeStart = nil
+            marqueeCurrent = nil
+        } else {
+            finishMoveDrag()
+        }
+        dragDecided = false
+        dragIsMarquee = false
+        onChanged()
+    }
+
+    private func beginMoveDrag() {
+        isMoveDragging = true
+        moveDragOriginTransforms = Dictionary(
+            uniqueKeysWithValues: document.printSelectedIDs.map { ($0, document.printTransform(for: $0)) }
+        )
+        dragStartBounds = selectedElementBounds() ?? .null
+        dragAxis = .free
+        document.beginInteractiveEdit()
+    }
+
+    private func applyMoveDrag(_ value: OverlayPointerValue) {
+        if axisLockEnabled, dragAxis == .free {
+            let moved = value.translation
+            if hypot(moved.width, moved.height) > axisLockThreshold {
+                dragAxis = abs(moved.width) > abs(moved.height) ? .horizontal : .vertical
+            }
+        }
+
+        let startDoc = document.viewport.viewToDocument(value.startLocation)
+        let currentDoc = document.viewport.viewToDocument(value.location)
+        var delta = CGPoint(
+            x: currentDoc.x - startDoc.x,
+            y: currentDoc.y - startDoc.y
+        )
+
+        if axisLockEnabled {
+            switch dragAxis {
+            case .horizontal: delta.y = 0
+            case .vertical: delta.x = 0
+            case .free: break
+            }
+
+            if dragAxis != .free, !dragStartBounds.isNull {
+                delta = snappedDelta(delta, axis: dragAxis)
+            }
+        }
+
+        var updates: [UUID: PrintStrokeTransform] = [:]
+        for (id, origin) in moveDragOriginTransforms {
+            var transform = origin
+            transform.translation = CGPoint(
+                x: origin.translation.x + delta.x,
+                y: origin.translation.y + delta.y
+            )
+            updates[id] = transform
+        }
+        document.setPrintTransforms(updates, recordUndo: false)
+    }
+
+    private func finishMoveDrag() {
+        moveDragOriginTransforms = [:]
+        isMoveDragging = false
+        dragAxis = .free
+        dragStartBounds = .null
+    }
+
+    private func rotateDrag(center: CGPoint) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
             .onChanged { value in
                 let currentDoc = document.viewport.viewToDocument(value.location)
-                if rotateDragOriginRotation == 0, rotateDragOriginAngle == 0 {
-                    rotateDragOriginRotation = document.printTransform(for: elementID).rotation
+                if rotateDragOriginTransforms.isEmpty {
+                    rotateGroupPivot = center
                     rotateDragOriginAngle = atan2(currentDoc.y - center.y, currentDoc.x - center.x)
+                    rotateDragOriginTransforms = Dictionary(
+                        uniqueKeysWithValues: document.printSelectedIDs.map { ($0, document.printTransform(for: $0)) }
+                    )
+                    rotateDragOriginCenters = Dictionary(
+                        uniqueKeysWithValues: document.printSelectedIDs.compactMap { id in
+                            let bounds = boundsForElement(id)
+                            guard !bounds.isNull else { return nil }
+                            return (id, CGPoint(x: bounds.midX, y: bounds.midY))
+                        }
+                    )
                     document.beginInteractiveEdit()
                 }
-                let angle = atan2(currentDoc.y - center.y, currentDoc.x - center.x)
-                var transform = document.printTransform(for: elementID)
-                transform.rotation = rotateDragOriginRotation + (angle - rotateDragOriginAngle)
-                document.setPrintTransform(transform, for: elementID, recordUndo: false)
-                onChanged()
+                let angle = atan2(currentDoc.y - rotateGroupPivot.y, currentDoc.x - rotateGroupPivot.x)
+                let delta = angle - rotateDragOriginAngle
+                document.rotatePrintSelection(
+                    by: delta,
+                    around: rotateGroupPivot,
+                    originTransforms: rotateDragOriginTransforms,
+                    originCenters: rotateDragOriginCenters,
+                    recordUndo: false
+                )
             }
             .onEnded { _ in
                 rotateDragOriginAngle = 0
-                rotateDragOriginRotation = 0
+                rotateDragOriginTransforms = [:]
+                rotateDragOriginCenters = [:]
+                rotateGroupPivot = .zero
+                onChanged()
             }
     }
 
     // MARK: - Axis lock + snapping
 
     private func boundsForElement(_ id: UUID) -> CGRect {
-        if let stroke = document.printLayoutStroke(with: id) {
-            let transformed = document.transformedPrintStroke(stroke)
-            return PrintLayoutCoordinateSpace.boundingRect(
-                for: ShapeGeometry.renderPoints(for: transformed)
-            )
-        }
-        if let element = document.textElement(with: id) {
-            let corners = PrintLayoutCoordinateSpace.transformedTextCorners(
-                element,
-                transform: document.effectivePrintTransform(for: id)
-            )
-            return PrintLayoutCoordinateSpace.boundingRect(for: corners)
-        }
-        return .null
+        document.printBounds(for: id)
     }
 
     private func selectedElementBounds() -> CGRect? {
-        guard let id = document.printSelectedStrokeID ?? document.printSelectedTextID else { return nil }
-        let bounds = boundsForElement(id)
-        return bounds.isNull ? nil : bounds
+        document.printSelectionBoundingBox()
+    }
+
+    private var marqueeViewRect: CGRect? {
+        guard let start = marqueeStart, let current = marqueeCurrent else { return nil }
+        return CGRect(
+            x: min(start.x, current.x),
+            y: min(start.y, current.y),
+            width: abs(start.x - current.x),
+            height: abs(start.y - current.y)
+        )
+    }
+
+    private func marqueeDocRect(start: CGPoint, current: CGPoint) -> CGRect? {
+        let a = document.viewport.viewToDocument(start)
+        let b = document.viewport.viewToDocument(current)
+        let rect = CGRect(
+            x: min(a.x, b.x),
+            y: min(a.y, b.y),
+            width: abs(a.x - b.x),
+            height: abs(a.y - b.y)
+        )
+        guard rect.width > 0.5 || rect.height > 0.5 else { return nil }
+        return rect
+    }
+
+    @ViewBuilder
+    private func marqueeBox(_ rect: CGRect) -> some View {
+        Rectangle()
+            .fill(Color.accentColor.opacity(0.08))
+            .overlay(
+                Rectangle()
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+            )
+            .frame(width: rect.width, height: rect.height)
+            .position(x: rect.midX, y: rect.midY)
+            .allowsHitTesting(false)
     }
 
     /// Snaps the dragged element's bounding-box edges flush to the nearest inner

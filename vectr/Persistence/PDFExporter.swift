@@ -6,8 +6,12 @@
 import UIKit
 
 enum PDFExporter {
-    static func write(document: VectrDocument, to url: URL) throws {
-        let bounds = DocumentRenderer.boundingRect(for: document)
+    static func write(document: VectrDocument, to url: URL, opaqueFills: Bool = false) throws {
+        try write(snapshot: document.makeSnapshot(), to: url, opaqueFills: opaqueFills)
+    }
+
+    nonisolated static func write(snapshot: DocumentSnapshot, to url: URL, opaqueFills: Bool = false) throws {
+        let bounds = DocumentRenderer.boundingRect(for: snapshot)
         let pageRect = CGRect(
             origin: .zero,
             size: CGSize(
@@ -20,10 +24,15 @@ enum PDFExporter {
         try renderer.writePDF(to: url) { context in
             context.beginPage()
             DocumentRenderer.draw(
-                document: document,
+                snapshot: snapshot,
                 in: context.cgContext,
                 bounds: pageRect,
-                options: DocumentRenderer.Options(size: pageRect.size, drawGrid: false, padding: 20)
+                options: DocumentRenderer.Options(
+                    size: pageRect.size,
+                    drawGrid: false,
+                    padding: 20,
+                    opaqueFills: opaqueFills
+                )
             )
         }
     }

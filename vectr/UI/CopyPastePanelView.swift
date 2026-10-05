@@ -17,7 +17,7 @@ struct CopyPastePanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             ToolPanelHeader("Copy")
 
-            Text("Tap a shape to copy it, switch to another layer, then Paste. Copies land in the same place on the active layer.")
+            Text("Duplicate stacks a copy on the original. Paste drops the clipboard one grid step down and to the right.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -42,6 +42,15 @@ struct CopyPastePanelView: View {
                 }
             }
 
+            ToolPanelLabelButton(
+                title: "Duplicate",
+                prominent: canCopy,
+                isDisabled: !canCopy,
+                fullWidth: true
+            ) {
+                duplicateSelection()
+            }
+
             Text(document.clipboard.summary)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -52,7 +61,7 @@ struct CopyPastePanelView: View {
                     .foregroundStyle(layer.isLocked ? .red : .secondary)
             }
         }
-        .toolPanelChrome(width: 188)
+        .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
     }
 
     private func copySelection() {
@@ -81,6 +90,16 @@ struct CopyPastePanelView: View {
         }
         let layerName = document.activeLayer?.name ?? "layer"
         onStatus("Pasted onto \(layerName)")
+        onChanged()
+    }
+
+    private func duplicateSelection() {
+        guard canCopy else {
+            onStatus("Select a shape or text to duplicate")
+            return
+        }
+        document.duplicateSelectedElements(offset: .zero)
+        onStatus("Duplicated")
         onChanged()
     }
 }

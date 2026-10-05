@@ -22,6 +22,7 @@ struct ProjectGalleryView: View {
     @State private var showShareSheet = false
     @State private var errorMessage: String?
     @State private var navigationPath = NavigationPath()
+    @State private var isExporting = false
 
     private let gridColumns = [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 16)]
 
@@ -80,13 +81,14 @@ struct ProjectGalleryView: View {
         }
         .background(toolbarColor.ignoresSafeArea())
         .preferredColorScheme(navigationPath.isEmpty ? .dark : nil)
-        .onAppear { library.refresh() }
-        .fileImporter(
-            isPresented: $showImportPicker,
-            allowedContentTypes: ImportRouter.supportedTypes,
-            allowsMultipleSelection: false
-        ) { result in
-            handleImport(result)
+        .task { await library.refresh() }
+        .background {
+            DocumentImportSheet(
+                isPresented: $showImportPicker,
+                contentTypes: ImportRouter.supportedTypes
+            ) { url in
+                handleImport(.success([url]))
+            }
         }
         .sheet(isPresented: $showNewCanvasSheet) {
             CanvasSizeSheet { size, units in
@@ -109,6 +111,21 @@ struct ProjectGalleryView: View {
                 shareItems = []
             }
         }
+        .overlay {
+            if isExporting {
+                ZStack {
+                    Color.black.opacity(0.28)
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Exporting…")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .padding(24)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                }
+                .ignoresSafeArea()
+            }
+        }
         .alert("Error", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -120,11 +137,11 @@ struct ProjectGalleryView: View {
     }
 
     private var galleryTitle: some View {
-        Text("koala.")
-            .font(.custom("HelveticaNeue-Bold", size: 34))
+        Text("KOALA")
+            .font(.custom("HelveticaNeue-Medium", size: 34))
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityLabel("koala.")
+            .accessibilityLabel("KOALA")
     }
 
     @ToolbarContentBuilder
@@ -196,22 +213,26 @@ struct ProjectGalleryView: View {
     }
 
     private func createProject(canvasSize: CGSize? = nil, units: MeasurementUnit = .inches) {
-        do {
-            let record = try library.createProject(canvasSize: canvasSize, units: units)
-            navigationPath.append(record.id)
-        } catch {
-            errorMessage = error.localizedDescription
+        Task {
+            do {
+                let record = try await library.createProject(canvasSize: canvasSize, units: units)
+                navigationPath.append(record.id)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
     private func duplicateSelected() {
         guard let id = selectedIDs.first else { return }
-        do {
-            _ = try library.duplicateProject(id: id)
-            isSelectionMode = false
-            selectedIDs.removeAll()
-        } catch {
-            errorMessage = error.localizedDescription
+        Task {
+            do {
+                _ = try await library.duplicateProject(id: id)
+                isSelectionMode = false
+                selectedIDs.removeAll()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -243,18 +264,27 @@ struct ProjectGalleryView: View {
     private func presentShareExport() {
         guard let id = selectedIDs.first,
               let record = library.projects.first(where: { $0.id == id }) else { return }
+        Task { await exportSelected(record: record) }
+    }
+
+    private func exportSelected(record: ProjectRecord) async {
+        isExporting = true
+        defer { isExporting = false }
         do {
-            let document = try DocumentCodec.read(from: record.fileURL)
+            let snapshot = try await PersistenceWorker.shared.readSnapshot(from: record.fileURL)
             if exportFormat == .jpeg {
-                let prepared = try JPEGExporter.prepareForSharing(
-                    document: document,
+                let prepared = try await PersistenceWorker.shared.prepareJPEGForSharing(
+                    snapshot: snapshot,
                     named: record.name,
                     quality: exportQuality
                 )
-                shareItems = [JPEGShareItem(image: prepared.image, fileURL: prepared.fileURL)]
+                guard let image = UIImage(data: prepared.jpegData) else {
+                    throw JPEGExporter.ExportError.renderFailed
+                }
+                shareItems = [JPEGShareItem(image: image, fileURL: prepared.fileURL)]
             } else {
-                let tempURL = try ExportRouter.temporaryExportURL(
-                    document: document,
+                let tempURL = try await PersistenceWorker.shared.temporaryExportURL(
+                    snapshot: snapshot,
                     name: record.name,
                     format: exportFormat,
                     quality: exportQuality
@@ -262,9 +292,8 @@ struct ProjectGalleryView: View {
                 shareItems = [tempURL]
             }
             showShareSheet = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                showShareSheet = true
-            }
+            try? await Task.sleep(for: .milliseconds(200))
+            showShareSheet = true
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -273,10 +302,4 @@ struct ProjectGalleryView: View {
 
 private enum GalleryViewMode: String {
     case grid, list
-}
-
-extension ImportRouter {
-    static var supportedTypes: [UTType] {
-        [.vectrDocument, .jpeg, .pdf, .svg, UTType(filenameExtension: "ai") ?? .pdf]
-    }
 }

@@ -16,10 +16,14 @@ enum LayerThumbnailRenderer {
     ) -> UIImage? {
         let strokes = document.strokes(for: layerID).filter { !$0.isHiddenFromCanvas }
         let texts = document.textElements.filter { $0.layerID == layerID && !$0.isHidden }
+        let images = document.referenceImages(for: layerID)
 
         var points = strokes.flatMap { ShapeGeometry.renderPoints(for: $0) }
         for element in texts {
             points.append(contentsOf: element.corners())
+        }
+        for image in images {
+            points.append(contentsOf: image.corners())
         }
         guard !points.isEmpty, size.width > 0, size.height > 0 else { return nil }
 
@@ -42,11 +46,21 @@ enum LayerThumbnailRenderer {
         return renderer.image { ctx in
             let context = ctx.cgContext
 
+            for item in images {
+                guard let raster = UIImage(data: item.data) else { continue }
+                let viewOrigin = viewport.documentToView(item.frame.origin)
+                let viewSize = CGSize(
+                    width: viewport.documentToView(distance: item.frame.width),
+                    height: viewport.documentToView(distance: item.frame.height)
+                )
+                raster.draw(in: CGRect(origin: viewOrigin, size: viewSize), blendMode: .normal, alpha: 0.85)
+            }
+
             for stroke in strokes {
                 if stroke.isClosed, !stroke.isConstruction {
                     context.addPath(StrokeRenderer.path(for: stroke, viewport: viewport).cgPath)
-                    context.setFillColor(UIColor.systemGray.withAlphaComponent(stroke.resolvedFillOpacity).cgColor)
-                    context.fillPath(using: stroke.cutoutPoints.isEmpty ? .winding : .evenOdd)
+                    context.setFillColor(stroke.resolvedFillCGColor)
+                    context.fillPath(using: stroke.resolvedCGFillRule)
                 }
                 context.addPath(StrokeRenderer.outlinePath(for: stroke, viewport: viewport).cgPath)
                 context.setStrokeColor(thumbnailStrokeColor(for: stroke))

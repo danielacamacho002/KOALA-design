@@ -10,6 +10,7 @@ struct LiveDimensionOverlay: View {
     var start: CGPoint
     var end: CGPoint
     var category: ToolCategory
+    var lineVariant: LineVariant = .line
     var circleVariant: CircleVariant
     var rectangleVariant: RectangleVariant
 
@@ -39,6 +40,8 @@ struct LiveDimensionOverlay: View {
         let units = document.settings.units
         let standoff: CGFloat = 28
         switch category {
+        case .line where lineVariant == .arc:
+            return radiusLabels(center: start, radial: end, units: units, standoff: standoff)
         case .line:
             let length = hypot(end.x - start.x, end.y - start.y)
             let mid = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
@@ -57,14 +60,7 @@ struct LiveDimensionOverlay: View {
         case .circle:
             switch circleVariant {
             case .center:
-                let radius = hypot(end.x - start.x, end.y - start.y)
-                let top = CGPoint(x: start.x, y: start.y - radius)
-                return [LiveLabel(
-                    id: "radius",
-                    text: "r " + format(radius, units: units),
-                    point: CGPoint(x: top.x, y: top.y - standoff),
-                    anchor: top
-                )]
+                return radiusLabels(center: start, radial: end, units: units, standoff: standoff)
             case .ellipse:
                 let rx = abs(end.x - start.x)
                 let ry = abs(end.y - start.y)
@@ -114,6 +110,22 @@ struct LiveDimensionOverlay: View {
         default:
             return []
         }
+    }
+
+    private func radiusLabels(
+        center: CGPoint,
+        radial: CGPoint,
+        units: MeasurementUnit,
+        standoff: CGFloat
+    ) -> [LiveLabel] {
+        let radius = hypot(radial.x - center.x, radial.y - center.y)
+        let top = CGPoint(x: center.x, y: center.y - radius)
+        return [LiveLabel(
+            id: "radius",
+            text: "r " + format(radius, units: units),
+            point: CGPoint(x: top.x, y: top.y - standoff),
+            anchor: top
+        )]
     }
 
     private func format(_ value: CGFloat, units: MeasurementUnit) -> String {

@@ -6,7 +6,7 @@
 import CoreGraphics
 import Foundation
 
-/// Inserts and distributes anchor points on closed shapes.
+/// Inserts and distributes anchor points on closed shapes and open lines.
 enum AnchorPointEngine {
     private static let dedupeEpsilon: CGFloat = 0.001
     private static let endpointEpsilon: CGFloat = 0.001
@@ -17,9 +17,17 @@ enum AnchorPointEngine {
     }
 
     static func canEditAnchors(on stroke: VectorStroke) -> Bool {
-        stroke.isClosed
-            && !stroke.isConstruction
-            && anchorCount(for: stroke) >= 3
+        guard !stroke.isConstruction else { return false }
+        let count = anchorCount(for: stroke)
+        if stroke.isClosed {
+            return count >= 3
+        }
+        switch stroke.shapeType {
+        case .polyline, .curve, .arc:
+            return count >= 2
+        default:
+            return false
+        }
     }
 
     /// Collapses any live fillets on the stroke into permanent anchor points and clears the
@@ -53,6 +61,13 @@ enum AnchorPointEngine {
         )
     }
 
+    /// Distance to the outline as drawn. A live fillet is a modifier over sharp corner
+    /// points, so the stroke's own `distance(to:)` measures the corner the arc cut off
+    /// rather than the rounded edge on screen.
+    static func roundedOutlineDistance(from stroke: VectorStroke, to point: CGPoint) -> CGFloat {
+        (bakedFilletStroke(for: stroke) ?? stroke).distance(to: point)
+    }
+
     static func anchorCount(for stroke: VectorStroke) -> Int {
         dedupedHandlePoints(for: stroke).count
     }
@@ -77,25 +92,42 @@ enum AnchorPointEngine {
         let bakedBase = bakedFilletStroke(for: stroke) ?? stroke
 
         let working = editableStroke(for: bakedBase)
+        let isClosed = working.isClosed
         let path = pathPoints(for: working)
-        let totalLength = perimeterLength(of: path)
+        let totalLength = perimeterLength(of: path, isClosed: isClosed)
         guard totalLength > 0,
-              let projection = closestPointOnPath(path, to: point, totalLength: totalLength),
+              let projection = closestPointOnPath(
+                  path,
+                  to: point,
+                  totalLength: totalLength,
+                  isClosed: isClosed
+              ),
               distance(projection.point, point) <= threshold else { return nil }
 
         var points = dedupedHandlePoints(for: working)
-        let ordered = anchorsOrderedAlongPath(points, path: path, totalLength: totalLength)
+        let ordered = anchorsOrderedAlongPath(
+            points,
+            path: path,
+            totalLength: totalLength,
+            isClosed: isClosed
+        )
         guard !ordered.isEmpty else { return nil }
 
-        var insertIndex = points.count
+        var insertIndex: Int?
+        let lastOrdered = ordered.count - 1
         for (index, anchor) in ordered.enumerated() {
+            if !isClosed, index == lastOrdered { break }
             let next = ordered[(index + 1) % ordered.count]
-            let gap = forwardGapLength(from: anchor.arcDistance, to: next.arcDistance, totalLength: totalLength)
-            let offset = forwardGapLength(
-                from: anchor.arcDistance,
-                to: projection.arcDistance,
-                totalLength: totalLength
-            )
+            let gap = isClosed
+                ? forwardGapLength(from: anchor.arcDistance, to: next.arcDistance, totalLength: totalLength)
+                : max(0, next.arcDistance - anchor.arcDistance)
+            let offset = isClosed
+                ? forwardGapLength(
+                    from: anchor.arcDistance,
+                    to: projection.arcDistance,
+                    totalLength: totalLength
+                )
+                : projection.arcDistance - anchor.arcDistance
             if offset > endpointEpsilon, offset < gap - endpointEpsilon {
                 if let originalIndex = points.firstIndex(where: { distance($0, anchor.point) <= dedupeEpsilon }) {
                     insertIndex = originalIndex + 1
@@ -103,7 +135,7 @@ enum AnchorPointEngine {
                 break
             }
         }
-        guard insertIndex <= points.count else { return nil }
+        guard let insertIndex, insertIndex <= points.count else { return nil }
 
         points.insert(projection.point, at: insertIndex)
 
@@ -206,7 +238,7 @@ enum AnchorPointEngine {
         var updated = stroke
         updated.points = newPoints
         updated.curveHandles = newHandles
-        updated.isClosed = true
+        updated.isClosed = stroke.isClosed
         // Curves don't carry fillet/rotation-baseline metadata that survives a
         // changed anchor count; clear it so nothing renders against stale indices.
         updated.cornerRadiiByIndex = nil
@@ -274,20 +306,32 @@ enum AnchorPointEngine {
         guard targetCount > current else { return nil }
 
         let toAdd = targetCount - current
+        let isClosed = stroke.isClosed
         let path = pathPoints(for: stroke)
-        guard path.count >= 3 else { return nil }
+        let minimumPathCount = isClosed ? 3 : 2
+        guard path.count >= minimumPathCount else { return nil }
 
-        let totalLength = perimeterLength(of: path)
+        let totalLength = perimeterLength(of: path, isClosed: isClosed)
         guard totalLength > 0 else { return nil }
 
-        let ordered = anchorsOrderedAlongPath(existing, path: path, totalLength: totalLength)
+        let ordered = anchorsOrderedAlongPath(
+            existing,
+            path: path,
+            totalLength: totalLength,
+            isClosed: isClosed
+        )
         guard ordered.count == current else { return nil }
 
         var gapLengths: [CGFloat] = []
-        for index in ordered.indices {
+        let gapCount = isClosed ? ordered.count : max(0, ordered.count - 1)
+        for index in 0..<gapCount {
             let start = ordered[index].arcDistance
             let end = ordered[(index + 1) % ordered.count].arcDistance
-            gapLengths.append(forwardGapLength(from: start, to: end, totalLength: totalLength))
+            gapLengths.append(
+                isClosed
+                    ? forwardGapLength(from: start, to: end, totalLength: totalLength)
+                    : max(0, end - start)
+            )
         }
 
         let allocation = allocateCounts(total: toAdd, weights: gapLengths)
@@ -295,6 +339,7 @@ enum AnchorPointEngine {
 
         for (index, anchor) in ordered.enumerated() {
             appendUnique(anchor.point, to: &result)
+            guard index < gapLengths.count else { continue }
 
             let gapLength = gapLengths[index]
             let insertCount = allocation[index]
@@ -303,8 +348,15 @@ enum AnchorPointEngine {
             let start = anchor.arcDistance
             for slot in 1...insertCount {
                 let fraction = CGFloat(slot) / CGFloat(insertCount + 1)
-                let distance = wrappedArcDistance(start + fraction * gapLength, totalLength: totalLength)
-                let inserted = pointAtArcLength(path, arcDistance: distance, totalLength: totalLength)
+                let distance = isClosed
+                    ? wrappedArcDistance(start + fraction * gapLength, totalLength: totalLength)
+                    : start + fraction * gapLength
+                let inserted = pointAtArcLength(
+                    path,
+                    arcDistance: distance,
+                    totalLength: totalLength,
+                    isClosed: isClosed
+                )
                 appendUnique(inserted, to: &result)
             }
         }
@@ -353,10 +405,16 @@ enum AnchorPointEngine {
     private static func anchorsOrderedAlongPath(
         _ anchors: [CGPoint],
         path: [CGPoint],
-        totalLength: CGFloat
+        totalLength: CGFloat,
+        isClosed: Bool
     ) -> [AnchorOnPath] {
         anchors.compactMap { anchor in
-            guard let projection = closestPointOnPath(path, to: anchor, totalLength: totalLength) else {
+            guard let projection = closestPointOnPath(
+                path,
+                to: anchor,
+                totalLength: totalLength,
+                isClosed: isClosed
+            ) else {
                 return nil
             }
             return AnchorOnPath(point: anchor, arcDistance: projection.arcDistance)
@@ -367,15 +425,17 @@ enum AnchorPointEngine {
     private static func closestPointOnPath(
         _ path: [CGPoint],
         to point: CGPoint,
-        totalLength: CGFloat
+        totalLength: CGFloat,
+        isClosed: Bool
     ) -> (point: CGPoint, arcDistance: CGFloat)? {
         guard path.count >= 2, totalLength > 0 else { return nil }
 
         var best: (point: CGPoint, arcDistance: CGFloat, distance: CGFloat)?
         var traversed: CGFloat = 0
+        let segmentCount = isClosed ? path.count : path.count - 1
 
-        for index in path.indices {
-            let next = (index + 1) % path.count
+        for index in 0..<segmentCount {
+            let next = isClosed ? (index + 1) % path.count : index + 1
             let start = path[index]
             let end = path[next]
             let segmentLength = distance(start, end)
@@ -393,7 +453,10 @@ enum AnchorPointEngine {
         }
 
         guard let best else { return nil }
-        return (best.point, wrappedArcDistance(best.arcDistance, totalLength: totalLength))
+        if isClosed {
+            return (best.point, wrappedArcDistance(best.arcDistance, totalLength: totalLength))
+        }
+        return (best.point, min(max(0, best.arcDistance), totalLength))
     }
 
     private static func forwardGapLength(from start: CGFloat, to end: CGFloat, totalLength: CGFloat) -> CGFloat {
@@ -438,11 +501,12 @@ enum AnchorPointEngine {
 
     // MARK: - Arc length
 
-    private static func perimeterLength(of points: [CGPoint]) -> CGFloat {
+    private static func perimeterLength(of points: [CGPoint], isClosed: Bool) -> CGFloat {
         guard points.count >= 2 else { return 0 }
         var total: CGFloat = 0
-        for index in points.indices {
-            let next = (index + 1) % points.count
+        let segmentCount = isClosed ? points.count : points.count - 1
+        for index in 0..<segmentCount {
+            let next = isClosed ? (index + 1) % points.count : index + 1
             total += distance(points[index], points[next])
         }
         return total
@@ -451,14 +515,18 @@ enum AnchorPointEngine {
     private static func pointAtArcLength(
         _ points: [CGPoint],
         arcDistance: CGFloat,
-        totalLength: CGFloat
+        totalLength: CGFloat,
+        isClosed: Bool
     ) -> CGPoint {
         guard !points.isEmpty, totalLength > 0 else { return points.first ?? .zero }
 
-        var remaining = wrappedArcDistance(arcDistance, totalLength: totalLength)
+        var remaining = isClosed
+            ? wrappedArcDistance(arcDistance, totalLength: totalLength)
+            : min(max(0, arcDistance), totalLength)
 
-        for index in points.indices {
-            let next = (index + 1) % points.count
+        let segmentCount = isClosed ? points.count : points.count - 1
+        for index in 0..<segmentCount {
+            let next = isClosed ? (index + 1) % points.count : index + 1
             let segmentLength = Self.distance(points[index], points[next])
             if segmentLength <= 0 {
                 continue
@@ -473,7 +541,7 @@ enum AnchorPointEngine {
             remaining -= segmentLength
         }
 
-        return points[0]
+        return isClosed ? points[0] : (points.last ?? points[0])
     }
 
     // MARK: - Corner radius remapping
@@ -549,7 +617,7 @@ enum AnchorPointEngine {
         let keepRectangleRadius = shapeType == .rectangle && points.count == 4
         let curveHandles: [CurveHandle]?
         var resolvedSmooth = smoothMiddles
-        if stillCircularClosed(stroke, points: points) {
+        if stroke.isClosed, stillCircularClosed(stroke, points: points) {
             if points.count == 4 {
                 shapeType = .circle
                 curveHandles = nil
@@ -560,7 +628,7 @@ enum AnchorPointEngine {
                 resolvedSmooth = Set(points.indices)
             }
         } else if shapeType == .curve {
-            curveHandles = ShapeGeometry.defaultCurveHandles(anchors: points, closed: true)
+            curveHandles = ShapeGeometry.defaultCurveHandles(anchors: points, closed: stroke.isClosed)
         } else {
             curveHandles = nil
         }
@@ -570,7 +638,7 @@ enum AnchorPointEngine {
             points: points,
             strokeWidth: stroke.strokeWidth,
             strokeColor: stroke.strokeColor,
-            isClosed: true,
+            isClosed: stroke.isClosed,
             cornerRadius: keepRectangleRadius ? stroke.cornerRadius : 0,
             cornerRadiiByIndex: keepRectangleRadius ? cornerRadiiByIndex : nil,
             smoothCornerIndices: resolvedSmooth,

@@ -5,7 +5,7 @@
 
 import Foundation
 
-enum ToolCategory: String, CaseIterable, Codable {
+nonisolated enum ToolCategory: String, CaseIterable, Codable, Sendable {
     case line
     case circle
     case rectangle
@@ -52,7 +52,7 @@ enum ToolCategory: String, CaseIterable, Codable {
         case .line: return "line.diagonal"
         case .circle: return "circle"
         case .rectangle: return "rectangle"
-        case .curve: return "scribble.variable"
+        case .curve: return "point.bottomleft.forward.to.point.topright.scurvepath"
         case .type: return "textformat"
         case .move: return "arrow.up.and.down.and.arrow.left.and.right"
         case .scale: return "arrow.up.left.and.arrow.down.right"
@@ -75,7 +75,7 @@ enum ToolCategory: String, CaseIterable, Codable {
     }
 }
 
-enum LineVariant: String, CaseIterable, Codable {
+nonisolated enum LineVariant: String, CaseIterable, Codable, Sendable {
     case line
     case arc
     case constructionLine
@@ -84,12 +84,12 @@ enum LineVariant: String, CaseIterable, Codable {
         switch self {
         case .line: return "Line"
         case .arc: return "Arc"
-        case .constructionLine: return "Construction"
+        case .constructionLine: return "Const."
         }
     }
 }
 
-enum CircleVariant: String, CaseIterable, Codable {
+nonisolated enum CircleVariant: String, CaseIterable, Codable, Sendable {
     case center
     case edge
     case ellipse
@@ -103,7 +103,7 @@ enum CircleVariant: String, CaseIterable, Codable {
     }
 }
 
-enum RectangleVariant: String, CaseIterable, Codable {
+nonisolated enum RectangleVariant: String, CaseIterable, Codable, Sendable {
     case center
     case edge
 

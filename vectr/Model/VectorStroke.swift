@@ -13,7 +13,7 @@ import UIKit
 import AppKit
 #endif
 
-struct VectorStroke: Identifiable, Codable, Equatable {
+nonisolated struct VectorStroke: Identifiable, Codable, Equatable, Sendable {
     var id: UUID = UUID()
     var layerID: UUID
     var points: [CGPoint]
@@ -53,6 +53,11 @@ struct VectorStroke: Identifiable, Codable, Equatable {
     var curveHandles: [CurveHandle]? = nil
     /// Fill opacity (0...1) for closed shapes. `nil` falls back to `defaultFillOpacity`.
     var fillOpacity: CGFloat? = nil
+    /// Fill color for closed shapes. `nil` keeps the default gray plane fill.
+    var fillColor: CodableColor? = nil
+    /// Fill rule for compound contours (`cutoutPoints`). `nil` uses even-odd when
+    /// holes exist (native boolean cuts) and nonzero otherwise.
+    var fillRule: PathFillRule? = nil
     /// When `true`, omitted from canvas, hit-testing, and export.
     /// Optional so older documents without this key still decode: synthesized
     /// Codable throws on a missing non-optional key even when a default exists.
@@ -61,11 +66,14 @@ struct VectorStroke: Identifiable, Codable, Equatable {
     /// Default plane fill opacity for closed shapes that have never been customized.
     static let defaultFillOpacity: CGFloat = 0.25
 
+    /// Startup pen width: 0.0278 in, thick enough to read against the default inch grid.
+    static let defaultStrokeWidth: CGFloat = UnitConversion.documentPoints(from: 0.0278, unit: .inches)
+
     init(
         id: UUID = UUID(),
         layerID: UUID,
         points: [CGPoint] = [],
-        strokeWidth: CGFloat = 1.5,
+        strokeWidth: CGFloat = VectorStroke.defaultStrokeWidth,
         strokeColor: CodableColor = CodableColor(.primary),
         isClosed: Bool = false,
         cornerRadius: CGFloat = 0,
@@ -81,6 +89,8 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         openCutoutIndices: Set<Int>? = nil,
         curveHandles: [CurveHandle]? = nil,
         fillOpacity: CGFloat? = nil,
+        fillColor: CodableColor? = nil,
+        fillRule: PathFillRule? = nil,
         isHidden: Bool? = nil
     ) {
         self.id = id
@@ -102,7 +112,21 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         self.openCutoutIndices = openCutoutIndices
         self.curveHandles = curveHandles
         self.fillOpacity = fillOpacity
+        self.fillColor = fillColor
+        self.fillRule = fillRule
         self.isHidden = isHidden
+    }
+
+    /// Core Graphics fill rule matching SVG `fill-rule` when imported, else native holes.
+    var resolvedCGFillRule: CGPathFillRule {
+        switch fillRule {
+        case .evenodd:
+            return .evenOdd
+        case .nonzero:
+            return .winding
+        case nil:
+            return cutoutPoints.isEmpty ? .winding : .evenOdd
+        }
     }
 
     /// True when this stroke should be omitted from canvas, hit-testing, and export.
@@ -115,6 +139,27 @@ struct VectorStroke: Identifiable, Codable, Equatable {
     /// Effective fill opacity for closed, non-construction shapes, clamped to 0...1.
     var resolvedFillOpacity: CGFloat {
         min(1, max(0, fillOpacity ?? VectorStroke.defaultFillOpacity))
+    }
+
+    /// Plane fill used on canvas, export, and thumbnails.
+    var resolvedFillCGColor: CGColor {
+        let opacity = resolvedFillOpacity
+        guard isClosed, !isConstruction, opacity > 0.0001 else {
+            return CGColor(gray: 0, alpha: 0)
+        }
+        if let fillColor {
+            return CGColor(
+                srgbRed: fillColor.red,
+                green: fillColor.green,
+                blue: fillColor.blue,
+                alpha: fillColor.alpha * opacity
+            )
+        }
+        #if canImport(UIKit)
+        return UIColor.systemGray.withAlphaComponent(opacity).cgColor
+        #else
+        return CGColor(gray: 0.67, alpha: opacity)
+        #endif
     }
 
     var rotationDegrees: Double {
@@ -146,7 +191,7 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         for point in contour.dropFirst() {
             path.addLine(to: point)
         }
-        if isClosed, contour.count > 2 {
+        if isClosed, shapeType != .arc, contour.count > 2 {
             path.closeSubpath()
         }
         return path
@@ -216,7 +261,7 @@ struct VectorStroke: Identifiable, Codable, Equatable {
         for point in pathPoints.dropFirst() {
             path.addLine(to: point)
         }
-        if isClosed, pathPoints.count > 2 {
+        if isClosed, shapeType != .arc, pathPoints.count > 2 {
             path.closeSubpath()
         }
         return path
@@ -301,14 +346,13 @@ struct VectorStroke: Identifiable, Codable, Equatable {
                     layerID: layerID,
                     points: cutout,
                     isClosed: true,
-                    shapeType: .circle
+                    shapeType: .polyline
                 )
             )
             appendContour(renderedCutout, to: path)
         }
 
-        let fillRule: CGPathFillRule = cutoutPoints.isEmpty ? .winding : .evenOdd
-        return path.contains(point, using: fillRule, transform: .identity)
+        return path.contains(point, using: resolvedCGFillRule, transform: .identity)
     }
 
     private func distance(from point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {
@@ -337,7 +381,7 @@ struct VectorStroke: Identifiable, Codable, Equatable {
 
 /// Bezier tangent handles for a single curve anchor, stored as offsets from the anchor.
 /// Absolute control point = anchor + offset.
-struct CurveHandle: Codable, Equatable {
+nonisolated struct CurveHandle: Codable, Equatable, Sendable {
     /// Control point leading into the anchor (from the previous segment).
     var inOffset: CGPoint
     /// Control point leading out of the anchor (toward the next segment).
@@ -350,7 +394,7 @@ struct CurveHandle: Codable, Equatable {
 }
 
 /// Codable wrapper for SwiftUI/UIColor colors in documents.
-struct CodableColor: Codable, Equatable {
+nonisolated struct CodableColor: Codable, Equatable, Sendable {
     var red: CGFloat
     var green: CGFloat
     var blue: CGFloat

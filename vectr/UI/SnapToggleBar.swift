@@ -7,8 +7,9 @@ import SwiftUI
 
 /// Bottom-left canvas control for the object snapping engine. Starts as a single
 /// button; tapping it reveals independent toggles for which snap types the engine
-/// considers. These map directly to `PathSnapEngine`'s enabled kinds via the
-/// document toggles.
+/// considers: Endpoints (square), Midpoints (triangle), Intersections (X), Center,
+/// and on-rim / compass (diamond). These map directly to `PathSnapEngine`'s enabled
+/// kinds via the document toggles.
 struct SnapToggleBar: View {
     @Bindable var document: VectrDocument
     var highlightedTarget: OnboardingTarget? = nil
@@ -103,13 +104,6 @@ struct SnapToggleBar: View {
             QuadrantSnapIcon()
                 .frame(width: 21, height: 21)
         }
-
-        constraintButton(.tangent, isActive: document.tangentSnapEnabled) {
-            document.tangentSnapEnabled.toggle()
-        } icon: {
-            TangentSnapIcon()
-                .frame(width: 21, height: 21)
-        }
     }
 
     private func constraintButton(
@@ -124,7 +118,7 @@ struct SnapToggleBar: View {
             size: iconSize,
             action: action
         )
-        .accessibilityLabel(kind.title)
+        .accessibilityLabel(snapAccessibilityLabel(kind))
         .onboardingAnchor(.snap(kind))
         .onboardingHighlight(highlightedTarget == .snap(kind), color: .accentColor)
     }
@@ -141,8 +135,19 @@ struct SnapToggleBar: View {
             action: action,
             icon: icon
         )
-        .accessibilityLabel(kind.title)
+        .accessibilityLabel(snapAccessibilityLabel(kind))
         .onboardingAnchor(.snap(kind))
         .onboardingHighlight(highlightedTarget == .snap(kind), color: .accentColor)
+    }
+
+    private func snapAccessibilityLabel(_ kind: SnapConstraint) -> String {
+        switch kind {
+        case .endpoint: return "Endpoint snap"
+        case .midpoint: return "Midpoint snap"
+        case .intersection: return "Intersection snap"
+        case .center: return "Center point snap"
+        case .quadrant: return "Circle snap"
+        case .tangent: return "Tangent"
+        }
     }
 }

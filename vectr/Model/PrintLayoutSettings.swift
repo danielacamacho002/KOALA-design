@@ -7,7 +7,7 @@ import CoreGraphics
 import Foundation
 
 /// Line style for the printable-area margin outline drawn into exported pages.
-enum PrintMarginGuideStyle: String, Codable, CaseIterable, Identifiable {
+nonisolated enum PrintMarginGuideStyle: String, Codable, CaseIterable, Identifiable, Sendable {
     case off
     case dashed
     case solid
@@ -18,7 +18,7 @@ enum PrintMarginGuideStyle: String, Codable, CaseIterable, Identifiable {
 /// Unified control for the print margin / border. Chooses whether (and how) the
 /// printable-area outline is drawn onto the printed pages. The Cut tool shows the
 /// guides temporarily on its own, so there is no separate display-only mode.
-enum PrintMarginMode: String, Codable, CaseIterable, Identifiable {
+nonisolated enum PrintMarginMode: String, Codable, CaseIterable, Identifiable, Sendable {
     /// Nothing shown or printed.
     case off
     /// Dashed outline shown on screen and printed onto the pages.
@@ -31,7 +31,7 @@ enum PrintMarginMode: String, Codable, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .off: return "Off"
-        case .printDashed: return "Dashed"
+        case .printDashed: return "Dash"
         case .printSolid: return "Solid"
         }
     }
@@ -49,7 +49,7 @@ enum PrintMarginMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-struct PrintLayoutSettings: Codable, Equatable {
+nonisolated struct PrintLayoutSettings: Codable, Equatable, Sendable {
     var paperSize: PaperSize = .letter
     /// Dimensions (document points) used when `paperSize == .custom`.
     var customPaperSize: CGSize = CGSize(width: 612, height: 792)

@@ -225,7 +225,6 @@ struct OnboardingTour: Equatable {
             snapConstraint(.intersection),
             snapConstraint(.center),
             snapConstraint(.quadrant),
-            snapConstraint(.tangent),
             OnboardingStep(
                 id: "design.layers",
                 title: "Layers",
@@ -274,7 +273,7 @@ struct OnboardingTour: Equatable {
             OnboardingStep(
                 id: "print.modes",
                 title: "Modes",
-                body: "Switch between Design and Print Layout from these chips.",
+                body: "Use the pencil button to switch back to Design.",
                 alignment: .topLeading,
                 padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .modes
