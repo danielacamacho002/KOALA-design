@@ -92,36 +92,234 @@ struct SideToolPaletteView: View {
 }
 
 /// Scale tool options, presented as a left-aligned command panel matching the
-/// other drawing tools (uniform vs. free scaling).
+/// other drawing tools (uniform vs. free scaling, plus a numeric factor).
 struct ScaleToolPanelView: View {
     @Bindable var document: VectrDocument
-    var onVariantSelected: () -> Void
+    var onChanged: () -> Void
+
+    private enum Axis {
+        case uniform, width, height
+    }
+
+    /// Step for the plus / minus buttons, as a multiple of current size.
+    private static let factorStep = 0.1
+    private static let minimumFactor = 0.01
+    private static let maximumFactor = 100.0
 
     private let options = ["Uniform", "Free"]
 
+    /// Factors already applied since the selection became current. `1` is the size on screen.
+    @State private var lastUniform = 1.0
+    @State private var lastWidth = 1.0
+    @State private var lastHeight = 1.0
+    @State private var uniformText = "1"
+    @State private var widthText = "1"
+    @State private var heightText = "1"
+    @State private var editing: Axis?
+    /// Geometry revision produced by this panel, so handle drags and undo reset the fields
+    /// without wiping a factor the panel itself just committed.
+    @State private var appliedGeometryRevision = -1
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ToolPanelHeader("Scale")
+            VStack(alignment: .leading, spacing: 4) {
+                ToolPanelHeader("Scale")
 
-            VStack(spacing: 2) {
-                ForEach(Array(options.enumerated()), id: \.offset) { index, label in
-                    ToolPanelLabelButton(
-                        title: label,
-                        prominent: index == selectedIndex,
-                        fullWidth: true,
-                        alignment: .leading
-                    ) {
-                        document.scaleUniform = index == 0
-                        onVariantSelected()
-                    }
+                ToolPanelSegmentBar(
+                    options: options,
+                    selectedIndex: selectedIndex
+                ) { index in
+                    document.scaleUniform = index == 0
+                    onChanged()
                 }
+                // Chrome pads the panel by 8; pull the bar out so it sits 2pt from both edges.
+                .padding(.horizontal, -6)
+            }
+
+            Divider()
+
+            if document.scaleUniform {
+                factorStepper(
+                    label: "Scale",
+                    text: $uniformText,
+                    axis: .uniform
+                )
+            } else {
+                factorStepper(
+                    label: "Width",
+                    text: $widthText,
+                    axis: .width
+                )
+                factorStepper(
+                    label: "Height",
+                    text: $heightText,
+                    axis: .height
+                )
             }
         }
         .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
+        .onChange(of: document.geometryRevision) { _, revision in
+            guard revision != appliedGeometryRevision else { return }
+            resetBaselines()
+        }
+        .onChange(of: document.selectedStrokeIDs) { _, _ in resetBaselines() }
+        .onChange(of: document.selectedTextIDs) { _, _ in resetBaselines() }
+        .onChange(of: document.selectedReferenceImageID) { _, _ in resetBaselines() }
+        .onChange(of: document.scaleUniform) { _, isUniform in
+            guard isUniform else { return }
+            if abs(lastWidth - lastHeight) > 0.0001 {
+                lastUniform = 1
+            } else {
+                lastUniform = lastWidth
+            }
+            syncFields()
+        }
     }
 
     private var selectedIndex: Int {
         document.scaleUniform ? 0 : 1
+    }
+
+    private func factorStepper(label: String, text: Binding<String>, axis: Axis) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel(label)
+
+            ToolPanelNumericStepper(
+                text: text,
+                placeholder: "1",
+                unitLabel: "×",
+                keyboardType: .decimalPad,
+                onMinus: { step(axis, by: -Self.factorStep) },
+                onPlus: { step(axis, by: Self.factorStep) },
+                onSubmit: { commitText(axis) },
+                onEditingChanged: { isEditing in
+                    editing = isEditing ? axis : (editing == axis ? nil : editing)
+                }
+            )
+        }
+    }
+
+    private func step(_ axis: Axis, by delta: Double) {
+        let next = stepped(baseline(for: axis) + delta)
+        apply(factor: next, axis: axis)
+    }
+
+    private func commitText(_ axis: Axis) {
+        guard let value = parsedFactor(text(for: axis)) else {
+            syncFields()
+            return
+        }
+        apply(factor: min(Self.maximumFactor, max(Self.minimumFactor, value)), axis: axis)
+    }
+
+    /// `factor` is the cumulative multiple shown in the field (1 = size when the selection was made).
+    private func apply(factor: Double, axis: Axis) {
+        let baseline = baseline(for: axis)
+        guard baseline > 0 else {
+            syncFields()
+            return
+        }
+        let relative = factor / baseline
+        let fx: CGFloat
+        let fy: CGFloat
+        switch axis {
+        case .uniform:
+            fx = CGFloat(relative)
+            fy = CGFloat(relative)
+        case .width:
+            fx = CGFloat(relative)
+            fy = 1
+        case .height:
+            fx = 1
+            fy = CGFloat(relative)
+        }
+
+        guard document.hasCanvasSelection else {
+            syncFields()
+            return
+        }
+
+        let didScale = document.scaleSelectedElements(factorX: fx, factorY: fy)
+        appliedGeometryRevision = document.geometryRevision
+        guard didScale else {
+            syncFields()
+            return
+        }
+
+        switch axis {
+        case .uniform:
+            lastUniform = factor
+            lastWidth = factor
+            lastHeight = factor
+        case .width:
+            lastWidth = factor
+            if abs(lastWidth - lastHeight) <= 0.0001 {
+                lastUniform = factor
+            }
+        case .height:
+            lastHeight = factor
+            if abs(lastWidth - lastHeight) <= 0.0001 {
+                lastUniform = factor
+            }
+        }
+        syncFields()
+        onChanged()
+    }
+
+    private func baseline(for axis: Axis) -> Double {
+        switch axis {
+        case .uniform: lastUniform
+        case .width: lastWidth
+        case .height: lastHeight
+        }
+    }
+
+    private func text(for axis: Axis) -> String {
+        switch axis {
+        case .uniform: uniformText
+        case .width: widthText
+        case .height: heightText
+        }
+    }
+
+    private func resetBaselines() {
+        lastUniform = 1
+        lastWidth = 1
+        lastHeight = 1
+        editing = nil
+        uniformText = "1"
+        widthText = "1"
+        heightText = "1"
+    }
+
+    private func syncFields() {
+        if editing != .uniform { uniformText = factorString(lastUniform) }
+        if editing != .width { widthText = factorString(lastWidth) }
+        if editing != .height { heightText = factorString(lastHeight) }
+    }
+
+    private func stepped(_ value: Double) -> Double {
+        let snapped = (value * 10).rounded() / 10
+        return min(Self.maximumFactor, max(Self.minimumFactor, snapped))
+    }
+
+    private func parsedFactor(_ raw: String) -> Double? {
+        let cleaned = raw
+            .replacingOccurrences(of: "×", with: "")
+            .replacingOccurrences(of: "x", with: "")
+            .replacingOccurrences(of: "X", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let value = Double(cleaned), value > 0, value.isFinite else { return nil }
+        return value
+    }
+
+    private func factorString(_ value: Double) -> String {
+        var text = String(format: "%.3f", value)
+        while text.contains(".") && (text.hasSuffix("0") || text.hasSuffix(".")) {
+            text.removeLast()
+        }
+        return text.isEmpty ? "0" : text
     }
 }
 
