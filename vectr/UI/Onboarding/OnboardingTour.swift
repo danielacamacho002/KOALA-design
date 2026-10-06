@@ -16,7 +16,6 @@ enum OnboardingTarget: Equatable {
     case snaps
     case snap(SnapConstraint)
     case share
-    case save
     case printLayout
     case modes
     case paperGrid
@@ -34,7 +33,6 @@ enum OnboardingTarget: Equatable {
         case .snaps: return "snaps"
         case .snap(let kind): return "snap.\(kind.rawValue)"
         case .share: return "share"
-        case .save: return "save"
         case .printLayout: return "printLayout"
         case .modes: return "modes"
         case .paperGrid: return "paperGrid"
@@ -51,7 +49,7 @@ enum OnboardingTarget: Equatable {
     var boxPlacement: OnboardingBoxPlacement {
         switch self {
         case .snaps, .snap: return .aboveSnaps
-        case .layers, .share, .save, .printLayout: return .trailingPark
+        case .layers, .share, .printLayout: return .trailingPark
         case .tool, .commandPanel, .paperGrid, .margins: return .besideCommandPanel
         case .printTool(let tool):
             return tool == .select ? .besideCommandPanel : .followTarget
@@ -246,14 +244,6 @@ struct OnboardingTour: Equatable {
                 alignment: .topTrailing,
                 padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .share
-            ),
-            OnboardingStep(
-                id: "design.save",
-                title: "Save",
-                body: "Save the project.",
-                alignment: .topTrailing,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
-                target: .save
             ),
             OnboardingStep(
                 id: "design.printLayout",
