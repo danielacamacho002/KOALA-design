@@ -241,8 +241,8 @@ struct OnboardingTour: Equatable {
             ),
             OnboardingStep(
                 id: "design.share",
-                title: "Share",
-                body: "Export or share the design.",
+                title: "Import and Export",
+                body: "Open Settings to import a file or export this design.",
                 alignment: .topTrailing,
                 padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .share

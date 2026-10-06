@@ -540,7 +540,6 @@ struct EditorView: View {
                 onUndo: handleDesignUndo,
                 onRedo: handleDesignRedo,
                 onSettings: { showSettings = true },
-                onShare: { showExportSheet = true },
                 onSave: { saveDocumentNow() },
                 onToolSelected: handleToolSelected,
                 onSwitchToPrintLayout: { switchToPrintLayoutMode() },
