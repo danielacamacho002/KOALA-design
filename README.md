@@ -1,6 +1,6 @@
-# vectr
+# KOALA
 
-Vectr is an iOS vector drawing app focused on precise shape creation and editing.
+KOALA is an iOS vector drawing app focused on precise shape creation and editing.
 
 ## Features
 
@@ -11,16 +11,16 @@ Vectr is an iOS vector drawing app focused on precise shape creation and editing
 
 ## Project Structure
 
-- `vectr/` - app source code
-- `vectrTests/` - Swift Testing unit tests
-- `vectr.xcodeproj` - Xcode project
+- `Koala/` - app source code
+- `KoalaTests/` - Swift Testing unit tests
+- `Koala.xcodeproj` - Xcode project
 - `ExportedTypes.plist` - document type configuration
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - code map (folders, hot files, update rules)
 
 ## Getting Started
 
-1. Open `vectr.xcodeproj` in Xcode.
-2. Select the `vectr` scheme.
+1. Open `Koala.xcodeproj` in Xcode.
+2. Select the `Koala` scheme.
 3. Build and run on an iOS simulator or device.
 
 ## Tests
@@ -28,7 +28,7 @@ Vectr is an iOS vector drawing app focused on precise shape creation and editing
 Product → Test, or:
 
 ```bash
-xcodebuild test -scheme vectr -destination 'platform=iOS Simulator,name=iPad (A16)'
+xcodebuild test -scheme Koala -destination 'platform=iOS Simulator,name=iPad (A16)'
 ```
 
 Use an iPad simulator available on your machine if that name is missing.

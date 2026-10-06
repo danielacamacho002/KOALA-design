@@ -10,7 +10,7 @@
 				<string>public.json</string>
 			</array>
 			<key>UTTypeDescription</key>
-			<string>vectr Document</string>
+			<string>KOALA Document</string>
 			<key>UTTypeIdentifier</key>
 			<string>earthwrm.vectr.document</string>
 			<key>UTTypeTagSpecification</key>
