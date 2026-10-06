@@ -9,6 +9,7 @@ struct SettingsView: View {
     @Bindable var document: VectrDocument
     @Binding var fileName: String
     var onFileNameChanged: () -> Void
+    var onReplayTutorial: (() -> Void)? = nil
     var onImport: () -> Void
     var onExport: () -> Void
     @Environment(\.dismiss) private var dismiss
@@ -111,6 +112,20 @@ struct SettingsView: View {
                         )
                         rowDivider
                         settingsCaption("Snap to fractions of a grid square without changing the grid. Zoom in to reveal these sub-grid lines.")
+                    }
+
+                    settingsCard("Help") {
+                        Button {
+                            onReplayTutorial?()
+                            dismiss()
+                        } label: {
+                            Label("View tutorial", systemImage: "questionmark.circle")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .settingsInset()
+                        rowDivider
+                        settingsCaption("Replay the design tutorial. The Print Layout tutorial will show again the next time you open that mode.")
                     }
                 }
                 .padding(20)

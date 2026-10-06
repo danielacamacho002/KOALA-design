@@ -15,6 +15,7 @@ struct LayersPanelView: View {
     @Binding var isExpanded: Bool
     /// Called after any mutation so the owner can mark the document dirty.
     var onChanged: () -> Void
+    var isTourHighlighted: Bool = false
 
     @State private var renamingLayerID: UUID?
     @State private var renamingGroupID: UUID?
@@ -42,6 +43,8 @@ struct LayersPanelView: View {
             }
         }
         .animation(.easeOut(duration: 0.15), value: isExpanded)
+        .onboardingAnchor(.layers)
+        .onboardingHighlight(isTourHighlighted, cornerRadius: isExpanded ? 0 : 8, color: .accentColor)
         .onChange(of: isExpanded) { _, expanded in
             if !expanded {
                 commitRenameIfNeeded()

@@ -13,8 +13,11 @@ struct EditorToolbarView: View {
     var onUndo: () -> Void
     var onRedo: () -> Void
     var onSettings: () -> Void
+    var onShare: () -> Void
+    var onSave: () -> Void
     var onToolSelected: (ToolCategory?) -> Void
     var onSwitchToPrintLayout: (() -> Void)?
+    var highlightedTarget: OnboardingTarget? = nil
     var onVisibilityToggled: () -> Void
 
     static let height: CGFloat = 48
@@ -35,7 +38,8 @@ struct EditorToolbarView: View {
 
             SideToolPaletteView(
                 document: document,
-                onToolSelected: onToolSelected
+                onToolSelected: onToolSelected,
+                highlightedTarget: highlightedTarget
             )
 
             Spacer(minLength: 16)
@@ -58,14 +62,27 @@ struct EditorToolbarView: View {
                 .padding(.horizontal, 10)
 
             HStack(spacing: 4) {
+                toolbarIconButton("gearshape", action: onSettings, accessibilityLabel: "Settings")
                 if let onSwitchToPrintLayout {
                     toolbarIconButton(
                         "rectangle.split.3x3",
                         action: onSwitchToPrintLayout,
-                        accessibilityLabel: "Print Layout"
+                        accessibilityLabel: "Print Layout",
+                        onboardingTarget: .printLayout
                     )
                 }
-                toolbarIconButton("gearshape", action: onSettings, accessibilityLabel: "Settings")
+                toolbarIconButton(
+                    "square.and.arrow.up",
+                    action: onShare,
+                    accessibilityLabel: "Share",
+                    onboardingTarget: .share
+                )
+                toolbarIconButton(
+                    "square.and.arrow.down",
+                    action: onSave,
+                    accessibilityLabel: "Save",
+                    onboardingTarget: .save
+                )
             }
         }
         .frame(height: toolbarHeight)
@@ -78,9 +95,11 @@ struct EditorToolbarView: View {
         _ systemImage: String,
         disabled: Bool = false,
         action: @escaping () -> Void,
-        accessibilityLabel: String? = nil
+        accessibilityLabel: String? = nil,
+        onboardingTarget: OnboardingTarget? = nil
     ) -> some View {
-        Button(action: action) {
+        let isHighlighted = onboardingTarget != nil && highlightedTarget == onboardingTarget
+        return Button(action: action) {
             Image(systemName: systemImage)
                 .font(.body)
                 .frame(width: 36, height: toolbarHeight)
@@ -89,5 +108,6 @@ struct EditorToolbarView: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .accessibilityLabel(accessibilityLabel ?? systemImage)
+        .modifier(OnboardingTargetChrome(target: onboardingTarget, isHighlighted: isHighlighted))
     }
 }

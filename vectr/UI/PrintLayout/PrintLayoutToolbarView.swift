@@ -17,6 +17,7 @@ struct PrintLayoutToolbarView: View {
     var onSwitchToDesign: () -> Void
     var onExport: () -> Void
     var onSettingsChanged: () -> Void
+    var highlightedTarget: OnboardingTarget? = nil
 
     private let toolbarHeight: CGFloat = 48
     private let iconSize: CGFloat = 34
@@ -51,7 +52,28 @@ struct PrintLayoutToolbarView: View {
                 toolbarIconButton("arrow.uturn.backward", disabled: !canUndo, action: onUndo)
                 toolbarIconButton("arrow.uturn.forward", disabled: !canRedo, action: onRedo)
                 toolbarIconButton("pencil.tip", action: onSwitchToDesign, accessibilityLabel: "Design")
+                    .modifier(
+                        OnboardingTargetChrome(
+                            target: .modes,
+                            isHighlighted: highlightedTarget == .modes,
+                            color: .accentColor
+                        )
+                    )
+                    .modifier(
+                        OnboardingTargetChrome(
+                            target: .designChip,
+                            isHighlighted: highlightedTarget == .designChip,
+                            color: .accentColor
+                        )
+                    )
                 toolbarIconButton("square.and.arrow.up", action: onExport, accessibilityLabel: "Export Tiled PDF")
+                    .modifier(
+                        OnboardingTargetChrome(
+                            target: .export,
+                            isHighlighted: highlightedTarget == .export,
+                            color: .accentColor
+                        )
+                    )
             }
         }
         .padding(.horizontal, 12)
@@ -71,6 +93,13 @@ struct PrintLayoutToolbarView: View {
             if isPaperPanelOpen { isMarginPanelOpen = false }
         }
         .accessibilityLabel("Paper & Grid")
+        .modifier(
+            OnboardingTargetChrome(
+                target: .paperGrid,
+                isHighlighted: highlightedTarget == .paperGrid,
+                color: .accentColor
+            )
+        )
     }
 
     private var marginsButton: some View {
@@ -84,6 +113,13 @@ struct PrintLayoutToolbarView: View {
             if isMarginPanelOpen { isPaperPanelOpen = false }
         }
         .accessibilityLabel("Margins & Print Border")
+        .modifier(
+            OnboardingTargetChrome(
+                target: .margins,
+                isHighlighted: highlightedTarget == .margins,
+                color: .accentColor
+            )
+        )
     }
 
     private var toolButtons: some View {
@@ -101,6 +137,13 @@ struct PrintLayoutToolbarView: View {
                     onSettingsChanged()
                 }
                 .accessibilityLabel(tool.label)
+                .modifier(
+                    OnboardingTargetChrome(
+                        target: .printTool(tool),
+                        isHighlighted: highlightedTarget == .printTool(tool),
+                        color: .accentColor
+                    )
+                )
             }
         }
     }

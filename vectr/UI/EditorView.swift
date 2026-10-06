@@ -52,6 +52,12 @@ struct EditorView: View {
     @State private var lastSavedSnapshot: DocumentSnapshot?
     @State private var patternSettings = PatternSettings()
     @State private var patternPreviewStrokes: [VectorStroke] = []
+    @State private var designOnboarding = OnboardingController(
+        tour: .design,
+        completedKey: OnboardingSettings.designTourCompletedKey
+    )
+    @State private var onboardingAnchors: [String: CGRect] = [:]
+    @State private var onboardingOverlayFrame: CGRect = .zero
     @State private var trimPreviewPoints: [CGPoint] = []
     @State private var trimPreviewStrokeWidth: CGFloat = 1
     @State private var trimFlashTask: Task<Void, Never>?
@@ -126,6 +132,7 @@ struct EditorView: View {
                 document: store.document,
                 fileName: $store.fileName,
                 onFileNameChanged: handleFileNameChanged,
+                onReplayTutorial: replayTutorials,
                 onImport: {
                     pendingImportAfterSettings = true
                     showSettings = false
@@ -335,8 +342,7 @@ struct EditorView: View {
                         }
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
-                } else if store.document.activeCategory == .move,
-                          !store.document.selectionIsEmpty {
+                } else if showsEditCommandPanel {
                     MoveRotatePanelView(
                         document: store.document,
                         units: store.document.settings.units
@@ -405,9 +411,27 @@ struct EditorView: View {
                         onCancel: {
                             updateChromeInsets()
                         },
-                        onVariantChanged: { startDrawingSessionIfNeeded() }
+                        onVariantChanged: { startDrawingSessionIfNeeded() },
+                        isTourHighlighted: designOnboarding.currentTarget == .commandPanel
                     )
                     .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if designOnboarding.currentStep?.target.boxPlacement == .besideCommandPanel,
+                   let step = designOnboarding.currentStep {
+                    OnboardingHoverBoxView(
+                        step: step,
+                        stepNumber: designOnboarding.stepNumber,
+                        stepCount: designOnboarding.stepCount,
+                        onNext: { designOnboarding.advance() },
+                        onBack: { designOnboarding.retreat() },
+                        onSkipAll: { designOnboarding.skipAll() },
+                        canGoBack: !designOnboarding.isFirstStep
+                    )
+                    .padding(.leading, ToolPanelMetrics.commandWidth + 12)
+                    .transition(.identity)
+                    .transaction { $0.animation = nil }
                 }
             }
             .overlay(alignment: .topLeading) {
@@ -433,12 +457,35 @@ struct EditorView: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                SnapToggleBar(document: store.document)
-                    .padding(.leading, 16)
-                    .padding(.bottom, 16)
+                VStack(alignment: .leading, spacing: 8) {
+                    if designOnboarding.currentStep?.target.boxPlacement == .aboveSnaps,
+                       let step = designOnboarding.currentStep {
+                        OnboardingHoverBoxView(
+                            step: step,
+                            stepNumber: designOnboarding.stepNumber,
+                            stepCount: designOnboarding.stepCount,
+                            onNext: { designOnboarding.advance() },
+                            onBack: { designOnboarding.retreat() },
+                            onSkipAll: { designOnboarding.skipAll() },
+                            canGoBack: !designOnboarding.isFirstStep
+                        )
+                        .transition(.identity)
+                        .transaction { $0.animation = nil }
+                    }
+                    SnapToggleBar(
+                        document: store.document,
+                        highlightedTarget: designOnboarding.currentTarget
+                    )
+                }
+                .padding(.leading, 16)
+                .padding(.bottom, 16)
             }
             .overlay(alignment: .topTrailing) {
-                LayersPanelView(document: store.document, isExpanded: $showLayersPanel) {
+                LayersPanelView(
+                    document: store.document,
+                    isExpanded: $showLayersPanel,
+                    isTourHighlighted: designOnboarding.currentTarget == .layers
+                ) {
                     store.markDirty()
                 }
             }
@@ -463,6 +510,11 @@ struct EditorView: View {
                         }
                 }
             }
+            .onboardingTourOverlay(
+                controller: designOnboarding,
+                anchors: onboardingAnchors,
+                overlayFrame: onboardingOverlayFrame
+            )
             .onAppear {
                 canvasSize = geometry.size
                 updateChromeInsets()
@@ -488,12 +540,20 @@ struct EditorView: View {
                 onUndo: handleDesignUndo,
                 onRedo: handleDesignRedo,
                 onSettings: { showSettings = true },
+                onShare: { showExportSheet = true },
+                onSave: { saveDocumentNow() },
                 onToolSelected: handleToolSelected,
                 onSwitchToPrintLayout: { switchToPrintLayoutMode() },
+                highlightedTarget: designOnboarding.currentTarget,
                 onVisibilityToggled: {
                     store.markDirty()
                 }
             )
+        }
+        .onPreferenceChange(OnboardingAnchorPreferenceKey.self) { onboardingAnchors = $0 }
+        .onPreferenceChange(OnboardingOverlayFrameKey.self) { onboardingOverlayFrame = $0 }
+        .onChange(of: designOnboarding.stepIndex) { _, _ in
+            syncPanelForTourStep()
         }
     }
 
@@ -648,6 +708,15 @@ struct EditorView: View {
 
     private var shouldAngleSnapDrawnSegment: Bool {
         store.document.activeCategory == .line && store.document.lineVariant != .arc
+    }
+
+    /// The Edit tour step opens the move panel even when nothing is selected.
+    private var showsEditCommandPanel: Bool {
+        guard store.document.activeCategory == .move else { return false }
+        if designOnboarding.isActive, designOnboarding.currentTarget == .tool(.move) {
+            return true
+        }
+        return !store.document.selectionIsEmpty
     }
 
     private var canvasOverlayAcceptsHits: Bool {
@@ -994,6 +1063,44 @@ struct EditorView: View {
             top: 56,
             bottom: 20
         )
+    }
+
+    private func replayTutorials() {
+        OnboardingSettings.resetAllTours()
+        designOnboarding.restart()
+    }
+
+    private func syncPanelForTourStep() {
+        guard designOnboarding.isActive else { return }
+        switch designOnboarding.currentTarget {
+        case .tool(let category):
+            selectToolForTour(category)
+        case .commandPanel:
+            selectToolForTour(.line)
+        default:
+            break
+        }
+    }
+
+    /// Selects a tool during the tour without committing destructive actions
+    /// (delete) or toggling dimensions off if they are already visible.
+    private func selectToolForTour(_ category: ToolCategory) {
+        switch category {
+        case .delete:
+            store.document.selectTool(.delete)
+            showCommandPanel = false
+            commandSession.cancel()
+            updateChromeInsets()
+        case .dimensions:
+            store.document.activeCategory = .dimensions
+            store.document.dimensionsVisible = true
+            showCommandPanel = false
+            commandSession.cancel()
+            updateChromeInsets()
+        default:
+            store.document.selectTool(category)
+            handleToolSelected(category)
+        }
     }
 
     private func handleToolSelected(_ category: ToolCategory?) {

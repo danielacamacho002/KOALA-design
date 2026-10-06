@@ -16,6 +16,7 @@ struct ToolCommandPanelView: View {
     var onDone: () -> Void
     var onCancel: () -> Void
     var onVariantChanged: () -> Void
+    var isTourHighlighted: Bool = false
 
     private let panelWidth = ToolPanelMetrics.commandWidth
     /// Thickness step in document points so behavior matches the select/move panel.
@@ -78,6 +79,8 @@ struct ToolCommandPanelView: View {
             }
         }
         .toolPanelChrome(width: panelWidth)
+        .onboardingAnchor(.commandPanel)
+        .onboardingHighlight(isTourHighlighted, cornerRadius: 0)
         .onAppear { syncThicknessText() }
         .onChange(of: document.strokeWidth) { _, _ in syncThicknessText() }
         .onChange(of: units) { _, _ in syncThicknessText() }
