@@ -48,12 +48,13 @@ enum LayerThumbnailRenderer {
 
             for item in images {
                 guard let raster = UIImage(data: item.data) else { continue }
-                let viewOrigin = viewport.documentToView(item.frame.origin)
-                let viewSize = CGSize(
-                    width: viewport.documentToView(distance: item.frame.width),
-                    height: viewport.documentToView(distance: item.frame.height)
+                DocumentRenderer.drawReferenceImage(
+                    item,
+                    image: raster,
+                    in: context,
+                    viewport: viewport,
+                    alpha: document.opacity(forLayerID: item.layerID) * item.opacity
                 )
-                raster.draw(in: CGRect(origin: viewOrigin, size: viewSize), blendMode: .normal, alpha: 0.85)
             }
 
             for stroke in strokes {

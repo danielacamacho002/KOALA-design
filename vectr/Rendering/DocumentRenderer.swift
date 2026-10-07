@@ -82,20 +82,13 @@ enum DocumentRenderer {
 
         for item in snapshot.visibleReferenceImages() {
             guard let image = UIImage(data: item.data) else { continue }
-            let frame = item.frame.width > 0 && item.frame.height > 0
-                ? item.frame
-                : defaultReferenceFrame(for: image)
-            let viewFrame = CGRect(
-                origin: viewport.documentToView(frame.origin),
-                size: CGSize(
-                    width: viewport.documentToView(distance: frame.width),
-                    height: viewport.documentToView(distance: frame.height)
-                )
+            drawReferenceImage(
+                item,
+                image: image,
+                in: context,
+                viewport: viewport,
+                alpha: snapshot.opacity(forLayerID: item.layerID) * item.opacity
             )
-            context.saveGState()
-            context.setAlpha(snapshot.opacity(forLayerID: item.layerID) * 0.85)
-            image.draw(in: viewFrame)
-            context.restoreGState()
         }
 
         for stroke in snapshot.visibleStrokes() {
@@ -165,6 +158,34 @@ enum DocumentRenderer {
             points.append(contentsOf: image.corners())
         }
         return points
+    }
+
+    static func drawReferenceImage(
+        _ item: ReferenceImage,
+        image: UIImage,
+        in context: CGContext,
+        viewport: ViewportTransform,
+        alpha: CGFloat
+    ) {
+        let frame = item.frame.width > 0 && item.frame.height > 0
+            ? item.frame
+            : defaultReferenceFrame(for: image)
+        let center = viewport.documentToView(CGPoint(x: frame.midX, y: frame.midY))
+        let viewSize = CGSize(
+            width: viewport.documentToView(distance: frame.width),
+            height: viewport.documentToView(distance: frame.height)
+        )
+        context.saveGState()
+        context.setAlpha(alpha)
+        context.translateBy(x: center.x, y: center.y)
+        context.concatenate(CGAffineTransform(rotationAngle: item.rotation))
+        image.draw(in: CGRect(
+            x: -viewSize.width / 2,
+            y: -viewSize.height / 2,
+            width: viewSize.width,
+            height: viewSize.height
+        ))
+        context.restoreGState()
     }
 
     private nonisolated static func defaultReferenceFrame(for image: UIImage) -> CGRect {

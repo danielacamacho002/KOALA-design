@@ -749,13 +749,9 @@ final class VectrDocument {
     }
 
     func referenceImageCorners() -> [CGPoint]? {
-        guard let frame = resolvedReferenceImageFrame else { return nil }
-        return [
-            CGPoint(x: frame.minX, y: frame.minY),
-            CGPoint(x: frame.maxX, y: frame.minY),
-            CGPoint(x: frame.maxX, y: frame.maxY),
-            CGPoint(x: frame.minX, y: frame.maxY)
-        ]
+        guard let image = selectedReferenceImage,
+              image.frame.width > 0, image.frame.height > 0 else { return nil }
+        return image.corners()
     }
 
     func selectReferenceImage() {
@@ -782,6 +778,20 @@ final class VectrDocument {
         let width = max(abs(frame.width), Self.minReferenceImageDimension)
         let height = max(abs(frame.height), Self.minReferenceImageDimension)
         referenceImages[index].frame = CGRect(x: frame.minX, y: frame.minY, width: width, height: height)
+    }
+
+    func setReferenceImageRotation(radians: CGFloat, id: UUID? = nil, recordUndo: Bool = false) {
+        guard let index = targetReferenceImageIndex(id: id) else { return }
+        if recordUndo { pushUndo() }
+        referenceImages[index].rotation = radians
+        geometryRevision += 1
+    }
+
+    func setReferenceImageOpacity(_ opacity: CGFloat, id: UUID? = nil, recordUndo: Bool = false) {
+        guard let index = targetReferenceImageIndex(id: id) else { return }
+        if recordUndo { pushUndo() }
+        referenceImages[index].opacity = min(1, max(0, opacity))
+        geometryRevision += 1
     }
 
     func scaleReferenceImage(factorX: CGFloat, factorY: CGFloat, about center: CGPoint, id: UUID? = nil) {
@@ -1868,7 +1878,7 @@ final class VectrDocument {
         }
         if strokeIDs.isEmpty, textIDs.isEmpty,
            let image = occupyingReferenceImages().reversed().first(where: {
-               isSelectableReferenceImage($0) && Self.rectsOverlap($0.frame, rect)
+               isSelectableReferenceImage($0) && Self.rectsOverlap($0.boundingBox(), rect)
            }) {
             selectReferenceImage(id: image.id)
             return

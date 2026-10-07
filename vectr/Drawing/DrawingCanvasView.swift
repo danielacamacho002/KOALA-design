@@ -19,6 +19,8 @@ struct DrawingCanvasView: UIViewRepresentable {
     var selectedStrokeIDs: Set<UUID> = []
     var referenceImageIDs: [UUID] = []
     var referenceImageFrames: [CGRect] = []
+    var referenceImageRotations: [CGFloat] = []
+    var referenceImageOpacities: [CGFloat] = []
     var visualGridSpacing: CGFloat = 20
     var measurementUnit: MeasurementUnit = .points
     var gridVisible: Bool = true
@@ -100,6 +102,8 @@ struct DrawingCanvasView: UIViewRepresentable {
         let referenceImageChanged = context.coordinator.consumeReferenceImageChange(
             ids: referenceImageIDs,
             frames: referenceImageFrames,
+            rotations: referenceImageRotations,
+            opacities: referenceImageOpacities,
             didSwapDocument: didSwapDocument
         )
 
@@ -213,6 +217,8 @@ struct DrawingCanvasView: UIViewRepresentable {
         private var lastGridVisible: Bool?
         private var lastReferenceImageIDs: [UUID] = []
         private var lastReferenceImageFrames: [CGRect] = []
+        private var lastReferenceImageRotations: [CGFloat] = []
+        private var lastReferenceImageOpacities: [CGFloat] = []
         private var viewportHandledByCanvas = false
 
         init(document: VectrDocument, onStrokeSelected: ((VectorStroke?) -> Void)?) {
@@ -291,13 +297,24 @@ struct DrawingCanvasView: UIViewRepresentable {
                 || lastGridVisible != gridVisible
         }
 
-        func consumeReferenceImageChange(ids: [UUID], frames: [CGRect], didSwapDocument: Bool) -> Bool {
+        func consumeReferenceImageChange(
+            ids: [UUID],
+            frames: [CGRect],
+            rotations: [CGFloat],
+            opacities: [CGFloat],
+            didSwapDocument: Bool
+        ) -> Bool {
             defer {
                 lastReferenceImageIDs = ids
                 lastReferenceImageFrames = frames
+                lastReferenceImageRotations = rotations
+                lastReferenceImageOpacities = opacities
             }
             if didSwapDocument { return true }
-            return lastReferenceImageIDs != ids || lastReferenceImageFrames != frames
+            return lastReferenceImageIDs != ids
+                || lastReferenceImageFrames != frames
+                || lastReferenceImageRotations != rotations
+                || lastReferenceImageOpacities != opacities
         }
 
         func consumeCanvasHandledViewportUpdate() -> Bool {

@@ -304,11 +304,23 @@ final class DrawingCanvasUIView: UIView {
                 width: document.viewport.documentToView(distance: frame.width),
                 height: document.viewport.documentToView(distance: frame.height)
             )
+            let viewCenter = CGPoint(
+                x: viewOrigin.x + viewSize.width / 2,
+                y: viewOrigin.y + viewSize.height / 2
+            )
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             layer.contents = image.cgImage
-            layer.frame = CGRect(origin: viewOrigin, size: viewSize)
-            layer.opacity = Float(document.opacity(forLayerID: item.layerID) * 0.85)
+            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            layer.bounds = CGRect(origin: .zero, size: viewSize)
+            layer.position = viewCenter
+            layer.transform = item.rotation == 0
+                ? CATransform3DIdentity
+                : CATransform3DMakeRotation(item.rotation, 0, 0, 1)
+            layer.opacity = Float(document.opacity(forLayerID: item.layerID) * item.opacity)
             let layerZ = zPositions[item.layerID] ?? 1
             layer.zPosition = layerZ - 0.5 + CGFloat(index) * 0.001
+            CATransaction.commit()
         }
     }
 

@@ -54,6 +54,11 @@ struct CanvasOverlayView: View {
     @State private var imageScaleOriginCenter: CGPoint = .zero
     @State private var imageScaleOriginCorner: CGPoint = .zero
     @State private var imageScaleOriginCornerDist: CGFloat = 1
+    @State private var imageScaleOriginRotation: CGFloat = 0
+    @State private var imageRotateOriginRadians: CGFloat?
+    @State private var imageRotatePivot: CGPoint = .zero
+    @State private var imageRotatePreviousAngle: CGFloat = 0
+    @State private var imageRotateAccumulated: CGFloat = 0
 
     /// The last tap on an anchor handle, and on a fillet-corner handle. Attaching both a
     /// `count: 2` and a `count: 1` tap gesture to a handle makes SwiftUI hold the single
@@ -1794,6 +1799,10 @@ struct CanvasOverlayView: View {
                     .position(corner)
                     .highPriorityGesture(imageScaleDrag(cornerIndex: index))
             }
+
+            if document.isMoveRotateMode, let image = document.selectedReferenceImage {
+                imageRotationHandle(id: image.id, viewCorners: viewCorners, viewCenter: document.viewport.documentToView(image.center))
+            }
         }
     }
 
@@ -1822,6 +1831,7 @@ struct CanvasOverlayView: View {
                     guard let frame = document.resolvedReferenceImageFrame else { return }
                     imageScaleOrigin = frame
                     imageScaleOriginCenter = CGPoint(x: frame.midX, y: frame.midY)
+                    imageScaleOriginRotation = document.selectedReferenceImage?.rotation ?? 0
                     let corner = CanvasOverlayGeometry.cornerHandles(of: frame)[cornerIndex]
                     imageScaleOriginCorner = corner
                     imageScaleOriginCornerDist = CanvasOverlayGeometry.cornerDistance(
@@ -1832,10 +1842,12 @@ struct CanvasOverlayView: View {
                 }
                 guard let origin = imageScaleOrigin else { return }
                 let center = imageScaleOriginCenter
+                let worldDrag = document.viewport.viewToDocument(value.location)
+                let dragPoint = ReferenceImage.rotate(worldDrag, around: center, by: -imageScaleOriginRotation)
                 let factors = CanvasOverlayGeometry.scaleFactors(
                     center: center,
                     corner: imageScaleOriginCorner,
-                    dragPoint: document.viewport.viewToDocument(value.location),
+                    dragPoint: dragPoint,
                     uniform: document.scaleUniform,
                     originCornerDistance: imageScaleOriginCornerDist
                 )
@@ -1852,6 +1864,71 @@ struct CanvasOverlayView: View {
             }
             .onEnded { _ in
                 imageScaleOrigin = nil
+                imageScaleOriginRotation = 0
+                onChanged()
+            }
+    }
+
+    @ViewBuilder
+    private func imageRotationHandle(id: UUID, viewCorners: [CGPoint], viewCenter: CGPoint) -> some View {
+        if viewCorners.count == 4 {
+            let topMid = CGPoint(
+                x: (viewCorners[0].x + viewCorners[1].x) / 2,
+                y: (viewCorners[0].y + viewCorners[1].y) / 2
+            )
+            let dx = topMid.x - viewCenter.x
+            let dy = topMid.y - viewCenter.y
+            let length = max(hypot(dx, dy), 0.001)
+            let handlePosition = CGPoint(
+                x: topMid.x + dx / length * rotateHandleOffset,
+                y: topMid.y + dy / length * rotateHandleOffset
+            )
+
+            Path { path in
+                path.move(to: topMid)
+                path.addLine(to: handlePosition)
+            }
+            .stroke(Color.orange.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            .allowsHitTesting(false)
+
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: handleSize, height: handleSize)
+                .background(Circle().fill(Color.orange))
+                .position(handlePosition)
+                .highPriorityGesture(imageRotateDrag(id: id))
+        }
+    }
+
+    private func imageRotateDrag(id: UUID) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                let currentDoc = document.viewport.viewToDocument(value.location)
+                if imageRotateOriginRadians == nil {
+                    guard let image = document.referenceImage(with: id) else { return }
+                    imageRotateOriginRadians = image.rotation
+                    imageRotatePivot = image.center
+                    imageRotatePreviousAngle = atan2(
+                        currentDoc.y - image.center.y,
+                        currentDoc.x - image.center.x
+                    )
+                    imageRotateAccumulated = 0
+                    document.beginInteractiveEdit()
+                }
+                guard let origin = imageRotateOriginRadians else { return }
+                let angle = atan2(currentDoc.y - imageRotatePivot.y, currentDoc.x - imageRotatePivot.x)
+                let rawStep = angle - imageRotatePreviousAngle
+                let step = atan2(sin(rawStep), cos(rawStep))
+                imageRotateAccumulated += step
+                imageRotatePreviousAngle = angle
+                document.setReferenceImageRotation(radians: origin + imageRotateAccumulated, id: id, recordUndo: false)
+                onChanged()
+            }
+            .onEnded { _ in
+                imageRotateOriginRadians = nil
+                imageRotatePreviousAngle = 0
+                imageRotateAccumulated = 0
                 onChanged()
             }
     }
