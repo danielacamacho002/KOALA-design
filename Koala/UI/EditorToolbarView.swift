@@ -60,12 +60,6 @@ struct EditorToolbarView: View {
                 .padding(.horizontal, 10)
 
             HStack(spacing: 4) {
-                toolbarIconButton(
-                    "gearshape",
-                    action: onSettings,
-                    accessibilityLabel: "Settings",
-                    onboardingTarget: .share
-                )
                 if let onSwitchToPrintLayout {
                     toolbarIconButton(
                         "rectangle.split.3x3",
@@ -74,6 +68,12 @@ struct EditorToolbarView: View {
                         onboardingTarget: .printLayout
                     )
                 }
+                toolbarIconButton(
+                    "gearshape",
+                    action: onSettings,
+                    accessibilityLabel: "Settings",
+                    onboardingTarget: .share
+                )
             }
         }
         .frame(height: toolbarHeight)
