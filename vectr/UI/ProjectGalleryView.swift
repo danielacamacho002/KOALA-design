@@ -13,6 +13,10 @@ struct ProjectGalleryView: View {
     @State private var isSelectionMode = false
     @State private var selectedIDs: Set<UUID> = []
     @State private var showImportPicker = false
+    @State private var showPhotoPicker = false
+    @State private var showImportSourceSheet = false
+    @State private var pendingFileImport = false
+    @State private var pendingPhotoImport = false
     @State private var showNewCanvasSheet = false
     @State private var showExportSheet = false
     @State private var pendingShareAfterDismiss = false
@@ -88,6 +92,32 @@ struct ProjectGalleryView: View {
                 contentTypes: ImportRouter.supportedTypes
             ) { url in
                 handleImport(.success([url]))
+            }
+            PhotoLibraryImportSheet(isPresented: $showPhotoPicker) { result in
+                switch result {
+                case .success(let url):
+                    handleImport(.success([url]))
+                case .failure(let error):
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+        .sheet(isPresented: $showImportSourceSheet, onDismiss: {
+            if pendingFileImport {
+                pendingFileImport = false
+                showImportPicker = true
+            } else if pendingPhotoImport {
+                pendingPhotoImport = false
+                showPhotoPicker = true
+            }
+        }) {
+            ImportSourceSheet { source in
+                switch source {
+                case .files:
+                    pendingFileImport = true
+                case .photoLibrary:
+                    pendingPhotoImport = true
+                }
             }
         }
         .sheet(isPresented: $showNewCanvasSheet) {
@@ -170,9 +200,10 @@ struct ProjectGalleryView: View {
                 Button("Delete", role: .destructive) { deleteSelected() }
                     .disabled(selectedIDs.isEmpty)
             } else {
-                Button { showImportPicker = true } label: {
+                Button { showImportSourceSheet = true } label: {
                     Image(systemName: "square.and.arrow.down")
                 }
+                .accessibilityLabel("Import")
                 Button {
                     isSelectionMode = true
                 } label: {
