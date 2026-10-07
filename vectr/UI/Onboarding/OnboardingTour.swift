@@ -240,7 +240,7 @@ struct OnboardingTour: Equatable {
             OnboardingStep(
                 id: "design.share",
                 title: "Import and Export",
-                body: "Open Settings to import a file or export this design.",
+                body: "Open Settings to import a file or photo, or to export this design.",
                 alignment: .topTrailing,
                 padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .share
