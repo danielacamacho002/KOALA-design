@@ -1,6 +1,6 @@
-# Vectr architecture
+# Koala architecture
 
-iPad vector editor: design on a canvas, then arrange artwork for tiled print. iPhone is a placeholder. Source lives in `vectr/` (~120 Swift files).
+iPad vector editor: design on a canvas, then arrange artwork for tiled print. iPhone is a placeholder. Source lives in `Koala/` (~120 Swift files).
 
 ## Folders
 
@@ -17,7 +17,7 @@ iPad vector editor: design on a canvas, then arrange artwork for tiled print. iP
 
 ## Main flow
 
-`vectrApp` → `ContentView` → iPad `ProjectGalleryView` → `EditorView` (`DocumentStore` + `VectrDocument`).
+`KoalaApp` → `ContentView` → iPad `ProjectGalleryView` → `EditorView` (`DocumentStore` + `KoalaDocument`).
 
 - **Design:** `DrawingCanvasView` → `DrawingCanvasUIView` (CAShapeLayer strokes + CG grid)
 - **Print:** `PrintLayoutView` → `PrintLayoutCanvasView` → `PrintLayoutCanvasUIView`
@@ -25,12 +25,12 @@ iPad vector editor: design on a canvas, then arrange artwork for tiled print. iP
 
 ## Open these first
 
-- `vectr/Model/VectrDocument.swift` — source of truth
-- `vectr/Persistence/DocumentStore.swift` — file, dirty, `contentRevision`
-- `vectr/UI/EditorView.swift` — editor orchestration
-- `vectr/Drawing/DrawingCanvasView.swift` + `DrawingCanvasUIView.swift` + `ViewportNavigationInstaller.swift`
-- `vectr/UI/PrintLayout/PrintLayoutCanvasView.swift` + `Rendering/PrintLayout/PrintLayoutCanvasUIView.swift`
-- `vectr/Persistence/DocumentCodec.swift`
+- `Koala/Model/KoalaDocument.swift` — source of truth
+- `Koala/Persistence/DocumentStore.swift` — file, dirty, `contentRevision`
+- `Koala/UI/EditorView.swift` — editor orchestration
+- `Koala/Drawing/DrawingCanvasView.swift` + `DrawingCanvasUIView.swift` + `ViewportNavigationInstaller.swift`
+- `Koala/UI/PrintLayout/PrintLayoutCanvasView.swift` + `Rendering/PrintLayout/PrintLayoutCanvasUIView.swift`
+- `Koala/Persistence/DocumentCodec.swift`
 
 Do not start in `ShapeGeometry`, `PathJoinEngine`, `TrimEngine`, or `PolygonBoolean` unless the task is that geometry.
 
