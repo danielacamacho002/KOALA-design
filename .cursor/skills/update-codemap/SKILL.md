@@ -4,7 +4,7 @@ description: Updates docs/ARCHITECTURE.md after an actual folder, hot-file, revi
 disable-model-invocation: true
 ---
 
-# Update the Vectr code map
+# Update the Koala code map
 
 ## Instructions
 
