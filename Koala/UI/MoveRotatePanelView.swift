@@ -25,6 +25,8 @@ struct MoveRotatePanelView: View {
     @State private var isEditingDegrees = false
     @State private var thicknessText = ""
     @State private var fillOpacityText = ""
+    @State private var imageOpacityText = ""
+    @State private var isEditingImageOpacity = false
     @State private var showTextFillPicker = false
     @State private var showTextStrokePicker = false
     @State private var showColorPicker = false
@@ -39,12 +41,20 @@ struct MoveRotatePanelView: View {
         document.selectedStrokeID == nil && document.selectedTextID != nil
     }
 
+    /// An imported image is selected on its own, so stroke and text controls stay hidden.
+    private var isImageSelected: Bool {
+        document.isReferenceImageSelected && document.selectionIsEmpty
+    }
+
     private var selectedText: TextElement? {
         guard let id = document.selectedTextID else { return nil }
         return document.textElement(with: id)
     }
 
     private var currentDegrees: Double {
+        if isImageSelected {
+            return ShapeGeometry.normalizedRotationDegrees(document.selectedReferenceImage?.rotation ?? 0)
+        }
         if isTextSelected {
             return ShapeGeometry.normalizedRotationDegrees(selectedText?.rotation ?? 0)
         }
@@ -74,6 +84,11 @@ struct MoveRotatePanelView: View {
 
             rotateSection
 
+            if isImageSelected {
+                Divider()
+                imageOpacitySection
+            }
+
             if !document.selectedTextIDs.isEmpty {
                 Divider()
                 textStyleSection
@@ -102,7 +117,14 @@ struct MoveRotatePanelView: View {
 
             Divider()
 
-            arrangeSection
+            if isImageSelected {
+                ToolPanelLabelButton(title: "Delete", fullWidth: true) {
+                    document.deleteSelectedElements()
+                    onApply()
+                }
+            } else {
+                arrangeSection
+            }
         }
         .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
         .onChange(of: document.selectedStrokeID) { _, _ in
@@ -121,14 +143,20 @@ struct MoveRotatePanelView: View {
         .onChange(of: document.selectedTextIDs) { _, _ in
             syncDegreesField()
         }
+        .onChange(of: document.selectedReferenceImageID) { _, _ in
+            syncDegreesField()
+            syncImageOpacity()
+        }
         .onChange(of: document.geometryRevision) { _, _ in
             syncDegreesField()
             syncThicknessTextIfNeeded()
+            syncImageOpacity()
         }
         .onAppear {
             syncDegreesField()
             syncThicknessText()
             syncFillOpacity()
+            syncImageOpacity()
         }
     }
 
@@ -641,6 +669,56 @@ struct MoveRotatePanelView: View {
         onApply()
     }
 
+    @ViewBuilder
+    private var imageOpacitySection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ToolPanelSectionLabel("Opacity")
+
+            ToolPanelNumericStepper(
+                text: $imageOpacityText,
+                placeholder: "0",
+                unitLabel: "%",
+                onMinus: { stepImageOpacity(by: -Self.fillOpacityStep) },
+                onPlus: { stepImageOpacity(by: Self.fillOpacityStep) },
+                onSubmit: applyImageOpacity,
+                onEditingChanged: { isEditingImageOpacity = $0 }
+            )
+        }
+    }
+
+    private func syncImageOpacity() {
+        guard !isEditingImageOpacity else { return }
+        guard let opacity = document.selectedReferenceImage?.opacity else { return }
+        let text = fillOpacityDisplayString(opacity)
+        if imageOpacityText != text {
+            imageOpacityText = text
+        }
+    }
+
+    private func applyImageOpacity() {
+        let cleaned = imageOpacityText
+            .replacingOccurrences(of: "%", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let value = Double(cleaned) else {
+            syncImageOpacity()
+            return
+        }
+        let opacity = min(1, max(0, CGFloat(value) / 100))
+        document.beginInteractiveEdit()
+        document.setReferenceImageOpacity(opacity, recordUndo: false)
+        syncImageOpacity()
+        onApply()
+    }
+
+    private func stepImageOpacity(by delta: CGFloat) {
+        let base = document.selectedReferenceImage?.opacity ?? 1
+        let opacity = min(1, max(0, base + delta))
+        document.beginInteractiveEdit()
+        document.setReferenceImageOpacity(opacity, recordUndo: false)
+        syncImageOpacity()
+        onApply()
+    }
+
     private func syncDegreesField() {
         guard !isEditingDegrees else { return }
         degreesText = String(format: "%.1f", displayedRotationDegrees)
@@ -680,6 +758,17 @@ struct MoveRotatePanelView: View {
     }
 
     private func setRotation(toDegrees value: Double) {
+        if isImageSelected {
+            document.beginInteractiveEdit()
+            document.setReferenceImageRotation(
+                radians: CGFloat(value * .pi / 180),
+                recordUndo: false
+            )
+            syncDegreesField()
+            onApply()
+            return
+        }
+
         if isTextSelected {
             guard let textID = document.selectedTextID else { return }
             document.beginInteractiveEdit()

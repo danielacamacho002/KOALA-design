@@ -247,6 +247,8 @@ struct EditorView: View {
                     selectedStrokeIDs: store.document.selectedStrokeIDs,
                     referenceImageIDs: store.document.visibleReferenceImages().map(\.id),
                     referenceImageFrames: store.document.visibleReferenceImages().map(\.frame),
+                    referenceImageRotations: store.document.visibleReferenceImages().map(\.rotation),
+                    referenceImageOpacities: store.document.visibleReferenceImages().map(\.opacity),
                     visualGridSpacing: UnitConversion.visualGridSpacing(
                         sliderValue: store.document.settings.defaultGridSpacingInUnits,
                         unit: store.document.settings.units
@@ -744,7 +746,7 @@ struct EditorView: View {
         if designOnboarding.isActive, designOnboarding.currentTarget == .tool(.move) {
             return true
         }
-        return !store.document.selectionIsEmpty
+        return !store.document.selectionIsEmpty || store.document.isReferenceImageSelected
     }
 
     private var canvasOverlayAcceptsHits: Bool {

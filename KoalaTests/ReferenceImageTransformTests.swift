@@ -106,6 +106,62 @@ struct ReferenceImageTransformTests {
         #expect(!document.isReferenceImageSelected)
     }
 
+    @Test func rotationUpdatesCornersAndHitTesting() {
+        let document = documentWithImage(frame: CGRect(x: 0, y: 0, width: 100, height: 20))
+        document.selectReferenceImage()
+        document.setReferenceImageRotation(radians: .pi / 2)
+
+        let image = document.referenceImages[0]
+        let topRight = image.corners()[1]
+        #expect(abs(topRight.x - 60) < 0.01)
+        #expect(abs(topRight.y - 60) < 0.01)
+        #expect(image.contains(CGPoint(x: 50, y: 10)))
+        #expect(image.contains(CGPoint(x: 50, y: 40)))
+        #expect(!image.contains(CGPoint(x: 90, y: 10)))
+    }
+
+    @Test func opacityClampsAndSurvivesCodec() throws {
+        let document = documentWithImage(frame: CGRect(x: 0, y: 0, width: 40, height: 20))
+        document.selectReferenceImage()
+        document.setReferenceImageRotation(radians: 0.4)
+        document.setReferenceImageOpacity(1.5)
+        #expect(document.referenceImages[0].opacity == 1)
+        document.setReferenceImageOpacity(-0.2)
+        #expect(document.referenceImages[0].opacity == 0)
+        document.setReferenceImageOpacity(0.4)
+
+        let decoded = try DocumentCodec.decode(DocumentCodec.encode(document))
+        #expect(abs(decoded.referenceImages[0].opacity - 0.4) < 0.001)
+        #expect(abs(decoded.referenceImages[0].rotation - 0.4) < 0.001)
+    }
+
+    @Test func missingRotationAndOpacityDecodeAsIdentity() throws {
+        let image = ReferenceImage(data: Data([0x01]), frame: CGRect(x: 1, y: 2, width: 3, height: 4))
+        let data = try JSONEncoder().encode(image)
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "rotation")
+        object.removeValue(forKey: "opacity")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(ReferenceImage.self, from: stripped)
+        #expect(decoded.rotation == 0)
+        #expect(decoded.opacity == 1)
+        #expect(decoded.frame == image.frame)
+    }
+
+    @Test func undoRestoresRotationAndOpacity() {
+        let document = documentWithImage(frame: CGRect(x: 0, y: 0, width: 40, height: 20))
+        document.selectReferenceImage()
+        document.beginInteractiveEdit()
+        document.setReferenceImageRotation(radians: 1.2, recordUndo: false)
+        document.setReferenceImageOpacity(0.25, recordUndo: false)
+
+        #expect(abs(document.referenceImages[0].rotation - 1.2) < 0.001)
+        #expect(abs(document.referenceImages[0].opacity - 0.25) < 0.001)
+        document.undo()
+        #expect(document.referenceImages[0].rotation == 0)
+        #expect(document.referenceImages[0].opacity == 1)
+    }
+
     @Test func undoRestoresMovedFrame() {
         let original = CGRect(x: 0, y: 0, width: 60, height: 30)
         let document = documentWithImage(frame: original)
