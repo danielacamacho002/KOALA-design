@@ -13,8 +13,6 @@ struct EditorToolbarView: View {
     var onUndo: () -> Void
     var onRedo: () -> Void
     var onSettings: () -> Void
-    var onShare: () -> Void
-    var onSave: () -> Void
     var onToolSelected: (ToolCategory?) -> Void
     var onSwitchToPrintLayout: (() -> Void)?
     var highlightedTarget: OnboardingTarget? = nil
@@ -62,7 +60,12 @@ struct EditorToolbarView: View {
                 .padding(.horizontal, 10)
 
             HStack(spacing: 4) {
-                toolbarIconButton("gearshape", action: onSettings, accessibilityLabel: "Settings")
+                toolbarIconButton(
+                    "gearshape",
+                    action: onSettings,
+                    accessibilityLabel: "Settings",
+                    onboardingTarget: .share
+                )
                 if let onSwitchToPrintLayout {
                     toolbarIconButton(
                         "rectangle.split.3x3",
@@ -71,18 +74,6 @@ struct EditorToolbarView: View {
                         onboardingTarget: .printLayout
                     )
                 }
-                toolbarIconButton(
-                    "square.and.arrow.up",
-                    action: onShare,
-                    accessibilityLabel: "Share",
-                    onboardingTarget: .share
-                )
-                toolbarIconButton(
-                    "square.and.arrow.down",
-                    action: onSave,
-                    accessibilityLabel: "Save",
-                    onboardingTarget: .save
-                )
             }
         }
         .frame(height: toolbarHeight)
