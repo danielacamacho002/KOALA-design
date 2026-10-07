@@ -106,7 +106,7 @@ final class DrawingCanvasUIView: UIView {
     private var cachedGridMajor: CGFloat = -1
     private var cachedCanvasSize: CGSize = .zero
     private var referenceImageLayers: [UUID: CALayer] = [:]
-    private var cachedReferenceImages: [UUID: (data: Data, image: UIImage)] = [:]
+    private var cachedReferenceImages: [UUID: (data: Data, contents: CGImage)] = [:]
     private var lastLaidOutSize: CGSize = .zero
     private var lastEmittedLayoutSize: CGSize = .zero
     private var lastEmittedSafeAreaInsets: UIEdgeInsets = .zero
@@ -276,13 +276,14 @@ final class DrawingCanvasUIView: UIView {
 
         for (index, item) in images.enumerated() {
             if cachedReferenceImages[item.id]?.data != item.data {
-                if let image = UIImage(data: item.data) {
-                    cachedReferenceImages[item.id] = (item.data, image)
+                if let image = UIImage(data: item.data),
+                   let contents = ReferenceImageDrawing.uprightCGImage(from: image) {
+                    cachedReferenceImages[item.id] = (item.data, contents)
                 } else {
                     cachedReferenceImages.removeValue(forKey: item.id)
                 }
             }
-            guard let image = cachedReferenceImages[item.id]?.image else {
+            guard let contents = cachedReferenceImages[item.id]?.contents else {
                 referenceImageLayers[item.id]?.removeFromSuperlayer()
                 referenceImageLayers.removeValue(forKey: item.id)
                 continue
@@ -304,7 +305,8 @@ final class DrawingCanvasUIView: UIView {
                 width: document.viewport.documentToView(distance: frame.width),
                 height: document.viewport.documentToView(distance: frame.height)
             )
-            layer.contents = image.cgImage
+            layer.contents = contents
+            layer.contentsGravity = .resize
             layer.frame = CGRect(origin: viewOrigin, size: viewSize)
             layer.opacity = Float(document.opacity(forLayerID: item.layerID) * 0.85)
             let layerZ = zPositions[item.layerID] ?? 1

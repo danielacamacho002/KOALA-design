@@ -19,6 +19,8 @@ struct EditorView: View {
     private let objectSnapEngine = PathSnapEngine.makeDefault()
     @State private var showExportSheet = false
     @State private var showImportPicker = false
+    @State private var showPhotoPicker = false
+    @State private var showImportSourceSheet = false
     @State private var pendingShareAfterDismiss = false
     @State private var exportFormat: ExportFormat = .vectr
     @State private var exportQuality: ExportQuality = .medium
@@ -29,7 +31,9 @@ struct EditorView: View {
     @State private var canvasViewSize: CGSize = .zero
     @State private var canvasSafeAreaInsets: UIEdgeInsets = .zero
     @State private var showSettings = false
-    @State private var pendingImportAfterSettings = false
+    @State private var pendingImportSourceAfterSettings = false
+    @State private var pendingFileImport = false
+    @State private var pendingPhotoImport = false
     @State private var pendingExportAfterSettings = false
     @State private var chromeInsets = ViewportTransform.ChromeInsets()
     @State private var statusMessage: String?
@@ -120,9 +124,9 @@ struct EditorView: View {
             }
         }
         .sheet(isPresented: $showSettings, onDismiss: {
-            if pendingImportAfterSettings {
-                pendingImportAfterSettings = false
-                showImportPicker = true
+            if pendingImportSourceAfterSettings {
+                pendingImportSourceAfterSettings = false
+                showImportSourceSheet = true
             } else if pendingExportAfterSettings {
                 pendingExportAfterSettings = false
                 showExportSheet = true
@@ -134,7 +138,7 @@ struct EditorView: View {
                 onFileNameChanged: handleFileNameChanged,
                 onReplayTutorial: replayTutorials,
                 onImport: {
-                    pendingImportAfterSettings = true
+                    pendingImportSourceAfterSettings = true
                     showSettings = false
                 },
                 onExport: {
@@ -143,12 +147,38 @@ struct EditorView: View {
                 }
             )
         }
+        .sheet(isPresented: $showImportSourceSheet, onDismiss: {
+            if pendingFileImport {
+                pendingFileImport = false
+                showImportPicker = true
+            } else if pendingPhotoImport {
+                pendingPhotoImport = false
+                showPhotoPicker = true
+            }
+        }) {
+            ImportSourceSheet { source in
+                switch source {
+                case .files:
+                    pendingFileImport = true
+                case .photoLibrary:
+                    pendingPhotoImport = true
+                }
+            }
+        }
         .background {
             DocumentImportSheet(
                 isPresented: $showImportPicker,
                 contentTypes: ImportRouter.supportedTypes
             ) { url in
                 handleImport(.success([url]))
+            }
+            PhotoLibraryImportSheet(isPresented: $showPhotoPicker) { result in
+                switch result {
+                case .success(let url):
+                    handleImport(.success([url]))
+                case .failure(let error):
+                    errorMessage = error.localizedDescription
+                }
             }
         }
         .sheet(isPresented: $showExportSheet, onDismiss: {
