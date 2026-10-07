@@ -21,7 +21,8 @@ extension ShapeGeometry {
     /// and ovals are not mistaken for circles.
     nonisolated static func withCompactedCircularAnchors(
         _ stroke: VectorStroke,
-        rewritingPartialRuns: Bool = true
+        rewritingPartialRuns: Bool = true,
+        preservingBezierHandles: Bool = false
     ) -> VectorStroke {
         // Compound SVG paths (letters, overlapping ovals) must keep every contour.
         if !stroke.cutoutPoints.isEmpty { return stroke }
@@ -33,7 +34,10 @@ extension ShapeGeometry {
         case .arc:
             return compactStandaloneArc(stroke)
         case .curve:
-            if let restored = restoreParametricCircular(stroke) {
+            if let restored = restoreParametricCircular(
+                stroke,
+                preservingBezierHandles: preservingBezierHandles
+            ) {
                 return restored
             }
             if stroke.points.count < 8 { return stroke }
@@ -131,6 +135,18 @@ extension ShapeGeometry {
         }
         return handles
     }
+
+    /// True when a `.curve` stores a hand-edited cubic, not an empty handle list.
+    nonisolated static func hasUserCubicHandles(_ stroke: VectorStroke) -> Bool {
+        guard stroke.shapeType == .curve,
+              let handles = stroke.curveHandles,
+              handles.count == stroke.points.count
+        else { return false }
+        return handles.contains { handle in
+            hypot(handle.inOffset.x, handle.inOffset.y) > 0.01
+                || hypot(handle.outOffset.x, handle.outOffset.y) > 0.01
+        }
+    }
 }
 
 // MARK: - Standalone shapes
@@ -199,9 +215,17 @@ private extension ShapeGeometry {
 
     /// Turns a Bézier that is still a circle/arc (or circular runs plus straight
     /// sides) back into parametric `.circle` / `.arc` / `.polyline` storage.
-    nonisolated static func restoreParametricCircular(_ stroke: VectorStroke) -> VectorStroke? {
+    ///
+    /// Join sets `preservingBezierHandles` so a user cubic that merely hugs a
+    /// circle — the standard quarter-circle handles — stays a cubic. Tessellated
+    /// samples with no user handles still compact.
+    nonisolated static func restoreParametricCircular(
+        _ stroke: VectorStroke,
+        preservingBezierHandles: Bool = false
+    ) -> VectorStroke? {
         let points = stroke.points
         guard points.count >= 2 else { return nil }
+        if preservingBezierHandles, hasUserCubicHandles(stroke) { return nil }
 
         // Four closed anchors are often an ellipse (or a cubic oval). Only promote
         // when every vertex actually sits on one circle.
@@ -455,6 +479,7 @@ private extension ShapeGeometry {
         })
 
         var newPoints: [CGPoint] = []
+        var newHandles: [CurveHandle] = []
         var smooth = Set<Int>()
         var anyCircular = false
         var index = 0
@@ -465,30 +490,67 @@ private extension ShapeGeometry {
         // straightens it, and since this runs on every drag start the shape loses one more
         // arc each time the user grabs it.
         let inheritedSmooth = stroke.smoothCornerIndices ?? []
+        let sourceHandles = stroke.curveHandles ?? []
+        // A joined Bézier sitting next to tessellated circle/arc samples must stay a
+        // curve. Rebuilding the whole stroke as a smooth polyline drops those cubics
+        // and the lobe falls back to a chord.
+        let preserveCurve = stroke.shapeType == .curve
+            && sourceHandles.count == count
+            && sourceHandles.contains { handle in
+                hypot(handle.inOffset.x, handle.inOffset.y) > 0.01
+                    || hypot(handle.outOffset.x, handle.outOffset.y) > 0.01
+            }
 
         func appendStraight(_ oldIndex: Int) {
             let point = points[oldIndex]
             if let last = newPoints.last, hypot(last.x - point.x, last.y - point.y) <= 0.0005 {
                 return
             }
-            if inheritedSmooth.contains(oldIndex) {
+            if !preserveCurve, inheritedSmooth.contains(oldIndex) {
                 smooth.insert(newPoints.count)
                 anyCircular = true
             }
             newPoints.append(point)
+            if preserveCurve {
+                newHandles.append(sourceHandles[oldIndex])
+            }
         }
 
-        func appendCompact(_ compact: [CGPoint]) {
-            guard let first = compact.first else { return }
+        func appendCompact(_ compact: [CGPoint], geometry: CircularGeometry, run: [Int]) {
+            guard let first = compact.first, let runStart = run.first, let runEnd = run.last else { return }
+            let arcHandles = circularCurveHandles(
+                anchors: compact,
+                center: geometry.center,
+                radius: geometry.radius,
+                sweep: geometry.sweep,
+                closed: false
+            )
             let dropFirst = newPoints.last.map { hypot($0.x - first.x, $0.y - first.y) <= 0.05 } ?? false
             let startIndex = dropFirst ? newPoints.count - 1 : newPoints.count
-            if !dropFirst {
+            if dropFirst {
+                if preserveCurve, !newHandles.isEmpty, !arcHandles.isEmpty {
+                    newHandles[newHandles.count - 1].outOffset = arcHandles[0].outOffset
+                }
+            } else {
                 newPoints.append(first)
+                if preserveCurve {
+                    var handle = arcHandles.first ?? CurveHandle()
+                    handle.inOffset = sourceHandles[runStart].inOffset
+                    newHandles.append(handle)
+                }
             }
-            for point in compact.dropFirst() {
+            for (offset, point) in compact.dropFirst().enumerated() {
+                let compactIndex = offset + 1
                 newPoints.append(point)
+                if preserveCurve {
+                    var handle = compactIndex < arcHandles.count ? arcHandles[compactIndex] : CurveHandle()
+                    if compactIndex == compact.count - 1 {
+                        handle.outOffset = sourceHandles[runEnd].outOffset
+                    }
+                    newHandles.append(handle)
+                }
             }
-            if compact.count >= 3 {
+            if !preserveCurve, compact.count >= 3 {
                 for offset in 1..<(compact.count - 1) {
                     smooth.insert(startIndex + offset)
                 }
@@ -511,7 +573,7 @@ private extension ShapeGeometry {
                     sweep: geometry.sweep,
                     closed: false
                 )
-                appendCompact(compact)
+                appendCompact(compact, geometry: geometry, run: run)
                 let runSet = Set(run)
                 repeat { index += 1 } while index < count && runSet.contains(index)
                 continue
@@ -523,12 +585,23 @@ private extension ShapeGeometry {
         if closed, let first = newPoints.first, let last = newPoints.last,
            hypot(first.x - last.x, first.y - last.y) <= 0.0005, newPoints.count > 1 {
             newPoints.removeLast()
+            if preserveCurve, !newHandles.isEmpty { newHandles.removeLast() }
             if let lastIndex = newPoints.indices.last {
                 smooth.remove(lastIndex + 1)
             }
         }
 
         guard newPoints.count >= 2, newPoints.count < points.count else { return stroke }
+        if preserveCurve {
+            guard newHandles.count == newPoints.count else { return stroke }
+            return replacingPoints(
+                stroke,
+                points: newPoints,
+                shapeType: .curve,
+                closed: closed,
+                handles: newHandles
+            )
+        }
 
         return replacingPoints(
             stroke,

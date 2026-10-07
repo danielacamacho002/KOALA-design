@@ -33,6 +33,12 @@ enum PathJoinEngine {
         /// Inner holes (even-odd) carried through the join so complex shapes keep
         /// their cutouts.
         var cutouts: [[CGPoint]] = []
+        /// Contour indices that may weld. Set for dense circles, ellipses, and arcs
+        /// so a curve can meet a cardinal without every rim sample becoming an anchor.
+        var structural: [Int]? = nil
+        /// Midpoints of a demoted circular cubic. Rendering expands these back into
+        /// the sweep; dropping them on join flattens that arc to a chord.
+        var smoothCornerIndices: Set<Int>? = nil
     }
 
     // MARK: - Public API
@@ -139,6 +145,17 @@ enum PathJoinEngine {
         // Circles / ellipses / rectangles / polylines: use the dense rendered
         // outline as the anchor list so fusion follows the real curve.
         let points = contour
+        var structural: [Int]? = nil
+        switch stroke.shapeType {
+        case .circle, .ellipse, .arc:
+            let indices = weldIndices(
+                matching: ShapeGeometry.handlePoints(for: stroke),
+                in: points
+            )
+            if !indices.isEmpty { structural = indices }
+        default:
+            break
+        }
         return Path(
             points: points,
             handles: Array(repeating: CurveHandle(), count: points.count),
@@ -146,8 +163,32 @@ enum PathJoinEngine {
                 || stroke.shapeType == .circle || stroke.shapeType == .ellipse,
             isCurve: false,
             contour: contour,
-            cutouts: cutouts
+            cutouts: cutouts,
+            structural: structural
         )
+    }
+
+    /// Nearest contour sample for each defining anchor. Dense rims are not all
+    /// weldable — only these anchors — so a lobe is not chained into the junction.
+    private static func weldIndices(matching anchors: [CGPoint], in contour: [CGPoint]) -> [Int] {
+        var used = Set<Int>()
+        var indices: [Int] = []
+        for anchor in anchors {
+            var best: Int?
+            var bestDistance = CGFloat.greatestFiniteMagnitude
+            for index in contour.indices where !used.contains(index) {
+                let gap = distance(contour[index], anchor)
+                if gap < bestDistance {
+                    bestDistance = gap
+                    best = index
+                }
+            }
+            if let best, bestDistance <= 4 {
+                used.insert(best)
+                indices.append(best)
+            }
+        }
+        return indices
     }
 
     private static func stroke(
@@ -167,11 +208,13 @@ enum PathJoinEngine {
         result.cutoutPoints = path.cutouts
         result.cornerRadius = 0
         result.cornerRadiiByIndex = nil
-        result.smoothCornerIndices = nil
+        result.smoothCornerIndices = path.isCurve ? nil : path.smoothCornerIndices
         result.isConstruction = false
+        let keepCubics = ShapeGeometry.hasUserCubicHandles(result)
         return ShapeGeometry.withCompactedCircularAnchors(
             result,
-            rewritingPartialRuns: rewritingPartialRuns
+            rewritingPartialRuns: rewritingPartialRuns,
+            preservingBezierHandles: keepCubics
         )
     }
 
@@ -220,15 +263,27 @@ enum PathJoinEngine {
             var previousStroke = -1
             for step in ordered {
                 var segment = joinablePath(for: strokes[step.stroke])
-                if !step.forward { segment = reverse(segment) }
                 if let current = merged {
                     let joint = joinGapLimit(
                         lengthA: previousStroke >= 0 ? lengths[previousStroke] : lengths[step.stroke],
                         lengthB: lengths[step.stroke],
                         tolerance: tolerance
                     )
-                    merged = append(current, segment, tolerance: joint)
+                    // A closed curve or polygon keeps every edge, including the one
+                    // that wraps from the last anchor to the first. Concatenating it
+                    // as an open chain drops that cubic and the lobe collapses.
+                    if segment.isClosed || current.isClosed {
+                        if !segment.isClosed, !step.forward { segment = reverse(segment) }
+                        let anchor = segment.isClosed
+                            ? (step.forward ? segment.points[0] : segment.points[segment.points.count - 1])
+                            : segment.points[0]
+                        merged = splice(current, segment, at: anchor, tolerance: joint)
+                    } else {
+                        if !step.forward { segment = reverse(segment) }
+                        merged = append(current, segment, tolerance: joint)
+                    }
                 } else {
+                    if !segment.isClosed, !step.forward { segment = reverse(segment) }
                     merged = segment
                 }
                 previousStroke = step.stroke
@@ -367,7 +422,8 @@ enum PathJoinEngine {
                 isClosed: stroke.isClosed,
                 isCurve: false,
                 contour: stroke.points,
-                cutouts: stroke.cutoutPoints
+                cutouts: stroke.cutoutPoints,
+                smoothCornerIndices: stroke.smoothCornerIndices
             )
         }
     }
@@ -389,11 +445,47 @@ enum PathJoinEngine {
         if path.isCurve, let incoming = path.handles.last, !path.handles.isEmpty {
             path.handles[0].inOffset = incoming.inOffset
         }
+        let removed = path.points.count - 1
         path.points.removeLast()
         if !path.handles.isEmpty { path.handles.removeLast() }
+        if var smooth = path.smoothCornerIndices {
+            smooth.remove(removed)
+            path.smoothCornerIndices = smooth.isEmpty ? nil : smooth
+        }
         path.isClosed = true
         path.contour = path.points
         return path
+    }
+
+    /// Smooth midpoints ride along when anchors are concatenated or reversed.
+    private static func shiftedSmoothCorners(
+        _ indices: Set<Int>?,
+        by offset: Int,
+        dropping indexToDrop: Int? = nil
+    ) -> Set<Int>? {
+        guard let indices else { return nil }
+        let shifted = Set(indices.compactMap { index -> Int? in
+            if index == indexToDrop { return nil }
+            let adjusted = indexToDrop.map { index > $0 ? index - 1 : index } ?? index
+            return adjusted + offset
+        })
+        return shifted.isEmpty ? nil : shifted
+    }
+
+    private static func unionSmoothCorners(_ head: Set<Int>?, _ tail: Set<Int>?) -> Set<Int>? {
+        let merged = (head ?? []).union(tail ?? [])
+        return merged.isEmpty ? nil : merged
+    }
+
+    /// Anchors after `hostIndex` move forward when a spur is inserted there.
+    private static func smoothCornersInserting(
+        _ indices: Set<Int>?,
+        at hostIndex: Int,
+        count inserted: Int
+    ) -> Set<Int>? {
+        guard let indices, inserted > 0 else { return indices }
+        let shifted = Set(indices.map { $0 > hostIndex ? $0 + inserted : $0 })
+        return shifted.isEmpty ? nil : shifted
     }
 
     private static func contourLength(_ points: [CGPoint]) -> CGFloat {
@@ -536,6 +628,7 @@ enum PathJoinEngine {
     /// Dense closed tessellations (circles, pies): none — overlap is handled
     /// by boolean union, not point welding.
     private static func structuralIndices(_ path: Path) -> [Int] {
+        if let structural = path.structural { return structural }
         let count = path.points.count
         guard count >= 1 else { return [] }
         if !path.isClosed {
@@ -676,20 +769,43 @@ enum PathJoinEngine {
     }
 
     /// Inserts `guest` into `host` at a shared anchor. Closed guests are walked
-    /// as a loop that returns to the join point; open guests become a spur that
-    /// doubles back when the join is mid-path. Curve handles are carried through
-    /// the walk so arcs and curves keep their shape, and the host's closedness is
-    /// preserved so welding a spur onto a closed shape leaves it closed.
+    /// as a loop that returns to the join point. Open guests chained at the end of
+    /// an open host extend it; otherwise they double back so a closed curve keeps
+    /// every cubic. The host tangent that used to leave the weld is parked on the
+    /// returning anchor — leaving it on the junction bends the next host edge and
+    /// flattens the cubic that followed.
     private static func splice(
         _ host: Path,
         _ guest: Path,
         at shared: CGPoint,
-        tolerance: CGFloat
+        tolerance: CGFloat,
+        flippingStart: Bool = true
     ) -> Path {
         guard let hostIndex = host.points.firstIndex(where: { distance($0, shared) <= tolerance }),
               let guestIndex = guest.points.firstIndex(where: { distance($0, shared) <= tolerance })
         else {
             return append(host, guest, tolerance: tolerance)
+        }
+
+        let hostAtStart = !host.isClosed && hostIndex == 0
+        let hostAtEnd = !host.isClosed && hostIndex == host.points.count - 1
+        let guestAtStart = !guest.isClosed && guestIndex == 0
+        let guestAtEnd = !guest.isClosed && guestIndex == guest.points.count - 1
+
+        if hostAtEnd, guestAtStart || guestAtEnd {
+            var oriented = guest
+            if guestAtEnd { oriented = reverse(oriented) }
+            return append(host, oriented, tolerance: tolerance)
+        }
+        if hostAtStart, guestAtStart || guestAtEnd {
+            var oriented = guest
+            if guestAtStart { oriented = reverse(oriented) }
+            return append(oriented, host, tolerance: tolerance)
+        }
+        if flippingStart, hostAtStart, guest.isClosed {
+            return reverse(splice(
+                reverse(host), guest, at: shared, tolerance: tolerance, flippingStart: false
+            ))
         }
 
         let guestHandles = guest.handles.count == guest.points.count
@@ -706,27 +822,45 @@ enum PathJoinEngine {
         // Tangent leaving the shared anchor into the guest walk, so the first
         // spliced segment keeps its curvature at the weld.
         var junctionOut = CGPoint.zero
+        let count = guest.points.count
+        let last = count - 1
 
         if guest.isClosed {
             // Walk the whole loop starting just after the shared anchor and ending
-            // back on it, so the spur closes before continuing along the host.
+            // back on it, so the loop closes before continuing along the host.
             junctionOut = guestHandles[guestIndex].outOffset
-            let order = Array((guestIndex + 1)..<guest.points.count) + Array(0...guestIndex)
+            let order = Array((guestIndex + 1)..<count) + Array(0...guestIndex)
             for i in order {
                 walkPoints.append(guest.points[i])
                 walkHandles.append(guestHandles[i])
             }
-        } else if guestIndex == 0 {
+        } else if guestIndex == 0, last >= 1 {
             junctionOut = guestHandles[0].outOffset
-            for i in 1..<guest.points.count {
+            for i in 1..<last {
                 walkPoints.append(guest.points[i])
                 walkHandles.append(guestHandles[i])
             }
-        } else if guestIndex == guest.points.count - 1 {
-            junctionOut = guestHandles[guestIndex].inOffset
-            for i in stride(from: guest.points.count - 2, through: 0, by: -1) {
+            var tip = guestHandles[last]
+            tip.outOffset = tip.inOffset
+            walkPoints.append(guest.points[last])
+            walkHandles.append(tip)
+            for i in stride(from: last - 1, through: 0, by: -1) {
                 walkPoints.append(guest.points[i])
                 walkHandles.append(flip(guestHandles[i]))
+            }
+        } else if guestIndex == last, last >= 1 {
+            junctionOut = guestHandles[last].inOffset
+            for i in stride(from: last - 1, through: 1, by: -1) {
+                walkPoints.append(guest.points[i])
+                walkHandles.append(flip(guestHandles[i]))
+            }
+            var tip = flip(guestHandles[0])
+            tip.outOffset = tip.inOffset
+            walkPoints.append(guest.points[0])
+            walkHandles.append(tip)
+            for i in 1...last {
+                walkPoints.append(guest.points[i])
+                walkHandles.append(guestHandles[i])
             }
         } else {
             junctionOut = guestHandles[guestIndex].inOffset
@@ -738,7 +872,7 @@ enum PathJoinEngine {
             }
             walkPoints.append(shared)
             walkHandles.append(CurveHandle())
-            for i in (guestIndex + 1)..<guest.points.count {
+            for i in (guestIndex + 1)..<count {
                 walkPoints.append(guest.points[i])
                 walkHandles.append(guestHandles[i])
             }
@@ -746,15 +880,15 @@ enum PathJoinEngine {
             walkHandles.append(CurveHandle())
         }
 
+        guard !walkPoints.isEmpty else { return host }
+
         var points = host.points
         var handles = host.handles.count == host.points.count
             ? host.handles
             : Array(repeating: CurveHandle(), count: host.points.count)
-        // Only steer the host's junction tangent when the guest actually curves,
-        // so a straight guest never flattens a curved host at the weld.
-        if guest.isCurve {
-            handles[hostIndex].outOffset = junctionOut
-        }
+        let originalOut = handles[hostIndex].outOffset
+        walkHandles[walkHandles.count - 1].outOffset = originalOut
+        handles[hostIndex].outOffset = junctionOut
         points.insert(contentsOf: walkPoints, at: hostIndex + 1)
         handles.insert(contentsOf: walkHandles, at: hostIndex + 1)
 
@@ -763,7 +897,13 @@ enum PathJoinEngine {
             handles: handles,
             isClosed: host.isClosed,
             isCurve: host.isCurve || guest.isCurve,
-            contour: points
+            contour: points,
+            structural: host.structural,
+            smoothCornerIndices: smoothCornersInserting(
+                host.smoothCornerIndices,
+                at: hostIndex,
+                count: walkPoints.count
+            )
         )
     }
 
@@ -807,7 +947,8 @@ enum PathJoinEngine {
     }
 
     private static func reverse(_ path: Path) -> Path {
-        Path(
+        let last = max(0, path.points.count - 1)
+        return Path(
             points: path.points.reversed(),
             handles: path.handles.reversed().map {
                 CurveHandle(inOffset: $0.outOffset, outOffset: $0.inOffset)
@@ -815,7 +956,11 @@ enum PathJoinEngine {
             isClosed: path.isClosed,
             isCurve: path.isCurve,
             contour: path.contour.reversed(),
-            cutouts: path.cutouts
+            cutouts: path.cutouts,
+            structural: path.structural.map { $0.map { last - $0 } },
+            smoothCornerIndices: path.smoothCornerIndices.map { indices in
+                Set(indices.map { last - $0 })
+            }
         )
     }
 
@@ -827,13 +972,18 @@ enum PathJoinEngine {
                 handles: head.handles + tail.handles,
                 isClosed: false,
                 isCurve: head.isCurve || tail.isCurve,
-                contour: points
+                contour: points,
+                smoothCornerIndices: unionSmoothCorners(
+                    head.smoothCornerIndices,
+                    shiftedSmoothCorners(tail.smoothCornerIndices, by: head.points.count)
+                )
             )
         }
         var merged = head
         merged.isClosed = false
         merged.isCurve = head.isCurve || tail.isCurve
-        if distance(last, first) <= tolerance {
+        let droppingFirst = distance(last, first) <= tolerance
+        if droppingFirst {
             if !tail.handles.isEmpty, !merged.handles.isEmpty {
                 merged.handles[merged.handles.count - 1].outOffset = tail.handles[0].outOffset
             }
@@ -845,6 +995,14 @@ enum PathJoinEngine {
             merged.points.append(contentsOf: tail.points)
             merged.handles.append(contentsOf: tail.handles)
         }
+        merged.smoothCornerIndices = unionSmoothCorners(
+            head.smoothCornerIndices,
+            shiftedSmoothCorners(
+                tail.smoothCornerIndices,
+                by: head.points.count,
+                dropping: droppingFirst ? 0 : nil
+            )
+        )
         // Handles that no longer line up with anchors would render as straight
         // segments through those anchors — an arc becomes two chords through its
         // midpoint and the shape looks collapsed. Rebuild from tessellated
