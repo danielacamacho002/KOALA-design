@@ -295,6 +295,60 @@ struct PathJoinEngineTests {
         return ShapeGeometry.renderPoints(for: stroke).contains { hypot($0.x - peak.x, $0.y - peak.y) < 8 }
     }
 
+    /// Mirrored open halves whose boundary lines sit on the same line, shifted so
+    /// no endpoints meet. Join has to see that stacked run and close the outline.
+    @Test func joiningStackedOverlapClosesTheOutline() {
+        let left = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: -100, y: 0),
+                CGPoint(x: -100, y: 100),
+                CGPoint(x: 0, y: 100)
+            ],
+            isClosed: false,
+            shapeType: .polyline
+        )
+        let right = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: -20, y: 0),
+                CGPoint(x: 80, y: 0),
+                CGPoint(x: 80, y: 100),
+                CGPoint(x: -20, y: 100)
+            ],
+            isClosed: false,
+            shapeType: .polyline
+        )
+
+        #expect(PathJoinEngine.canJoin([left, right], tolerance: joinTolerance))
+        let joined = PathJoinEngine.join([left, right], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        #expect(stroke.isClosed)
+        #expect(stroke.points.contains { hypot($0.x + 100, $0.y) < 1 })
+        #expect(stroke.points.contains { hypot($0.x + 100, $0.y - 100) < 1 })
+        #expect(stroke.points.contains { hypot($0.x - 80, $0.y - 100) < 1 })
+        #expect(stroke.points.contains { hypot($0.x - 80, $0.y) < 1 })
+    }
+
+    /// Parallel lines a short distance apart are not the same edge.
+    @Test func nearbyParallelLinesDoNotJoin() {
+        let top = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 0, y: 0), CGPoint(x: 100, y: 0)],
+            isClosed: false,
+            shapeType: .polyline
+        )
+        let bottom = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 0, y: 20), CGPoint(x: 100, y: 20)],
+            isClosed: false,
+            shapeType: .polyline
+        )
+        #expect(!PathJoinEngine.canJoin([top, bottom], tolerance: joinTolerance))
+    }
+
     private func openBulge(
         from start: CGPoint = CGPoint(x: 0, y: 0),
         to end: CGPoint = CGPoint(x: 50, y: 0)
