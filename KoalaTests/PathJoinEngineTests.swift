@@ -332,6 +332,256 @@ struct PathJoinEngineTests {
         #expect(stroke.points.contains { hypot($0.x - 80, $0.y) < 1 })
     }
 
+    /// A sleeve outline: gentle cubics, straight lines, and one deep concave cubic.
+    /// Join used to close the loop and replace that concavity with its chord.
+    @Test func joiningAClosedSleeveKeepsTheConcaveCubic() {
+        let top = cubic(
+            from: CGPoint(x: 0, y: 160),
+            to: CGPoint(x: 400, y: 180),
+            out: CGPoint(x: 80, y: 30),
+            inn: CGPoint(x: -80, y: 20)
+        )
+        let right = line(CGPoint(x: 400, y: 180), CGPoint(x: 420, y: 70))
+        let bottom = cubic(
+            from: CGPoint(x: 420, y: 70),
+            to: CGPoint(x: 80, y: 30),
+            out: CGPoint(x: -40, y: -25),
+            inn: CGPoint(x: 60, y: -20)
+        )
+        let step = line(CGPoint(x: 80, y: 30), CGPoint(x: 50, y: 70))
+        let underarm = cubic(
+            from: CGPoint(x: 50, y: 70),
+            to: CGPoint(x: 0, y: 160),
+            out: CGPoint(x: 70, y: 10),
+            inn: CGPoint(x: 40, y: -50)
+        )
+        let bulge = ShapeGeometry.cubicBezierPoint(
+            CGPoint(x: 50, y: 70),
+            CGPoint(x: 120, y: 80),
+            CGPoint(x: 40, y: 110),
+            CGPoint(x: 0, y: 160),
+            t: 0.5
+        )
+        #expect(bulge.x > 60, "fixture bulge is \(bulge)")
+
+        let joined = PathJoinEngine.join([top, right, bottom, step, underarm], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        let rendered = ShapeGeometry.renderPoints(for: stroke)
+        #expect(
+            rendered.contains { hypot($0.x - bulge.x, $0.y - bulge.y) < 12 },
+            "joined \(stroke.shapeType) closed=\(stroke.isClosed) points=\(stroke.points.count) missed bulge \(bulge)"
+        )
+        #expect(rendered.contains { hypot($0.x - 400, $0.y - 180) < 8 })
+    }
+
+    /// Sleeve armhole: a sharp notch vertex and a cubic that swings well clear of
+    /// the shoulder-to-step chord. Join must keep both, including when another
+    /// edge is stacked and when the armhole is one multi-anchor curve.
+    @Test func joiningASleeveNotchKeepsTheHook() {
+        let shoulder = CGPoint(x: 0, y: 200)
+        let tip = CGPoint(x: -80, y: 150)
+        let stepTop = CGPoint(x: 70, y: 40)
+        let stepBottom = CGPoint(x: 70, y: 10)
+        let topEnd = CGPoint(x: 400, y: 210)
+        let rightEnd = CGPoint(x: 420, y: 80)
+
+        let top = cubic(from: shoulder, to: topEnd, out: CGPoint(x: 90, y: 24), inn: CGPoint(x: -80, y: 12))
+        let right = line(topEnd, rightEnd)
+        let bottom = cubic(from: rightEnd, to: stepBottom, out: CGPoint(x: -50, y: -28), inn: CGPoint(x: 60, y: -16))
+        let step = line(stepBottom, stepTop)
+        let notch = line(shoulder, tip)
+        let underarm = cubic(
+            from: tip,
+            to: stepTop,
+            out: CGPoint(x: 30, y: -80),
+            inn: CGPoint(x: -110, y: 20)
+        )
+        let bulge = ShapeGeometry.cubicBezierPoint(
+            tip,
+            CGPoint(x: tip.x + 30, y: tip.y - 80),
+            CGPoint(x: stepTop.x - 110, y: stepTop.y + 20),
+            stepTop,
+            t: 0.5
+        )
+        #expect(distanceFromChord(bulge, shoulder, stepTop) > 40, "fixture bulge \(bulge)")
+
+        let pieces = [top, right, bottom, step, notch, underarm]
+        expectHook(PathJoinEngine.join(pieces, tolerance: joinTolerance) ?? [], named: "separate edges", tip: tip, bulge: bulge)
+
+        let overlapped = pieces + [line(CGPoint(x: 404, y: 184), CGPoint(x: 416, y: 106))]
+        expectHook(PathJoinEngine.join(overlapped, tolerance: joinTolerance) ?? [], named: "stacked edge", tip: tip, bulge: bulge)
+
+        let armhole = VectorStroke(
+            layerID: layerID,
+            points: [shoulder, tip, stepTop],
+            isClosed: false,
+            shapeType: .curve,
+            curveHandles: ShapeGeometry.defaultCurveHandles(anchors: [shoulder, tip, stepTop])
+        )
+        let asOneCurve = [top, right, bottom, step, armhole]
+        expectHook(PathJoinEngine.join(asOneCurve, tolerance: joinTolerance) ?? [], named: "one curve", tip: tip, bulge: tip)
+
+        let smooth = VectorStroke(
+            layerID: layerID,
+            points: [shoulder, tip, stepTop],
+            isClosed: false,
+            smoothCornerIndices: [1]
+        )
+        expectHook(
+            PathJoinEngine.join([top, right, bottom, step, smooth], tolerance: joinTolerance) ?? [],
+            named: "smooth notch",
+            tip: tip,
+            bulge: tip
+        )
+
+        let arcArm = VectorStroke(
+            layerID: layerID,
+            points: [shoulder, tip, stepTop],
+            isClosed: false,
+            shapeType: .arc
+        )
+        expectHook(
+            PathJoinEngine.join([top, right, bottom, step, arcArm], tolerance: joinTolerance) ?? [],
+            named: "arc armhole",
+            tip: tip,
+            bulge: tip
+        )
+
+        let document = KoalaDocument()
+        let layer = document.activeLayerID
+        func onLayer(_ stroke: VectorStroke) -> VectorStroke {
+            var copy = stroke
+            copy.layerID = layer
+            return copy
+        }
+        for stroke in [top, right, bottom, step, notch, underarm].map(onLayer) {
+            document.addStroke(stroke)
+        }
+        document.setElementSelection(
+            strokeIDs: Set(document.strokes.map(\.id)),
+            textIDs: [],
+            compactAnchors: false
+        )
+        #expect(document.joinSelectedShapes())
+        expectHook(document.strokes, named: "document join", tip: tip, bulge: bulge)
+    }
+
+    /// A notch tucked against a nearly straight circular run must survive Join.
+    /// Circle fitting used a tolerance of 2.5% of the radius, so a huge, almost
+    /// flat circle swallowed an armhole notch and replaced it with the chord.
+    @Test func joiningANotchOnAShallowArcKeepsTheTip() {
+        let center = CGPoint(x: 0, y: -5000)
+        let radius: CGFloat = 5000
+        func onRim(_ theta: CGFloat) -> CGPoint {
+            CGPoint(
+                x: center.x + sin(theta) * radius,
+                y: center.y + cos(theta) * radius
+            )
+        }
+        var samples = (0...15).map { onRim(-0.04 + 0.08 * CGFloat($0) / 15) }
+        let mid = samples[8]
+        let tip = CGPoint(x: mid.x, y: mid.y + 80)
+        samples[8] = tip
+        #expect(abs(hypot(tip.x - center.x, tip.y - center.y) - radius) > 70)
+        #expect(abs(hypot(tip.x - center.x, tip.y - center.y) - radius) < radius * 0.025)
+
+        let armhole = VectorStroke(
+            layerID: layerID,
+            points: samples,
+            isClosed: false,
+            shapeType: .polyline
+        )
+        let tailEnd = CGPoint(x: samples[15].x + 30, y: samples[15].y - 80)
+        let tail = line(samples[15], tailEnd)
+        let hook = VectorStroke(
+            layerID: layerID,
+            points: [
+                tailEnd,
+                CGPoint(x: tailEnd.x + 18, y: tailEnd.y - 24),
+                CGPoint(x: tailEnd.x + 40, y: tailEnd.y - 6)
+            ],
+            isClosed: false,
+            shapeType: .arc
+        )
+        let topStart = samples[0]
+        let topEnd = CGPoint(x: topStart.x - 160, y: topStart.y + 30)
+        let topPeak = CGPoint(x: topStart.x - 80, y: topStart.y + 70)
+        let top = VectorStroke(
+            layerID: layerID,
+            points: [topStart, topPeak, topEnd],
+            isClosed: false,
+            smoothCornerIndices: [1]
+        )
+
+        let compacted = ShapeGeometry.withCompactedCircularAnchors(
+            armhole,
+            rewritingPartialRuns: true,
+            preservingBezierHandles: false
+        )
+        let compactedRender = ShapeGeometry.renderPoints(for: compacted)
+        #expect(
+            compactedRender.contains { hypot($0.x - tip.x, $0.y - tip.y) < 8 },
+            "compaction ate the notch; type=\(compacted.shapeType) n=\(compacted.points.count)"
+        )
+
+        let joined = PathJoinEngine.join([top, armhole, tail, hook], tolerance: joinTolerance) ?? []
+        #expect(joined.count == 1, "joined into \(joined.count)")
+        expectHook(joined, named: "shallow arc", tip: tip, bulge: topPeak)
+    }
+
+    /// The notch, the short vertical, and the underarm are one polyline that also
+    /// owns a stacked edge. Fusion has to keep those anchors, not the chord.
+    @Test func joiningAZigzagOwnedByAStackedEdgeKeepsTheTip() {
+        let shoulder = CGPoint(x: 0, y: 200)
+        let tip = CGPoint(x: -80, y: 150)
+        let vert = CGPoint(x: -80, y: 110)
+        let stepTop = CGPoint(x: 70, y: 40)
+        let stepBottom = CGPoint(x: 70, y: 10)
+        let topEnd = CGPoint(x: 400, y: 210)
+        let rightEnd = CGPoint(x: 420, y: 80)
+
+        let sleeve = VectorStroke(
+            layerID: layerID,
+            points: [topEnd, shoulder, tip, vert, stepTop, stepBottom, rightEnd],
+            isClosed: false,
+            shapeType: .polyline
+        )
+        // Lies on the topEnd→shoulder edge so stacked-line fusion atomizes the sleeve.
+        let stackedTop = line(CGPoint(x: 360, y: 209), CGPoint(x: 40, y: 201))
+        let bottom = cubic(
+            from: rightEnd,
+            to: stepBottom,
+            out: CGPoint(x: -40, y: -36),
+            inn: CGPoint(x: 50, y: -18)
+        )
+
+        let joined = PathJoinEngine.join([sleeve, stackedTop, bottom], tolerance: joinTolerance) ?? []
+        expectHook(joined, named: "stacked zigzag", tip: tip, bulge: vert)
+    }
+
+    /// Straight edges that sit on each other must not throw away a cubic that
+    /// shares the outline. Stacked-line fusion used to trace only the chords.
+    @Test func joiningStackedLinesBesideACubicKeepsTheBulge() {
+        let top = line(CGPoint(x: 0, y: 100), CGPoint(x: 200, y: 100))
+        let overlappingTop = line(CGPoint(x: 40, y: 100), CGPoint(x: 160, y: 100))
+        let right = line(CGPoint(x: 200, y: 100), CGPoint(x: 200, y: 0))
+        let bottom = line(CGPoint(x: 200, y: 0), CGPoint(x: 0, y: 0))
+        let underarm = cubic(
+            from: CGPoint(x: 0, y: 0),
+            to: CGPoint(x: 0, y: 100),
+            out: CGPoint(x: 80, y: 0),
+            inn: CGPoint(x: 80, y: 0)
+        )
+
+        let joined = PathJoinEngine.join(
+            [top, overlappingTop, right, bottom, underarm],
+            tolerance: joinTolerance
+        )
+        let rendered = (joined ?? []).flatMap { ShapeGeometry.renderPoints(for: $0) }
+        #expect(rendered.contains { hypot($0.x - 60, $0.y - 50) < 12 })
+    }
+
     /// Parallel lines a short distance apart are not the same edge.
     @Test func nearbyParallelLinesDoNotJoin() {
         let top = VectorStroke(
@@ -347,6 +597,57 @@ struct PathJoinEngineTests {
             shapeType: .polyline
         )
         #expect(!PathJoinEngine.canJoin([top, bottom], tolerance: joinTolerance))
+    }
+
+    private func distanceFromChord(_ point: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        let length = hypot(dx, dy)
+        guard length > 0.001 else { return hypot(point.x - a.x, point.y - a.y) }
+        let area = abs((point.x - a.x) * dy - (point.y - a.y) * dx)
+        return area / length
+    }
+
+    private func expectHook(
+        _ joined: [VectorStroke],
+        named name: String,
+        tip: CGPoint,
+        bulge: CGPoint
+    ) {
+        let rendered = joined.flatMap { ShapeGeometry.renderPoints(for: $0) }
+        let summary = joined.map { stroke in
+            "\(stroke.shapeType) n=\(stroke.points.count) closed=\(stroke.isClosed) handles=\(stroke.curveHandles?.count ?? -1)"
+        }.joined(separator: "; ")
+        #expect(
+            rendered.contains { hypot($0.x - tip.x, $0.y - tip.y) < 8 },
+            "\(name) lost notch \(tip); \(summary)"
+        )
+        #expect(
+            rendered.contains { hypot($0.x - bulge.x, $0.y - bulge.y) < 14 },
+            "\(name) lost bulge \(bulge); \(summary)"
+        )
+    }
+
+    private func line(_ start: CGPoint, _ end: CGPoint) -> VectorStroke {
+        VectorStroke(
+            layerID: layerID,
+            points: [start, end],
+            isClosed: false,
+            shapeType: .polyline
+        )
+    }
+
+    private func cubic(from start: CGPoint, to end: CGPoint, out: CGPoint, inn: CGPoint) -> VectorStroke {
+        VectorStroke(
+            layerID: layerID,
+            points: [start, end],
+            isClosed: false,
+            shapeType: .curve,
+            curveHandles: [
+                CurveHandle(inOffset: .zero, outOffset: out),
+                CurveHandle(inOffset: inn, outOffset: .zero)
+            ]
+        )
     }
 
     private func openBulge(
