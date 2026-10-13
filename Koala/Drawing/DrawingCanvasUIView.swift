@@ -90,6 +90,9 @@ final class DrawingCanvasUIView: UIView {
     private var commandPointLayers: [CAShapeLayer] = []
     private var dragDrawStart: CGPoint?
     private var dragDrawCurrent: CGPoint?
+    /// True after a `.changed` sample, so a lift can be compared to the preview.
+    /// A stroke that jumps from `.began` to `.ended` leaves this false.
+    private var dragDrawHasMoved = false
     private var curveDragStart: CGPoint?
     private var curveDragCurrent: CGPoint?
     private var curvePreviewLayer: CAShapeLayer?
@@ -694,6 +697,8 @@ final class DrawingCanvasUIView: UIView {
 
         let viewPoint = drawingViewPoint(from: gesture)
         let rawPoint = document.viewport.viewToDocument(viewPoint)
+        // Do not pin the free end to the start's axis. A nearly vertical stroke
+        // would lock upright and the pencil could not place it in the gap.
         let documentPoint = snappedDragPoint(rawPoint)
 
         switch gesture.state {
@@ -702,17 +707,25 @@ final class DrawingCanvasUIView: UIView {
             let startPoint = dragStartPoint(for: documentPoint)
             dragDrawStart = startPoint
             dragDrawCurrent = startPoint
+            dragDrawHasMoved = false
             updateDragPreviewLayer()
             onDragDrawBegan?(startPoint)
         case .changed:
             guard let start = dragDrawStart else { return }
+            dragDrawHasMoved = true
             dragDrawCurrent = documentPoint
             updateDragPreviewLayer()
             onDragDrawChanged?(start, documentPoint)
         case .ended, .cancelled:
             finishSnapInteraction()
+            let lastPreview = dragDrawHasMoved ? dragDrawCurrent : nil
+            dragDrawHasMoved = false
             guard let start = dragDrawStart else { return }
-            let end = documentPoint
+            let end = pencilLiftEndPoint(
+                proposed: documentPoint,
+                lastPreview: lastPreview,
+                scale: document.viewport.scale
+            )
             if hypot(end.x - start.x, end.y - start.y) <= 0.001 {
                 onDragDrawEnded?(start, end)
                 dragDrawStart = nil

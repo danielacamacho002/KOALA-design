@@ -146,6 +146,25 @@ func snapDrawingEndpoint(
     return gridSnapped
 }
 
+/// Apple Pencil's lift sample can leap off the stroke the preview was showing.
+/// Keep `lastPreview` when the proposed end is farther than `thresholdPoints`
+/// of screen space. A nil preview (the stroke never moved) keeps `proposed`,
+/// so a short tap-drag that only reports `.ended` still lands on the lift.
+func pencilLiftEndPoint(
+    proposed: CGPoint,
+    lastPreview: CGPoint?,
+    scale: CGFloat,
+    thresholdPoints: CGFloat = 8
+) -> CGPoint {
+    guard let lastPreview else { return proposed }
+    let limit = thresholdPoints / max(scale, 0.0001)
+    let jump = hypot(proposed.x - lastPreview.x, proposed.y - lastPreview.y)
+    if jump > limit {
+        return lastPreview
+    }
+    return proposed
+}
+
 func distanceFromPointToRay(_ point: CGPoint, origin: CGPoint, through: CGPoint) -> CGFloat {
     let dir = CGPoint(x: through.x - origin.x, y: through.y - origin.y)
     let length = hypot(dir.x, dir.y)

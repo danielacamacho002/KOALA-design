@@ -1663,12 +1663,11 @@ struct EditorView: View {
     }
 
     private func commitDragDraw(start: CGPoint, end: CGPoint) {
-        // The start was already resolved during the gesture. Re-running object snap
-        // can pull it onto a nearby corner and turn a straight preview into a diagonal.
+        // The start was already resolved during the gesture. The end is the
+        // preview point the canvas already snapped. Re-snapping it on lift can
+        // turn a straight preview into a diagonal or shift it onto a nearby line.
         let snappedStart = start
-        // Re-snap the end with the start as the axis reference so a live lock
-        // is preserved on release; without it the free end can be grid-snapped off-axis.
-        let snappedEnd = snapDrawingInput(end, referenceStart: snappedStart)
+        let snappedEnd = end
         guard hypot(snappedEnd.x - snappedStart.x, snappedEnd.y - snappedStart.y) > 0.001 else {
             startDrawingSessionIfNeeded()
             return
