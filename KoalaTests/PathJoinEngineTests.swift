@@ -124,6 +124,157 @@ struct PathJoinEngineTests {
         #expect(stroke.points.count == 3)
     }
 
+    /// A Bézier welded to a straight run and a closed shape must keep its bulge.
+    /// Mixing in a rectangle leaves the outline-chain path, and compaction used to
+    /// drop the cubic handles so the lobe fell back to a chord.
+    @Test func joiningBezierWithLineAndRectangleKeepsTheBulge() {
+        let curve = openBulge()
+        let line = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 50, y: 0), CGPoint(x: 100, y: 0)],
+            isClosed: false,
+            shapeType: .polyline
+        )
+        let rectangle = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 100, y: 0),
+                CGPoint(x: 160, y: 0),
+                CGPoint(x: 160, y: 40),
+                CGPoint(x: 100, y: 40)
+            ],
+            isClosed: true,
+            shapeType: .rectangle
+        )
+
+        let joined = PathJoinEngine.join([curve, line, rectangle], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        let rendered = ShapeGeometry.renderPoints(for: stroke)
+        #expect(rendered.contains { hypot($0.x - 25, $0.y - 75) < 8 })
+        #expect(rendered.contains { hypot($0.x - 160, $0.y - 40) < 1 })
+    }
+
+    /// A quarter-circle cubic used to be demoted to a smooth midpoint, which then
+    /// drew as an arc. Joining that arc to another line flattened the sweep.
+    @Test func joiningNearCircularCubicToLinesKeepsTheCubic() {
+        let radius: CGFloat = 100
+        let kappa = radius * 4 / 3 * tan(.pi / 8)
+        let curve = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: radius, y: 0), CGPoint(x: 0, y: radius)],
+            isClosed: false,
+            shapeType: .curve,
+            curveHandles: [
+                CurveHandle(inOffset: .zero, outOffset: CGPoint(x: 0, y: kappa)),
+                CurveHandle(inOffset: CGPoint(x: kappa, y: 0), outOffset: .zero)
+            ]
+        )
+        let line = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 0, y: radius), CGPoint(x: 0, y: 170)],
+            isClosed: false,
+            shapeType: .polyline
+        )
+
+        let joined = PathJoinEngine.join([curve, line], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        #expect(stroke.shapeType == .curve)
+        #expect(stroke.curveHandles?.count == stroke.points.count)
+        #expect(rendersQuarterCirclePeak(stroke))
+
+        let tail = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 0, y: 170), CGPoint(x: 40, y: 170)],
+            isClosed: false,
+            shapeType: .polyline
+        )
+        let extended = PathJoinEngine.join([stroke, tail], tolerance: joinTolerance)
+        #expect(extended?.count == 1)
+        guard let again = extended?.first else { return }
+        #expect(again.shapeType == .curve)
+        #expect(again.curveHandles?.count == again.points.count)
+        #expect(rendersQuarterCirclePeak(again))
+        let rendered = ShapeGeometry.renderPoints(for: again)
+        #expect(rendered.contains { hypot($0.x - 40, $0.y - 170) < 1 })
+    }
+
+    /// Demotion stores a quarter-circle cubic as a polyline with one smooth midpoint.
+    /// Joining that to a straight line must keep the sweep, not the chord.
+    @Test func joiningDemotedCircularPolylineToALineKeepsTheSweep() {
+        let radius: CGFloat = 100
+        let kappa = radius * 4 / 3 * tan(.pi / 8)
+        let start = CGPoint(x: radius, y: 0)
+        let end = CGPoint(x: 0, y: radius)
+        let mid = ShapeGeometry.cubicBezierPoint(
+            start,
+            CGPoint(x: start.x, y: kappa),
+            CGPoint(x: kappa, y: end.y),
+            end,
+            t: 0.5
+        )
+        let demoted = VectorStroke(
+            layerID: layerID,
+            points: [start, mid, end],
+            isClosed: false,
+            smoothCornerIndices: [1]
+        )
+        let line = VectorStroke(
+            layerID: layerID,
+            points: [end, CGPoint(x: 0, y: 170)],
+            isClosed: false,
+            shapeType: .polyline
+        )
+
+        let joined = PathJoinEngine.join([demoted, line], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        #expect(stroke.shapeType == .polyline)
+        #expect(stroke.smoothCornerIndices?.contains(1) == true)
+        #expect(rendersQuarterCirclePeak(stroke))
+        let rendered = ShapeGeometry.renderPoints(for: stroke)
+        #expect(rendered.contains { hypot($0.x, $0.y - 170) < 1 })
+    }
+
+    /// A native arc welded to a straight run keeps its radius instead of falling to the chord.
+    @Test func joiningArcToALineKeepsTheSweep() {
+        let quarter = arc(startDegrees: 0, sweepDegrees: 90)
+        let line = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 0, y: 100), CGPoint(x: 0, y: 170)],
+            isClosed: false,
+            shapeType: .polyline
+        )
+
+        let joined = PathJoinEngine.join([quarter, line], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        #expect(rendersQuarterCirclePeak(stroke))
+        let rendered = ShapeGeometry.renderPoints(for: stroke)
+        #expect(rendered.contains { hypot($0.x, $0.y - 170) < 1 })
+        #expect(stroke.shapeType != .curve || (stroke.curveHandles?.count == stroke.points.count))
+    }
+
+    /// Touching a circle at a cardinal is a real weld. The cubic must survive
+    /// beside the circle instead of being flattened when the rim is compacted.
+    @Test func joiningBezierWithCircleKeepsTheBulge() {
+        let curve = openBulge(from: CGPoint(x: 0, y: 0), to: CGPoint(x: 50, y: 0))
+        let circle = VectorStroke(
+            layerID: layerID,
+            points: ShapeGeometry.circleCardinalPoints(center: CGPoint(x: 150, y: 0), radius: 100),
+            isClosed: true,
+            shapeType: .circle
+        )
+
+        let joined = PathJoinEngine.join([curve, circle], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        let rendered = ShapeGeometry.renderPoints(for: stroke)
+        #expect(rendered.contains { hypot($0.x - 25, $0.y - 75) < 8 })
+        #expect((rendered.map(\.x).max() ?? 0) > 240)
+    }
+
     /// Two quarter-circles that meet at a cardinal still join into a semicircle.
     @Test func joiningOpenArcsKeepsTheSweep() {
         let first = arc(startDegrees: 0, sweepDegrees: 90)
@@ -136,6 +287,82 @@ struct PathJoinEngineTests {
         #expect((after.map(\.y).max() ?? 0) > 90)
         #expect((after.map(\.x).min() ?? 0) < -90)
         #expect(!stroke.isClosed)
+    }
+
+    /// The 45° point of a radius-100 quarter circle. A collapsed chord sits near (50, 50).
+    private func rendersQuarterCirclePeak(_ stroke: VectorStroke) -> Bool {
+        let peak = CGPoint(x: 100 * cos(CGFloat.pi / 4), y: 100 * sin(CGFloat.pi / 4))
+        return ShapeGeometry.renderPoints(for: stroke).contains { hypot($0.x - peak.x, $0.y - peak.y) < 8 }
+    }
+
+    /// Mirrored open halves whose boundary lines sit on the same line, shifted so
+    /// no endpoints meet. Join has to see that stacked run and close the outline.
+    @Test func joiningStackedOverlapClosesTheOutline() {
+        let left = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: -100, y: 0),
+                CGPoint(x: -100, y: 100),
+                CGPoint(x: 0, y: 100)
+            ],
+            isClosed: false,
+            shapeType: .polyline
+        )
+        let right = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: -20, y: 0),
+                CGPoint(x: 80, y: 0),
+                CGPoint(x: 80, y: 100),
+                CGPoint(x: -20, y: 100)
+            ],
+            isClosed: false,
+            shapeType: .polyline
+        )
+
+        #expect(PathJoinEngine.canJoin([left, right], tolerance: joinTolerance))
+        let joined = PathJoinEngine.join([left, right], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        #expect(stroke.isClosed)
+        #expect(stroke.points.contains { hypot($0.x + 100, $0.y) < 1 })
+        #expect(stroke.points.contains { hypot($0.x + 100, $0.y - 100) < 1 })
+        #expect(stroke.points.contains { hypot($0.x - 80, $0.y - 100) < 1 })
+        #expect(stroke.points.contains { hypot($0.x - 80, $0.y) < 1 })
+    }
+
+    /// Parallel lines a short distance apart are not the same edge.
+    @Test func nearbyParallelLinesDoNotJoin() {
+        let top = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 0, y: 0), CGPoint(x: 100, y: 0)],
+            isClosed: false,
+            shapeType: .polyline
+        )
+        let bottom = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 0, y: 20), CGPoint(x: 100, y: 20)],
+            isClosed: false,
+            shapeType: .polyline
+        )
+        #expect(!PathJoinEngine.canJoin([top, bottom], tolerance: joinTolerance))
+    }
+
+    private func openBulge(
+        from start: CGPoint = CGPoint(x: 0, y: 0),
+        to end: CGPoint = CGPoint(x: 50, y: 0)
+    ) -> VectorStroke {
+        VectorStroke(
+            layerID: layerID,
+            points: [start, end],
+            isClosed: false,
+            shapeType: .curve,
+            curveHandles: [
+                CurveHandle(inOffset: .zero, outOffset: CGPoint(x: 0, y: 100)),
+                CurveHandle(inOffset: CGPoint(x: 0, y: 100), outOffset: .zero)
+            ]
+        )
     }
 
     private func arc(startDegrees: CGFloat, sweepDegrees: CGFloat) -> VectorStroke {

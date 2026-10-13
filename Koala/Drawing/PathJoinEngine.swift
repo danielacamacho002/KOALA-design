@@ -13,7 +13,7 @@ import Foundation
 /// one shared coordinate and fuses the connected strokes into a single path
 /// whenever topology allows. Open and closed shapes are both eligible — Join is
 /// available whenever any two anchors from different selected strokes sit within
-/// tolerance of each other.
+/// tolerance of each other, or two open lines lie perfectly on top of each other.
 ///
 /// Fidelity: closed shapes fuse using their *true rendered contour* (dense
 /// samples from `ShapeGeometry.renderPoints`) rather than a handful of anchor
@@ -33,6 +33,12 @@ enum PathJoinEngine {
         /// Inner holes (even-odd) carried through the join so complex shapes keep
         /// their cutouts.
         var cutouts: [[CGPoint]] = []
+        /// Contour indices that may weld. Set for dense circles, ellipses, and arcs
+        /// so a curve can meet a cardinal without every rim sample becoming an anchor.
+        var structural: [Int]? = nil
+        /// Midpoints of a demoted circular cubic. Rendering expands these back into
+        /// the sweep; dropping them on join flattens that arc to a chord.
+        var smoothCornerIndices: Set<Int>? = nil
     }
 
     // MARK: - Public API
@@ -63,7 +69,10 @@ enum PathJoinEngine {
         let usable = strokes.filter { ShapeGeometry.handlePoints(for: $0).count >= 2 }
         guard usable.count >= 2 else { return false }
         if usable.allSatisfy(isOutlineChainable) {
-            return canChainOpenContours(usable, tolerance: tolerance)
+            if canChainOpenContours(usable, tolerance: tolerance) { return true }
+            // Mirrored halves often overlap so a boundary lies on itself instead
+            // of meeting at the endpoints. That stacked run is still one outline.
+            return hasStackedLineOverlap(usable, tolerance: tolerance)
         }
         if hasTouchingAnchors(usable, tolerance: tolerance) { return true }
 
@@ -90,6 +99,9 @@ enum PathJoinEngine {
         // endpoints. Boolean-union / centroid-weld of those pieces collapses
         // stars and hearts into a blob.
         if usable.allSatisfy(isOutlineChainable) {
+            if let fused = fuseStackedOpenLines(usable, tolerance: tolerance, base: base) {
+                return fused
+            }
             return joinOpenContours(usable, tolerance: tolerance, base: base)
         }
 
@@ -139,6 +151,17 @@ enum PathJoinEngine {
         // Circles / ellipses / rectangles / polylines: use the dense rendered
         // outline as the anchor list so fusion follows the real curve.
         let points = contour
+        var structural: [Int]? = nil
+        switch stroke.shapeType {
+        case .circle, .ellipse, .arc:
+            let indices = weldIndices(
+                matching: ShapeGeometry.handlePoints(for: stroke),
+                in: points
+            )
+            if !indices.isEmpty { structural = indices }
+        default:
+            break
+        }
         return Path(
             points: points,
             handles: Array(repeating: CurveHandle(), count: points.count),
@@ -146,8 +169,32 @@ enum PathJoinEngine {
                 || stroke.shapeType == .circle || stroke.shapeType == .ellipse,
             isCurve: false,
             contour: contour,
-            cutouts: cutouts
+            cutouts: cutouts,
+            structural: structural
         )
+    }
+
+    /// Nearest contour sample for each defining anchor. Dense rims are not all
+    /// weldable — only these anchors — so a lobe is not chained into the junction.
+    private static func weldIndices(matching anchors: [CGPoint], in contour: [CGPoint]) -> [Int] {
+        var used = Set<Int>()
+        var indices: [Int] = []
+        for anchor in anchors {
+            var best: Int?
+            var bestDistance = CGFloat.greatestFiniteMagnitude
+            for index in contour.indices where !used.contains(index) {
+                let gap = distance(contour[index], anchor)
+                if gap < bestDistance {
+                    bestDistance = gap
+                    best = index
+                }
+            }
+            if let best, bestDistance <= 4 {
+                used.insert(best)
+                indices.append(best)
+            }
+        }
+        return indices
     }
 
     private static func stroke(
@@ -167,11 +214,13 @@ enum PathJoinEngine {
         result.cutoutPoints = path.cutouts
         result.cornerRadius = 0
         result.cornerRadiiByIndex = nil
-        result.smoothCornerIndices = nil
+        result.smoothCornerIndices = path.isCurve ? nil : path.smoothCornerIndices
         result.isConstruction = false
+        let keepCubics = ShapeGeometry.hasUserCubicHandles(result)
         return ShapeGeometry.withCompactedCircularAnchors(
             result,
-            rewritingPartialRuns: rewritingPartialRuns
+            rewritingPartialRuns: rewritingPartialRuns,
+            preservingBezierHandles: keepCubics
         )
     }
 
@@ -220,15 +269,27 @@ enum PathJoinEngine {
             var previousStroke = -1
             for step in ordered {
                 var segment = joinablePath(for: strokes[step.stroke])
-                if !step.forward { segment = reverse(segment) }
                 if let current = merged {
                     let joint = joinGapLimit(
                         lengthA: previousStroke >= 0 ? lengths[previousStroke] : lengths[step.stroke],
                         lengthB: lengths[step.stroke],
                         tolerance: tolerance
                     )
-                    merged = append(current, segment, tolerance: joint)
+                    // A closed curve or polygon keeps every edge, including the one
+                    // that wraps from the last anchor to the first. Concatenating it
+                    // as an open chain drops that cubic and the lobe collapses.
+                    if segment.isClosed || current.isClosed {
+                        if !segment.isClosed, !step.forward { segment = reverse(segment) }
+                        let anchor = segment.isClosed
+                            ? (step.forward ? segment.points[0] : segment.points[segment.points.count - 1])
+                            : segment.points[0]
+                        merged = splice(current, segment, at: anchor, tolerance: joint)
+                    } else {
+                        if !step.forward { segment = reverse(segment) }
+                        merged = append(current, segment, tolerance: joint)
+                    }
                 } else {
+                    if !segment.isClosed, !step.forward { segment = reverse(segment) }
                     merged = segment
                 }
                 previousStroke = step.stroke
@@ -272,6 +333,449 @@ enum PathJoinEngine {
 
     private static func canChainOpenContours(_ strokes: [VectorStroke], tolerance: CGFloat) -> Bool {
         outlineEndpointPairing(strokes, tolerance: tolerance).pairOf.contains { $0 >= 0 }
+    }
+
+    // MARK: - Stacked open lines
+
+    /// Perpendicular budget for “these edges are the same line”. Join’s anchor
+    /// tolerance is often half a grid cell, which would fuse nearby parallels.
+    private static func stackedLineSlop(_ tolerance: CGFloat) -> CGFloat {
+        min(max(tolerance, 0), 1.5)
+    }
+
+    /// True when two open polylines or curves have a straight run lying on the
+    /// same line for a real span. A shared endpoint, a crossing, or a parallel
+    /// line a grid cell away does not count.
+    private static func hasStackedLineOverlap(_ strokes: [VectorStroke], tolerance: CGFloat) -> Bool {
+        !stackedOverlaps(in: strokes, slop: stackedLineSlop(tolerance)).isEmpty
+    }
+
+    /// Drops a doubled interior seam and keeps a single copy of a doubled
+    /// boundary, then traces what’s left. A mirrored pair whose edges sit on
+    /// each other becomes one outline, closed when that outline loops.
+    private static func fuseStackedOpenLines(
+        _ strokes: [VectorStroke],
+        tolerance: CGFloat,
+        base: VectorStroke
+    ) -> [VectorStroke]? {
+        guard strokes.allSatisfy({ !$0.isClosed }) else { return nil }
+        let slop = stackedLineSlop(tolerance)
+        let overlaps = stackedOverlaps(in: strokes, slop: slop)
+        guard !overlaps.isEmpty else { return nil }
+
+        var involved = Set<Int>()
+        for overlap in overlaps {
+            involved.insert(overlap.ownerA)
+            involved.insert(overlap.ownerB)
+        }
+
+        var atoms = strokes.enumerated().flatMap { index, stroke -> [LineAtom] in
+            guard involved.contains(index) else { return [] }
+            return lineAtoms(of: stroke, owner: index, slop: slop)
+        }
+        var cutsByAtom = Array(repeating: [CGPoint](), count: atoms.count)
+        for overlap in overlaps {
+            guard let atomA = atoms.firstIndex(where: { $0.owner == overlap.ownerA && $0.edge == overlap.edgeA }),
+                  let atomB = atoms.firstIndex(where: { $0.owner == overlap.ownerB && $0.edge == overlap.edgeB })
+            else { continue }
+            cutsByAtom[atomA].append(contentsOf: [overlap.start, overlap.end])
+            cutsByAtom[atomB].append(contentsOf: [overlap.start, overlap.end])
+        }
+
+        var split: [LineAtom] = []
+        for (atom, cuts) in zip(atoms, cutsByAtom) {
+            split.append(contentsOf: splitAtom(atom, cuts: cuts, slop: slop))
+        }
+        let kept = droppingStackedDuplicates(split, slop: slop)
+        let welded = weldingEndpoints(kept, slop: slop)
+        let chains = traceAtoms(welded)
+
+        var closed: [VectorStroke] = []
+        var open: [VectorStroke] = []
+        for chain in chains {
+            let stroke = stroke(from: chain, base: base)
+            if stroke.isClosed {
+                closed.append(stroke)
+            } else {
+                open.append(stroke)
+            }
+        }
+        let untouched = strokes.enumerated().compactMap { index, stroke -> VectorStroke? in
+            involved.contains(index) ? nil : stroke
+        }
+        open.append(contentsOf: untouched)
+        if open.count >= 2, let chained = joinOpenContours(open, tolerance: tolerance, base: base) {
+            return closed + chained
+        }
+        let combined = closed + open
+        return combined.isEmpty ? nil : combined
+    }
+
+    private struct StackedOverlap {
+        var ownerA: Int
+        var edgeA: Int
+        var ownerB: Int
+        var edgeB: Int
+        var start: CGPoint
+        var end: CGPoint
+    }
+
+    private struct LineAtom {
+        var from: CGPoint
+        var to: CGPoint
+        var outOffset: CGPoint
+        var inOffset: CGPoint
+        var curved: Bool
+        var owner: Int
+        var edge: Int
+        /// Which side of this directed edge the rest of the stroke leaves toward.
+        /// `0` when the edge is the whole stroke.
+        var side: CGFloat
+    }
+
+    private static func stackedOverlaps(in strokes: [VectorStroke], slop: CGFloat) -> [StackedOverlap] {
+        struct StraightEdge {
+            var owner: Int
+            var edge: Int
+            var a: CGPoint
+            var b: CGPoint
+        }
+        var edges: [StraightEdge] = []
+        for (owner, stroke) in strokes.enumerated() where !stroke.isClosed {
+            guard stroke.shapeType == .polyline || stroke.shapeType == .curve else { continue }
+            let handles = curveHandles(of: stroke)
+            let count = stroke.points.count
+            guard count >= 2 else { continue }
+            for edge in 0..<(count - 1) {
+                if let handles, !isStraightSpan(handles, edge: edge, slop: slop) { continue }
+                edges.append(StraightEdge(
+                    owner: owner,
+                    edge: edge,
+                    a: stroke.points[edge],
+                    b: stroke.points[edge + 1]
+                ))
+            }
+        }
+
+        var found: [StackedOverlap] = []
+        for i in edges.indices {
+            for j in (i + 1)..<edges.count {
+                guard edges[i].owner != edges[j].owner else { continue }
+                guard let span = collinearOverlap(edges[i].a, edges[i].b, edges[j].a, edges[j].b, slop: slop)
+                else { continue }
+                found.append(StackedOverlap(
+                    ownerA: edges[i].owner,
+                    edgeA: edges[i].edge,
+                    ownerB: edges[j].owner,
+                    edgeB: edges[j].edge,
+                    start: span.start,
+                    end: span.end
+                ))
+            }
+        }
+        return found
+    }
+
+    /// Overlap of two straight segments that lie on one line, longer than `slop`.
+    private static func collinearOverlap(
+        _ a0: CGPoint, _ a1: CGPoint,
+        _ b0: CGPoint, _ b1: CGPoint,
+        slop: CGFloat
+    ) -> (start: CGPoint, end: CGPoint)? {
+        let axis = CGPoint(x: a1.x - a0.x, y: a1.y - a0.y)
+        let length = hypot(axis.x, axis.y)
+        guard length > slop else { return nil }
+        let dir = CGPoint(x: axis.x / length, y: axis.y / length)
+        func perp(_ p: CGPoint) -> CGFloat {
+            let dx = p.x - a0.x
+            let dy = p.y - a0.y
+            return abs(dx * dir.y - dy * dir.x)
+        }
+        guard perp(b0) <= slop, perp(b1) <= slop else { return nil }
+        func proj(_ p: CGPoint) -> CGFloat {
+            (p.x - a0.x) * dir.x + (p.y - a0.y) * dir.y
+        }
+        let start = max(0, min(proj(b0), proj(b1)))
+        let end = min(length, max(proj(b0), proj(b1)))
+        guard end - start > slop else { return nil }
+        return (
+            CGPoint(x: a0.x + dir.x * start, y: a0.y + dir.y * start),
+            CGPoint(x: a0.x + dir.x * end, y: a0.y + dir.y * end)
+        )
+    }
+
+    private static func curveHandles(of stroke: VectorStroke) -> [CurveHandle]? {
+        guard stroke.shapeType == .curve,
+              let handles = stroke.curveHandles,
+              handles.count == stroke.points.count else { return nil }
+        return handles
+    }
+
+    private static func isStraightSpan(_ handles: [CurveHandle], edge: Int, slop: CGFloat) -> Bool {
+        guard handles.indices.contains(edge), handles.indices.contains(edge + 1) else { return false }
+        return hypot(handles[edge].outOffset.x, handles[edge].outOffset.y) <= slop
+            && hypot(handles[edge + 1].inOffset.x, handles[edge + 1].inOffset.y) <= slop
+    }
+
+    private static func lineAtoms(of stroke: VectorStroke, owner: Int, slop: CGFloat) -> [LineAtom] {
+        let points = stroke.points
+        guard points.count >= 2 else { return [] }
+        let handles = curveHandles(of: stroke)
+        var atoms: [LineAtom] = []
+        for edge in 0..<(points.count - 1) {
+            let outOffset = handles?[edge].outOffset ?? .zero
+            let inOffset = handles?[edge + 1].inOffset ?? .zero
+            let curved = handles != nil && !isStraightSpan(handles!, edge: edge, slop: slop)
+            atoms.append(LineAtom(
+                from: points[edge],
+                to: points[edge + 1],
+                outOffset: curved ? outOffset : .zero,
+                inOffset: curved ? inOffset : .zero,
+                curved: curved,
+                owner: owner,
+                edge: edge,
+                side: departureSide(points, edge: edge, slop: slop)
+            ))
+        }
+        return atoms
+    }
+
+    /// +1 when the stroke leaves this directed edge to its left, −1 to its right.
+    private static func departureSide(_ points: [CGPoint], edge: Int, slop: CGFloat) -> CGFloat {
+        guard points.indices.contains(edge + 1) else { return 0 }
+        let a = points[edge]
+        let b = points[edge + 1]
+        let edgeX = b.x - a.x
+        let edgeY = b.y - a.y
+        let length = hypot(edgeX, edgeY)
+        guard length > slop else { return 0 }
+        if points.indices.contains(edge + 2) {
+            let nextX = points[edge + 2].x - b.x
+            let nextY = points[edge + 2].y - b.y
+            let cross = edgeX * nextY - edgeY * nextX
+            if abs(cross) > slop * length { return cross > 0 ? 1 : -1 }
+        }
+        if edge > 0 {
+            let prevX = points[edge - 1].x - a.x
+            let prevY = points[edge - 1].y - a.y
+            let cross = edgeX * prevY - edgeY * prevX
+            if abs(cross) > slop * length { return cross > 0 ? 1 : -1 }
+        }
+        return 0
+    }
+
+    private static func splitAtom(_ atom: LineAtom, cuts: [CGPoint], slop: CGFloat) -> [LineAtom] {
+        guard !atom.curved, !cuts.isEmpty else { return [atom] }
+        let axis = CGPoint(x: atom.to.x - atom.from.x, y: atom.to.y - atom.from.y)
+        let lengthSquared = axis.x * axis.x + axis.y * axis.y
+        guard lengthSquared > slop * slop else { return [atom] }
+        func parameter(_ p: CGPoint) -> CGFloat {
+            ((p.x - atom.from.x) * axis.x + (p.y - atom.from.y) * axis.y) / lengthSquared
+        }
+        var points = [atom.from, atom.to]
+        for cut in cuts {
+            let t = parameter(cut)
+            guard t > 0.002, t < 0.998 else { continue }
+            let projected = CGPoint(x: atom.from.x + t * axis.x, y: atom.from.y + t * axis.y)
+            guard distance(projected, cut) <= slop else { continue }
+            if points.contains(where: { distance($0, projected) <= slop }) { continue }
+            points.append(projected)
+        }
+        points.sort { parameter($0) < parameter($1) }
+        var pieces: [LineAtom] = []
+        for index in 0..<(points.count - 1) where distance(points[index], points[index + 1]) > 0.05 {
+            pieces.append(LineAtom(
+                from: points[index],
+                to: points[index + 1],
+                outOffset: .zero,
+                inOffset: .zero,
+                curved: false,
+                owner: atom.owner,
+                edge: atom.edge,
+                side: atom.side
+            ))
+        }
+        return pieces.isEmpty ? [atom] : pieces
+    }
+
+    /// An interior seam (the two strokes leave toward opposite sides) is removed.
+    /// A doubled boundary (both strokes leave toward the same side) keeps one copy.
+    private static func droppingStackedDuplicates(_ atoms: [LineAtom], slop: CGFloat) -> [LineAtom] {
+        var parent = Array(atoms.indices)
+        func find(_ index: Int) -> Int {
+            var root = index
+            while parent[root] != root { root = parent[root] }
+            var node = index
+            while parent[node] != root {
+                let next = parent[node]
+                parent[node] = root
+                node = next
+            }
+            return root
+        }
+        func sameSegment(_ a: LineAtom, _ b: LineAtom) -> Bool {
+            let forward = distance(a.from, b.from) <= slop && distance(a.to, b.to) <= slop
+            let backward = distance(a.from, b.to) <= slop && distance(a.to, b.from) <= slop
+            return forward || backward
+        }
+        for i in atoms.indices where !atoms[i].curved {
+            for j in (i + 1)..<atoms.count where !atoms[j].curved && atoms[i].owner != atoms[j].owner {
+                if sameSegment(atoms[i], atoms[j]) {
+                    parent[find(j)] = find(i)
+                }
+            }
+        }
+        var groups: [Int: [Int]] = [:]
+        for index in atoms.indices where !atoms[index].curved {
+            groups[find(index), default: []].append(index)
+        }
+        var drop = Set<Int>()
+        for members in groups.values where members.count >= 2 {
+            let first = atoms[members[0]]
+            let second = atoms[members[1]]
+            let aligned = (first.to.x - first.from.x) * (second.to.x - second.from.x)
+                + (first.to.y - first.from.y) * (second.to.y - second.from.y) >= 0
+            let secondSide = aligned ? second.side : -second.side
+            let opposite = first.side * secondSide < 0
+                && abs(first.side) > 0.5
+                && abs(secondSide) > 0.5
+            if opposite {
+                drop.formUnion(members)
+            } else {
+                drop.formUnion(members.dropFirst())
+            }
+        }
+        return atoms.enumerated().compactMap { index, atom in
+            drop.contains(index) ? nil : atom
+        }
+    }
+
+    private static func weldingEndpoints(_ atoms: [LineAtom], slop: CGFloat) -> [LineAtom] {
+        var canon: [CGPoint] = []
+        func snap(_ point: CGPoint) -> CGPoint {
+            if let existing = canon.first(where: { distance($0, point) <= slop }) {
+                return existing
+            }
+            canon.append(point)
+            return point
+        }
+        return atoms.map { atom in
+            var atom = atom
+            atom.from = snap(atom.from)
+            atom.to = snap(atom.to)
+            return atom
+        }.filter { distance($0.from, $0.to) > 0.05 }
+    }
+
+    private static func traceAtoms(_ atoms: [LineAtom]) -> [Path] {
+        guard !atoms.isEmpty else { return [] }
+        func key(_ point: CGPoint) -> String {
+            let scale: CGFloat = 1000
+            let x = (point.x * scale).rounded() / scale
+            let y = (point.y * scale).rounded() / scale
+            return "\(x)|\(y)"
+        }
+        struct Outgoing {
+            var atom: Int
+            var forward: Bool
+        }
+        var at: [String: [Outgoing]] = [:]
+        for (index, atom) in atoms.enumerated() {
+            at[key(atom.from), default: []].append(Outgoing(atom: index, forward: true))
+            at[key(atom.to), default: []].append(Outgoing(atom: index, forward: false))
+        }
+        var used = Array(repeating: false, count: atoms.count)
+
+        func unused(from pointKey: String, except atom: Int) -> [Outgoing] {
+            (at[pointKey] ?? []).filter { !used[$0.atom] && $0.atom != atom }
+        }
+
+        func walk(start: Outgoing) -> Path? {
+            var points: [CGPoint] = []
+            var handles: [CurveHandle] = []
+            var curved = false
+            var current = start
+            var guardCount = 0
+            let origin = start.forward ? atoms[start.atom].from : atoms[start.atom].to
+            let startKey = key(origin)
+            while guardCount <= atoms.count {
+                guardCount += 1
+                let atom = atoms[current.atom]
+                used[current.atom] = true
+                curved = curved || atom.curved
+                let from = current.forward ? atom.from : atom.to
+                let to = current.forward ? atom.to : atom.from
+                let outOffset = current.forward ? atom.outOffset : atom.inOffset
+                let inOffset = current.forward ? atom.inOffset : atom.outOffset
+                if points.isEmpty {
+                    points.append(from)
+                    handles.append(CurveHandle(inOffset: .zero, outOffset: outOffset))
+                } else {
+                    handles[handles.count - 1].outOffset = outOffset
+                }
+                let options = unused(from: key(to), except: current.atom)
+                let arrivedHome = key(to) == startKey && points.count >= 2
+                if options.isEmpty {
+                    if arrivedHome, points.count >= 3 {
+                        handles[0].inOffset = inOffset
+                        let curve = curved && handles.contains { handle in
+                            handle.inOffset != .zero || handle.outOffset != .zero
+                        }
+                        return Path(
+                            points: points,
+                            handles: handles,
+                            isClosed: true,
+                            isCurve: curve,
+                            contour: points
+                        )
+                    }
+                    points.append(to)
+                    handles.append(CurveHandle(inOffset: inOffset, outOffset: .zero))
+                    break
+                }
+                points.append(to)
+                handles.append(CurveHandle(inOffset: inOffset, outOffset: .zero))
+                let incoming = CGPoint(x: to.x - from.x, y: to.y - from.y)
+                let next = options.min { lhs, rhs in
+                    signedTurn(incoming, destinationVector(lhs)) < signedTurn(incoming, destinationVector(rhs))
+                } ?? options[0]
+                current = next
+            }
+            guard points.count >= 2, handles.count == points.count else { return nil }
+            let curve = curved && handles.contains { $0.inOffset != .zero || $0.outOffset != .zero }
+            return Path(points: points, handles: handles, isClosed: false, isCurve: curve, contour: points)
+        }
+
+        func destinationVector(_ outgoing: Outgoing) -> CGPoint {
+            let atom = atoms[outgoing.atom]
+            if outgoing.forward {
+                return CGPoint(x: atom.to.x - atom.from.x, y: atom.to.y - atom.from.y)
+            }
+            return CGPoint(x: atom.from.x - atom.to.x, y: atom.from.y - atom.to.y)
+        }
+        func signedTurn(_ incoming: CGPoint, _ outgoing: CGPoint) -> CGFloat {
+            atan2(
+                incoming.x * outgoing.y - incoming.y * outgoing.x,
+                incoming.x * outgoing.x + incoming.y * outgoing.y
+            )
+        }
+
+        var chains: [Path] = []
+        let degreeOne = at.filter { $0.value.count == 1 }.map(\.key)
+        for pointKey in degreeOne {
+            guard let start = (at[pointKey] ?? []).first(where: { !used[$0.atom] }) else { continue }
+            if let chain = walk(start: start) { chains.append(chain) }
+        }
+        for index in atoms.indices where !used[index] {
+            if let chain = walk(start: Outgoing(atom: index, forward: true)) {
+                chains.append(chain)
+            }
+        }
+        return chains
+    }
+
+    private static func stroke(from chain: Path, base: VectorStroke) -> VectorStroke {
+        stroke(from: chain, base: base, rewritingPartialRuns: false)
     }
 
     private struct JoinEndpoint {
@@ -367,7 +871,8 @@ enum PathJoinEngine {
                 isClosed: stroke.isClosed,
                 isCurve: false,
                 contour: stroke.points,
-                cutouts: stroke.cutoutPoints
+                cutouts: stroke.cutoutPoints,
+                smoothCornerIndices: stroke.smoothCornerIndices
             )
         }
     }
@@ -389,11 +894,47 @@ enum PathJoinEngine {
         if path.isCurve, let incoming = path.handles.last, !path.handles.isEmpty {
             path.handles[0].inOffset = incoming.inOffset
         }
+        let removed = path.points.count - 1
         path.points.removeLast()
         if !path.handles.isEmpty { path.handles.removeLast() }
+        if var smooth = path.smoothCornerIndices {
+            smooth.remove(removed)
+            path.smoothCornerIndices = smooth.isEmpty ? nil : smooth
+        }
         path.isClosed = true
         path.contour = path.points
         return path
+    }
+
+    /// Smooth midpoints ride along when anchors are concatenated or reversed.
+    private static func shiftedSmoothCorners(
+        _ indices: Set<Int>?,
+        by offset: Int,
+        dropping indexToDrop: Int? = nil
+    ) -> Set<Int>? {
+        guard let indices else { return nil }
+        let shifted = Set(indices.compactMap { index -> Int? in
+            if index == indexToDrop { return nil }
+            let adjusted = indexToDrop.map { index > $0 ? index - 1 : index } ?? index
+            return adjusted + offset
+        })
+        return shifted.isEmpty ? nil : shifted
+    }
+
+    private static func unionSmoothCorners(_ head: Set<Int>?, _ tail: Set<Int>?) -> Set<Int>? {
+        let merged = (head ?? []).union(tail ?? [])
+        return merged.isEmpty ? nil : merged
+    }
+
+    /// Anchors after `hostIndex` move forward when a spur is inserted there.
+    private static func smoothCornersInserting(
+        _ indices: Set<Int>?,
+        at hostIndex: Int,
+        count inserted: Int
+    ) -> Set<Int>? {
+        guard let indices, inserted > 0 else { return indices }
+        let shifted = Set(indices.map { $0 > hostIndex ? $0 + inserted : $0 })
+        return shifted.isEmpty ? nil : shifted
     }
 
     private static func contourLength(_ points: [CGPoint]) -> CGFloat {
@@ -536,6 +1077,7 @@ enum PathJoinEngine {
     /// Dense closed tessellations (circles, pies): none — overlap is handled
     /// by boolean union, not point welding.
     private static func structuralIndices(_ path: Path) -> [Int] {
+        if let structural = path.structural { return structural }
         let count = path.points.count
         guard count >= 1 else { return [] }
         if !path.isClosed {
@@ -676,20 +1218,43 @@ enum PathJoinEngine {
     }
 
     /// Inserts `guest` into `host` at a shared anchor. Closed guests are walked
-    /// as a loop that returns to the join point; open guests become a spur that
-    /// doubles back when the join is mid-path. Curve handles are carried through
-    /// the walk so arcs and curves keep their shape, and the host's closedness is
-    /// preserved so welding a spur onto a closed shape leaves it closed.
+    /// as a loop that returns to the join point. Open guests chained at the end of
+    /// an open host extend it; otherwise they double back so a closed curve keeps
+    /// every cubic. The host tangent that used to leave the weld is parked on the
+    /// returning anchor — leaving it on the junction bends the next host edge and
+    /// flattens the cubic that followed.
     private static func splice(
         _ host: Path,
         _ guest: Path,
         at shared: CGPoint,
-        tolerance: CGFloat
+        tolerance: CGFloat,
+        flippingStart: Bool = true
     ) -> Path {
         guard let hostIndex = host.points.firstIndex(where: { distance($0, shared) <= tolerance }),
               let guestIndex = guest.points.firstIndex(where: { distance($0, shared) <= tolerance })
         else {
             return append(host, guest, tolerance: tolerance)
+        }
+
+        let hostAtStart = !host.isClosed && hostIndex == 0
+        let hostAtEnd = !host.isClosed && hostIndex == host.points.count - 1
+        let guestAtStart = !guest.isClosed && guestIndex == 0
+        let guestAtEnd = !guest.isClosed && guestIndex == guest.points.count - 1
+
+        if hostAtEnd, guestAtStart || guestAtEnd {
+            var oriented = guest
+            if guestAtEnd { oriented = reverse(oriented) }
+            return append(host, oriented, tolerance: tolerance)
+        }
+        if hostAtStart, guestAtStart || guestAtEnd {
+            var oriented = guest
+            if guestAtStart { oriented = reverse(oriented) }
+            return append(oriented, host, tolerance: tolerance)
+        }
+        if flippingStart, hostAtStart, guest.isClosed {
+            return reverse(splice(
+                reverse(host), guest, at: shared, tolerance: tolerance, flippingStart: false
+            ))
         }
 
         let guestHandles = guest.handles.count == guest.points.count
@@ -706,27 +1271,45 @@ enum PathJoinEngine {
         // Tangent leaving the shared anchor into the guest walk, so the first
         // spliced segment keeps its curvature at the weld.
         var junctionOut = CGPoint.zero
+        let count = guest.points.count
+        let last = count - 1
 
         if guest.isClosed {
             // Walk the whole loop starting just after the shared anchor and ending
-            // back on it, so the spur closes before continuing along the host.
+            // back on it, so the loop closes before continuing along the host.
             junctionOut = guestHandles[guestIndex].outOffset
-            let order = Array((guestIndex + 1)..<guest.points.count) + Array(0...guestIndex)
+            let order = Array((guestIndex + 1)..<count) + Array(0...guestIndex)
             for i in order {
                 walkPoints.append(guest.points[i])
                 walkHandles.append(guestHandles[i])
             }
-        } else if guestIndex == 0 {
+        } else if guestIndex == 0, last >= 1 {
             junctionOut = guestHandles[0].outOffset
-            for i in 1..<guest.points.count {
+            for i in 1..<last {
                 walkPoints.append(guest.points[i])
                 walkHandles.append(guestHandles[i])
             }
-        } else if guestIndex == guest.points.count - 1 {
-            junctionOut = guestHandles[guestIndex].inOffset
-            for i in stride(from: guest.points.count - 2, through: 0, by: -1) {
+            var tip = guestHandles[last]
+            tip.outOffset = tip.inOffset
+            walkPoints.append(guest.points[last])
+            walkHandles.append(tip)
+            for i in stride(from: last - 1, through: 0, by: -1) {
                 walkPoints.append(guest.points[i])
                 walkHandles.append(flip(guestHandles[i]))
+            }
+        } else if guestIndex == last, last >= 1 {
+            junctionOut = guestHandles[last].inOffset
+            for i in stride(from: last - 1, through: 1, by: -1) {
+                walkPoints.append(guest.points[i])
+                walkHandles.append(flip(guestHandles[i]))
+            }
+            var tip = flip(guestHandles[0])
+            tip.outOffset = tip.inOffset
+            walkPoints.append(guest.points[0])
+            walkHandles.append(tip)
+            for i in 1...last {
+                walkPoints.append(guest.points[i])
+                walkHandles.append(guestHandles[i])
             }
         } else {
             junctionOut = guestHandles[guestIndex].inOffset
@@ -738,7 +1321,7 @@ enum PathJoinEngine {
             }
             walkPoints.append(shared)
             walkHandles.append(CurveHandle())
-            for i in (guestIndex + 1)..<guest.points.count {
+            for i in (guestIndex + 1)..<count {
                 walkPoints.append(guest.points[i])
                 walkHandles.append(guestHandles[i])
             }
@@ -746,15 +1329,15 @@ enum PathJoinEngine {
             walkHandles.append(CurveHandle())
         }
 
+        guard !walkPoints.isEmpty else { return host }
+
         var points = host.points
         var handles = host.handles.count == host.points.count
             ? host.handles
             : Array(repeating: CurveHandle(), count: host.points.count)
-        // Only steer the host's junction tangent when the guest actually curves,
-        // so a straight guest never flattens a curved host at the weld.
-        if guest.isCurve {
-            handles[hostIndex].outOffset = junctionOut
-        }
+        let originalOut = handles[hostIndex].outOffset
+        walkHandles[walkHandles.count - 1].outOffset = originalOut
+        handles[hostIndex].outOffset = junctionOut
         points.insert(contentsOf: walkPoints, at: hostIndex + 1)
         handles.insert(contentsOf: walkHandles, at: hostIndex + 1)
 
@@ -763,7 +1346,13 @@ enum PathJoinEngine {
             handles: handles,
             isClosed: host.isClosed,
             isCurve: host.isCurve || guest.isCurve,
-            contour: points
+            contour: points,
+            structural: host.structural,
+            smoothCornerIndices: smoothCornersInserting(
+                host.smoothCornerIndices,
+                at: hostIndex,
+                count: walkPoints.count
+            )
         )
     }
 
@@ -807,7 +1396,8 @@ enum PathJoinEngine {
     }
 
     private static func reverse(_ path: Path) -> Path {
-        Path(
+        let last = max(0, path.points.count - 1)
+        return Path(
             points: path.points.reversed(),
             handles: path.handles.reversed().map {
                 CurveHandle(inOffset: $0.outOffset, outOffset: $0.inOffset)
@@ -815,7 +1405,11 @@ enum PathJoinEngine {
             isClosed: path.isClosed,
             isCurve: path.isCurve,
             contour: path.contour.reversed(),
-            cutouts: path.cutouts
+            cutouts: path.cutouts,
+            structural: path.structural.map { $0.map { last - $0 } },
+            smoothCornerIndices: path.smoothCornerIndices.map { indices in
+                Set(indices.map { last - $0 })
+            }
         )
     }
 
@@ -827,13 +1421,18 @@ enum PathJoinEngine {
                 handles: head.handles + tail.handles,
                 isClosed: false,
                 isCurve: head.isCurve || tail.isCurve,
-                contour: points
+                contour: points,
+                smoothCornerIndices: unionSmoothCorners(
+                    head.smoothCornerIndices,
+                    shiftedSmoothCorners(tail.smoothCornerIndices, by: head.points.count)
+                )
             )
         }
         var merged = head
         merged.isClosed = false
         merged.isCurve = head.isCurve || tail.isCurve
-        if distance(last, first) <= tolerance {
+        let droppingFirst = distance(last, first) <= tolerance
+        if droppingFirst {
             if !tail.handles.isEmpty, !merged.handles.isEmpty {
                 merged.handles[merged.handles.count - 1].outOffset = tail.handles[0].outOffset
             }
@@ -845,6 +1444,14 @@ enum PathJoinEngine {
             merged.points.append(contentsOf: tail.points)
             merged.handles.append(contentsOf: tail.handles)
         }
+        merged.smoothCornerIndices = unionSmoothCorners(
+            head.smoothCornerIndices,
+            shiftedSmoothCorners(
+                tail.smoothCornerIndices,
+                by: head.points.count,
+                dropping: droppingFirst ? 0 : nil
+            )
+        )
         // Handles that no longer line up with anchors would render as straight
         // segments through those anchors — an arc becomes two chords through its
         // midpoint and the shape looks collapsed. Rebuild from tessellated
