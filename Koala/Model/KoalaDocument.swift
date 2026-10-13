@@ -203,6 +203,23 @@ final class KoalaDocument {
         normalizeLayerGrouping()
     }
 
+    /// Rewrites sampled curves already stored in the file. Opening a project is
+    /// enough; the piece does not have to be drawn again.
+    func simplifyStoredDenseAnchors() -> Bool {
+        var changed = false
+        for index in strokes.indices {
+            let simplified = ShapeGeometry.withSimplifiedDenseAnchors(strokes[index])
+            if simplified != strokes[index] {
+                strokes[index] = simplified
+                changed = true
+            }
+        }
+        if changed {
+            geometryRevision += 1
+        }
+        return changed
+    }
+
     func strokes(for layerID: UUID) -> [VectorStroke] {
         strokes.filter { $0.layerID == layerID }
     }

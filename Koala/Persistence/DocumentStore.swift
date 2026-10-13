@@ -70,6 +70,9 @@ final class DocumentStore {
         hasUnsavedChanges = false
         // Always re-center on the grid origin when opening, ignoring the viewport saved in the file.
         needsInitialViewportLayout = true
+        if document.simplifyStoredDenseAnchors() {
+            markDirty()
+        }
     }
 
     func save(to url: URL? = nil) throws {

@@ -145,14 +145,14 @@ enum ClosedShapeDetector {
             }
 
             let template = candidates[loop[0].candidateSlot]
-            let mergedStroke = VectorStroke(
+            let mergedStroke = ShapeGeometry.withSimplifiedDenseAnchors(VectorStroke(
                 layerID: layerID,
                 points: mergedPoints,
                 strokeWidth: template.strokeWidth,
                 strokeColor: template.strokeColor,
                 isClosed: true,
                 shapeType: .polyline
-            )
+            ))
 
             let removedIDs = Set(loop.map { candidates[$0.candidateSlot].id })
             document.strokes.removeAll { removedIDs.contains($0.id) }
