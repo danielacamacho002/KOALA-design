@@ -297,7 +297,14 @@ nonisolated enum ShapeGeometry: Sendable {
             }
             return stroke.points
         default:
-            let compacted = withCompactedCircularAnchors(stroke, rewritingPartialRuns: false)
+            // Same rule as selection: a cubic that merely hugs a circle keeps its
+            // handles. Compacting it here would show arc anchors for a curve the
+            // document still stores as a Bézier.
+            let compacted = withCompactedCircularAnchors(
+                stroke,
+                rewritingPartialRuns: false,
+                preservingBezierHandles: true
+            )
             if compacted.shapeType == .circle
                 || compacted.shapeType == .ellipse
                 || compacted.shapeType == .arc {

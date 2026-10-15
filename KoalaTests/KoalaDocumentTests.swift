@@ -294,6 +294,72 @@ struct KoalaDocumentTests {
         #expect(document.isDimensionLocked(key: copyKey))
     }
 
+    /// A sleeve traced as cubics plus lines used to collapse the moment it was
+    /// multi-selected. Selection compacts circular leftovers, and any three
+    /// anchors define a circle, so the cubics were rewritten as arcs before Join.
+    @Test func selectingBezierCurvesAndLinesKeepsTheBulge() {
+        let document = KoalaDocument()
+        let layerID = document.activeLayerID
+        let curve = bulgingCurve(on: layerID)
+        let tail = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 100, y: 0), CGPoint(x: 140, y: 0)],
+            isClosed: false,
+            shapeType: .polyline
+        )
+        document.addStroke(curve)
+        document.addStroke(tail)
+
+        document.setElementSelection(strokeIDs: [curve.id, tail.id], textIDs: [])
+
+        let selected = document.stroke(with: curve.id)
+        #expect(selected?.shapeType == .curve)
+        #expect(selected?.curveHandles == curve.curveHandles)
+        let rendered = ShapeGeometry.renderPoints(for: selected ?? curve)
+        #expect((rendered.map(\.y).max() ?? 0) > 40)
+        #expect(document.stroke(with: tail.id)?.points == tail.points)
+    }
+
+    /// Move compacts again at drag start. A quarter-circle cubic hugs a real
+    /// circle, and that used to demote it to a smooth polyline before the delta.
+    @Test func movingANearCircularCubicKeepsItsHandles() {
+        let document = KoalaDocument()
+        let curve = quarterCircleCubic(on: document.activeLayerID)
+        document.addStroke(curve)
+        document.setElementSelection(strokeIDs: [curve.id], textIDs: [], compactAnchors: false)
+
+        document.beginInteractiveEdit()
+
+        let edited = document.stroke(with: curve.id)
+        #expect(edited?.shapeType == .curve)
+        #expect(edited?.curveHandles == curve.curveHandles)
+        let rendered = ShapeGeometry.renderPoints(for: edited ?? curve)
+        #expect(rendered.contains { hypot($0.x - 70.7, $0.y - 70.7) < 3 })
+    }
+
+    /// Tessellated arcs with no cubic handles should still collapse to the compact
+    /// anchor set when selected, so circle editing does not keep every sample.
+    @Test func selectingATessellatedArcStillCompactsIt() {
+        let document = KoalaDocument()
+        let samples = (0...16).map { index -> CGPoint in
+            let angle = CGFloat(index) * .pi / 32
+            return CGPoint(x: cos(angle) * 100, y: sin(angle) * 100)
+        }
+        let arc = VectorStroke(
+            layerID: document.activeLayerID,
+            points: samples,
+            isClosed: false,
+            shapeType: .polyline
+        )
+        document.addStroke(arc)
+
+        document.setElementSelection(strokeIDs: [arc.id], textIDs: [])
+
+        let selected = document.stroke(with: arc.id)
+        #expect(selected?.shapeType == .arc)
+        #expect((selected?.points.count ?? 0) < samples.count)
+    }
+
     @Test func copyingAnEmptySelectionLeavesTheClipboardAlone() {
         let document = KoalaDocument()
         #expect(document.copySelectedElementsToClipboard() == 0)
@@ -307,6 +373,37 @@ struct KoalaDocumentTests {
         VectorStroke(
             layerID: layerID,
             points: [CGPoint(x: x, y: 0), CGPoint(x: x + 20, y: 20)]
+        )
+    }
+
+    /// Three anchors always define a circle. The handles pull the cubics far off
+    /// that circumcircle, which is the collapse selection used to apply.
+    private func bulgingCurve(on layerID: UUID) -> VectorStroke {
+        VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 0, y: 0), CGPoint(x: 50, y: 10), CGPoint(x: 100, y: 0)],
+            isClosed: false,
+            shapeType: .curve,
+            curveHandles: [
+                CurveHandle(inOffset: .zero, outOffset: CGPoint(x: 0, y: 80)),
+                CurveHandle(inOffset: CGPoint(x: 0, y: 40), outOffset: CGPoint(x: 0, y: 40)),
+                CurveHandle(inOffset: CGPoint(x: 0, y: 80), outOffset: .zero)
+            ]
+        )
+    }
+
+    private func quarterCircleCubic(on layerID: UUID) -> VectorStroke {
+        let radius: CGFloat = 100
+        let kappa = radius * 4 / 3 * tan(.pi / 8)
+        return VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: radius, y: 0), CGPoint(x: 0, y: radius)],
+            isClosed: false,
+            shapeType: .curve,
+            curveHandles: [
+                CurveHandle(inOffset: .zero, outOffset: CGPoint(x: 0, y: kappa)),
+                CurveHandle(inOffset: CGPoint(x: kappa, y: 0), outOffset: .zero)
+            ]
         )
     }
 }

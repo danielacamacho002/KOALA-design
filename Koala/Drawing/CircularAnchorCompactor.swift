@@ -734,7 +734,11 @@ private extension ShapeGeometry {
     }
 
     nonisolated static func circleTolerance(radius: CGFloat) -> CGFloat {
-        max(0.75, radius * 0.025)
+        // 2.5% of a large radius is tens of points. A notch sitting beside a
+        // nearly straight arc then counts as "on the circle" and Join replaces
+        // the detour with the chord. Tessellated samples are within a point of
+        // the true rim, so the allowance does not need to grow past a few points.
+        min(4, max(0.75, radius * 0.025))
     }
 
     nonisolated static func circularStepRadians(from a: CGPoint, to b: CGPoint, center: CGPoint) -> CGFloat {

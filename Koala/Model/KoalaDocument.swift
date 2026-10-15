@@ -1134,12 +1134,20 @@ final class KoalaDocument {
 
     /// Rewrites tessellated circular runs back to the default 4 / 2–4 anchors so
     /// move and node-edit operate on the same compact set the overlay shows.
+    ///
+    /// User cubics are left alone. A garment curve's anchors often sit near some
+    /// circle, and rewriting that cubic as an arc on select or drag-start collapses
+    /// the bulge before Join or Move ever runs.
     func compactCircularAnchors(for ids: Set<UUID>) {
         var changed = false
         for id in ids {
             guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
             let stroke = strokes[index]
-            let compacted = ShapeGeometry.withCompactedCircularAnchors(stroke, rewritingPartialRuns: false)
+            let compacted = ShapeGeometry.withCompactedCircularAnchors(
+                stroke,
+                rewritingPartialRuns: false,
+                preservingBezierHandles: true
+            )
             if compacted != stroke {
                 strokes[index] = compacted
                 changed = true
