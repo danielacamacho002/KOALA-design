@@ -1516,10 +1516,20 @@ struct EditorView: View {
             if let stroke = store.document.selectedStrokeID.flatMap({ store.document.stroke(with: $0) }) {
                 if AnchorPointEngine.canEditAnchors(on: stroke) {
                     let snapped = snapDrawingInput(documentPoint)
-                    if store.document.insertAnchor(at: snapped, threshold: threshold) {
+                    let anchorHit = CanvasOverlayGeometry.screenGrabExtent(
+                        minimum: CanvasOverlayGeometry.curveAnchorHitExtent,
+                        mark: CanvasOverlayGeometry.anchorMarkSize,
+                        scale: store.document.viewport.scale
+                    )
+                    let minimumSeparation = store.document.viewport.viewToDocument(distance: anchorHit)
+                    if store.document.insertAnchor(
+                        at: snapped,
+                        threshold: threshold,
+                        minimumSeparation: minimumSeparation
+                    ) {
                         store.markDirty()
                     } else {
-                        statusMessage = "Tap closer to an edge between anchors"
+                        statusMessage = "Tap the edge between anchors"
                     }
                 } else {
                     statusMessage = "Selected shape cannot receive anchors"

@@ -76,6 +76,31 @@ struct AnchorPointEngineTests {
         #expect(pointsApproximatelyEqual(updated?.points[1] ?? .zero, CGPoint(x: 45, y: 0)))
     }
 
+    @Test func curveRejectsAnAnchorThatWouldStackOnAnExistingOne() {
+        let stroke = VectorStroke(
+            layerID: UUID(),
+            points: [CGPoint(x: 0, y: 0), CGPoint(x: 200, y: 0)],
+            isClosed: false,
+            shapeType: .curve,
+            curveHandles: [CurveHandle(), CurveHandle()]
+        )
+        let stacked = AnchorPointEngine.insertAtTap(
+            stroke: stroke,
+            point: CGPoint(x: 20, y: 0),
+            threshold: 8,
+            minimumSeparation: 44
+        )
+        #expect(stacked == nil)
+
+        let midpoint = AnchorPointEngine.insertAtTap(
+            stroke: stroke,
+            point: CGPoint(x: 100, y: 1),
+            threshold: 8,
+            minimumSeparation: 44
+        )
+        #expect(midpoint?.points.count == 3)
+    }
+
     @Test func constructionLineCannotReceiveAnchors() {
         let stroke = VectorStroke(
             layerID: UUID(),

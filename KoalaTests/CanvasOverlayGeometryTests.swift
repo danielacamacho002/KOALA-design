@@ -149,6 +149,192 @@ struct CanvasOverlayGeometryTests {
         #expect(abs(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: maxZoom) - base * maxZoom) < 1e-9)
     }
 
+    @Test func missingTangentArmIsMirroredSoTheAnchorStaysCentered() {
+        let fromOut = CanvasOverlayGeometry.centeredTangentPair(
+            inOffset: .zero,
+            outOffset: CGPoint(x: 40, y: 10)
+        )
+        #expect(fromOut.outOffset == CGPoint(x: 40, y: 10))
+        #expect(fromOut.inOffset == CGPoint(x: -40, y: -10))
+
+        let fromIn = CanvasOverlayGeometry.centeredTangentPair(
+            inOffset: CGPoint(x: 0, y: 24),
+            outOffset: .zero
+        )
+        #expect(fromIn.inOffset == CGPoint(x: 0, y: 24))
+        #expect(fromIn.outOffset == CGPoint(x: 0, y: -24))
+    }
+
+    @Test func minimumTangentLengthIsAnEighthOfAnInch() {
+        #expect(CanvasOverlayGeometry.minimumTangentLength == 9)
+    }
+
+    @Test func aShortTangentGrowsToTheMinimumWithoutStretchingALongArm() {
+        let handles = CanvasOverlayGeometry.tangentHandlesObservingMinimum(
+            anchors: [.zero, CGPoint(x: 100, y: 0)],
+            handles: [
+                CurveHandle(inOffset: .zero, outOffset: CGPoint(x: 2, y: 0)),
+                CurveHandle(inOffset: CGPoint(x: -80, y: 0), outOffset: .zero)
+            ],
+            minimumLength: 9
+        )
+        #expect(abs(handles[0].outOffset.x - 9) < 0.01)
+        #expect(abs(handles[0].inOffset.x + 9) < 0.01)
+        #expect(handles[1].inOffset == CGPoint(x: -80, y: 0))
+        #expect(abs(handles[1].outOffset.x - 9) < 0.01)
+    }
+
+    @Test func nearestGrabPrefersTheCloserCircle() {
+        let index = CanvasOverlayGeometry.nearestGrab(
+            at: CGPoint(x: 10, y: 0),
+            centers: [.zero, CGPoint(x: 12, y: 0)],
+            radii: [30, 30]
+        )
+        #expect(index == 1)
+    }
+
+    @Test func nearestGrabIgnoresACircleThePointIsOutside() {
+        let index = CanvasOverlayGeometry.nearestGrab(
+            at: CGPoint(x: 100, y: 0),
+            centers: [.zero],
+            radii: [10]
+        )
+        #expect(index == nil)
+    }
+
+    @Test func aShortHandleIsPushedOutToTheGapAndStaysCentered() {
+        let pair = CanvasOverlayGeometry.centeredTangentPair(
+            inOffset: CGPoint(x: -2, y: 0),
+            outOffset: CGPoint(x: 3, y: 0),
+            minimumLength: 36
+        )
+        #expect(abs(pair.outOffset.x - 36) < 0.01)
+        #expect(abs(pair.outOffset.y) < 0.01)
+        #expect(pair.inOffset == CGPoint(x: -pair.outOffset.x, y: -pair.outOffset.y))
+    }
+
+    @Test func aHandleWithNoDirectionUsesTheFallbackAndClearsTheAnchor() {
+        let pair = CanvasOverlayGeometry.centeredTangentPair(
+            inOffset: .zero,
+            outOffset: .zero,
+            minimumLength: 36,
+            fallbackDirection: CGPoint(x: 0, y: 8)
+        )
+        #expect(abs(pair.outOffset.y - 36) < 0.01)
+        #expect(abs(pair.outOffset.x) < 0.01)
+        #expect(pair.inOffset == CGPoint(x: 0, y: -36))
+    }
+
+    @Test func aPairThatAlreadyHasTwoArmsIsNotRewritten() {
+        let inOffset = CGPoint(x: -12, y: 4)
+        let outOffset = CGPoint(x: 30, y: 8)
+        let pair = CanvasOverlayGeometry.centeredTangentPair(inOffset: inOffset, outOffset: outOffset)
+        #expect(pair.inOffset == inOffset)
+        #expect(pair.outOffset == outOffset)
+    }
+
+    @Test func shortTangentDragStopsAtTheMinimumLength() {
+        let offset = CanvasOverlayGeometry.separatedTangentOffset(
+            proposed: CGPoint(x: 4, y: 0),
+            anchor: .zero,
+            obstacles: [],
+            minimumLength: 36,
+            fallbackDirection: CGPoint(x: 0, y: 80)
+        )
+        #expect(offset == CGPoint(x: 36, y: 0))
+    }
+
+    @Test func collapsedTangentUsesTheFallbackDirection() {
+        let offset = CanvasOverlayGeometry.separatedTangentOffset(
+            proposed: .zero,
+            anchor: CGPoint(x: 10, y: 10),
+            obstacles: [],
+            minimumLength: 36,
+            fallbackDirection: CGPoint(x: 0, y: 12)
+        )
+        #expect(offset == CGPoint(x: 0, y: 36))
+    }
+
+    @Test func tangentDragAlreadyClearOfNeighborsIsUnchanged() {
+        let proposed = CGPoint(x: 80, y: 0)
+        let offset = CanvasOverlayGeometry.separatedTangentOffset(
+            proposed: proposed,
+            anchor: .zero,
+            obstacles: [(point: CGPoint(x: 0, y: 200), clearance: 36)],
+            minimumLength: 36,
+            fallbackDirection: proposed
+        )
+        #expect(offset == proposed)
+    }
+
+    /// A handle aimed at another grab point stops on the near side of that point's clearance.
+    @Test func tangentDragStopsShortOfAnotherHandle() {
+        let offset = CanvasOverlayGeometry.separatedTangentOffset(
+            proposed: CGPoint(x: 90, y: 0),
+            anchor: .zero,
+            obstacles: [(point: CGPoint(x: 90, y: 0), clearance: 30)],
+            minimumLength: 20,
+            fallbackDirection: CGPoint(x: 1, y: 0)
+        )
+        #expect(abs(offset.x - 60) < 0.01)
+        #expect(abs(offset.y) < 0.01)
+        #expect(hypot(offset.x - 90, offset.y) >= 30 - 0.01)
+    }
+
+    @Test func tangentObstaclesSkipTheDraggedAnchorAndHiddenEndpointHandles() {
+        let anchors = [CGPoint(x: 0, y: 0), CGPoint(x: 100, y: 0), CGPoint(x: 200, y: 0)]
+        let handles = [
+            CurveHandle(inOffset: CGPoint(x: -5, y: 0), outOffset: CGPoint(x: 30, y: 10)),
+            CurveHandle(inOffset: CGPoint(x: -20, y: 0), outOffset: CGPoint(x: 20, y: 0)),
+            CurveHandle(inOffset: CGPoint(x: -15, y: 8), outOffset: CGPoint(x: 9, y: 0))
+        ]
+        let obstacles = CanvasOverlayGeometry.tangentObstacles(
+            anchors: anchors,
+            handles: handles,
+            excluding: 1,
+            anchorClearance: 36,
+            handleClearance: 28
+        )
+        let points = obstacles.map(\.point)
+        #expect(points.contains(anchors[0]))
+        #expect(points.contains(CGPoint(x: 30, y: 10)))
+        #expect(points.contains(anchors[2]))
+        #expect(points.contains(CGPoint(x: 185, y: 8)))
+        #expect(!points.contains(anchors[1]))
+        #expect(!points.contains(CGPoint(x: -5, y: 0)))
+        #expect(!points.contains(CGPoint(x: 209, y: 0)))
+    }
+
+    @Test func anchorDragCannotCloseAnExistingGapBelowTheMinimum() {
+        let separated = CanvasOverlayGeometry.separatedPoint(
+            proposed: CGPoint(x: 80, y: 0),
+            current: .zero,
+            obstacles: [CGPoint(x: 100, y: 0)],
+            minimumDistance: 40
+        )
+        #expect(abs(separated.x - 60) < 0.01)
+        #expect(separated.y == 0)
+    }
+
+    /// A pair that is already stacked can be pulled apart. The drag cannot pack it tighter.
+    @Test func anchorDragKeepsAnAlreadyTightPairFromGettingTighter() {
+        let held = CanvasOverlayGeometry.separatedPoint(
+            proposed: CGPoint(x: 95, y: 0),
+            current: CGPoint(x: 90, y: 0),
+            obstacles: [CGPoint(x: 100, y: 0)],
+            minimumDistance: 40
+        )
+        #expect(abs(held.x - 90) < 0.01)
+
+        let opened = CanvasOverlayGeometry.separatedPoint(
+            proposed: CGPoint(x: 50, y: 0),
+            current: CGPoint(x: 90, y: 0),
+            obstacles: [CGPoint(x: 100, y: 0)],
+            minimumDistance: 40
+        )
+        #expect(opened == CGPoint(x: 50, y: 0))
+    }
+
     /// One axis clearing the threshold is enough: a thin horizontal band is a valid marquee.
     @Test func marqueeSurvivesWhenOnlyOneAxisClearsTheMinimum() {
         let rect = CanvasOverlayGeometry.marqueeRect(from: .zero, to: CGPoint(x: 30, y: 0.1))

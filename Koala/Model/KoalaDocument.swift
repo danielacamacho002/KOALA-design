@@ -1580,7 +1580,11 @@ final class KoalaDocument {
     }
 
     @discardableResult
-    func insertAnchor(at documentPoint: CGPoint, threshold: CGFloat) -> Bool {
+    func insertAnchor(
+        at documentPoint: CGPoint,
+        threshold: CGFloat,
+        minimumSeparation: CGFloat = 0
+    ) -> Bool {
         guard let id = selectedStrokeID else { return false }
         compactCircularAnchors(for: [id])
         guard let stroke = stroke(with: id),
@@ -1588,7 +1592,8 @@ final class KoalaDocument {
               let updated = AnchorPointEngine.insertAtTap(
                   stroke: stroke,
                   point: documentPoint,
-                  threshold: threshold
+                  threshold: threshold,
+                  minimumSeparation: minimumSeparation
               ) else { return false }
         pushUndo()
         updateStroke(updated, recordUndo: false)
