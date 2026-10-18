@@ -18,17 +18,31 @@ enum ToolPanelMetrics {
 }
 
 extension Color {
-    /// Fill for the non-prominent (secondary) tool panel buttons.
-    static let toolPanelButtonFill = Color(hex: "F2F2F7")
+    /// Fill for tool panel buttons, matching the toolbar.
+    static let toolPanelButtonFill = Color(hex: AppearanceSettings.toolbarHex)
 
-    /// Foreground for content sitting on a non-prominent tool panel button.
-    static let toolPanelButtonForeground = Color.black
+    /// Foreground for content sitting on a tool panel button.
+    static let toolPanelButtonForeground = Color.white
+
+    /// Hairline that keeps a toolbar-colored control visible on the matching panel.
+    static let toolPanelButtonStroke = Color.white.opacity(0.28)
+
+    /// Muted label sitting directly on the dark command-panel fill.
+    static let toolPanelSecondaryLabel = Color.white.opacity(0.65)
+}
+
+extension View {
+    /// Toolbar-colored control fill with a hairline edge.
+    func toolPanelControlFill() -> some View {
+        background(Color.toolPanelButtonFill)
+            .overlay(Rectangle().stroke(Color.toolPanelButtonStroke, lineWidth: 1))
+    }
 }
 
 extension View {
     /// Applies the standard tool panel chrome: sharp rectangle fill with a hairline
-    /// stroke and consistent padding. Defaults to the shared panel color so every
-    /// tool panel (shape, manipulation, dropdowns) stays unified.
+    /// stroke and consistent padding. Defaults to the toolbar color so every
+    /// tool panel (shape, manipulation, dropdowns) matches the top bar.
     func toolPanelChrome(width: CGFloat? = nil, fill: Color? = nil) -> some View {
         modifier(ToolPanelChrome(width: width, fillOverride: fill))
     }
@@ -43,8 +57,18 @@ private struct ToolPanelChrome: ViewModifier {
         content
             .padding(8)
             .frame(width: width)
-            .background(Rectangle().fill(fillOverride ?? Color(hex: AppearanceSettings.panelHex)))
-            .overlay(Rectangle().stroke(Color.primary.opacity(0.08), lineWidth: 1))
+            .foregroundStyle(.white)
+            .background(Rectangle().fill(fillOverride ?? Color(hex: AppearanceSettings.toolbarHex)))
+            .overlay(Rectangle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+    }
+}
+
+/// Hairline between sections on the dark command-panel fill.
+struct ToolPanelDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.15))
+            .frame(height: 1)
     }
 }
 
@@ -59,6 +83,7 @@ struct ToolPanelHeader: View {
     var body: some View {
         Text(title)
             .font(.caption.weight(.semibold))
+            .foregroundStyle(.white)
     }
 }
 
@@ -73,7 +98,7 @@ struct ToolPanelSectionLabel: View {
     var body: some View {
         Text(text)
             .font(.system(size: 10))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.toolPanelSecondaryLabel)
     }
 }
 
@@ -91,6 +116,11 @@ struct ToolPanelIconButton: View {
                 .foregroundStyle(prominent ? Color.black : Color.toolPanelButtonForeground)
                 .frame(width: 26, height: 26)
                 .background(prominent ? Color.accentColor : Color.toolPanelButtonFill)
+                .overlay {
+                    if !prominent {
+                        Rectangle().stroke(Color.toolPanelButtonStroke, lineWidth: 1)
+                    }
+                }
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
@@ -128,7 +158,7 @@ struct ToolPanelApplyButton: View {
 private struct ToolPanelSegmentDivider: View {
     var body: some View {
         Rectangle()
-            .fill(Color.primary.opacity(0.12))
+            .fill(Color.toolPanelButtonStroke)
             .frame(width: 1, height: 16)
     }
 }
@@ -165,7 +195,7 @@ struct ToolPanelSegmentBar: View {
                 .accessibilityAddTraits(isSelected ? [.isSelected] : [])
             }
         }
-        .background(Color.toolPanelButtonFill)
+        .toolPanelControlFill()
     }
 }
 
@@ -213,7 +243,7 @@ struct ToolPanelNumericStepper: View {
                     if let unitLabel {
                         Text(unitLabel)
                             .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.toolPanelSecondaryLabel)
                             .fixedSize()
                     }
                 }
@@ -228,7 +258,7 @@ struct ToolPanelNumericStepper: View {
             stepperButton(systemImage: "plus", action: onPlus)
                 .accessibilityLabel("Increase")
         }
-        .background(Color.toolPanelButtonFill)
+        .toolPanelControlFill()
     }
 
     private func stepperButton(systemImage: String, action: @escaping () -> Void) -> some View {
@@ -259,12 +289,17 @@ struct ToolPanelMenuButton: View {
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(isExpanded ? Color.black : .secondary)
+                    .foregroundStyle(isExpanded ? Color.black : Color.toolPanelSecondaryLabel)
             }
             .padding(.horizontal, 8)
             .frame(maxWidth: .infinity)
             .frame(height: 28)
             .background(isExpanded ? Color.accentColor : Color.toolPanelButtonFill)
+            .overlay {
+                if !isExpanded {
+                    Rectangle().stroke(Color.toolPanelButtonStroke, lineWidth: 1)
+                }
+            }
         }
         .buttonStyle(.plain)
     }
@@ -318,12 +353,12 @@ struct ToolPanelJoinedActions: View {
             }
         }
         .fixedSize(horizontal: false, vertical: true)
-        .background(Color.toolPanelButtonFill)
+        .toolPanelControlFill()
     }
 
     private func hairline(horizontal: Bool) -> some View {
         Rectangle()
-            .fill(Color.primary.opacity(0.12))
+            .fill(Color.toolPanelButtonStroke)
             .frame(width: horizontal ? nil : 1, height: horizontal ? 1 : 16)
     }
 }
@@ -336,6 +371,8 @@ struct ToolPanelLabelButton: View {
     var fullWidth: Bool = false
     var alignment: Alignment = .center
     var fill: Color? = nil
+    /// Draws the control edge. Turn off when the button sits in a stroked group.
+    var bordered: Bool = true
     let action: () -> Void
 
     var body: some View {
@@ -347,6 +384,11 @@ struct ToolPanelLabelButton: View {
                 .padding(.horizontal, 8)
                 .frame(height: 26)
                 .background(fill ?? (prominent ? Color.accentColor : Color.toolPanelButtonFill))
+                .overlay {
+                    if bordered && fill == nil && !prominent {
+                        Rectangle().stroke(Color.toolPanelButtonStroke, lineWidth: 1)
+                    }
+                }
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)

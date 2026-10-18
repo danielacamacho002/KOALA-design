@@ -46,7 +46,7 @@ struct PrintMarginPanelView: View {
                 select(PrintMarginMode.allCases[index])
             }
 
-            Divider()
+            ToolPanelDivider()
 
             VStack(alignment: .leading, spacing: 4) {
                 ToolPanelSectionLabel("Margin width")

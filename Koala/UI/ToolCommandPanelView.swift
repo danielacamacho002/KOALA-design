@@ -36,7 +36,7 @@ struct ToolCommandPanelView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(session.prompt)
                         .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.toolPanelSecondaryLabel)
 
                     FingerOnlyTextField(
                         placeholder: inputPlaceholder,
@@ -49,7 +49,7 @@ struct ToolCommandPanelView: View {
                     )
                     .padding(.horizontal, 6)
                     .frame(width: ToolPanelMetrics.pointFieldWidth, height: 28, alignment: .leading)
-                    .background(Color.toolPanelButtonFill)
+                    .toolPanelControlFill()
 
                     if let error = session.lastError {
                         Text(error)
@@ -61,7 +61,7 @@ struct ToolCommandPanelView: View {
                     if let placed = session.placedPointsLabel(units: units) {
                         Text(placed)
                             .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.toolPanelSecondaryLabel)
                     }
                 }
 

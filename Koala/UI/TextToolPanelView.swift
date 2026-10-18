@@ -29,27 +29,33 @@ struct TextToolPanelView: View {
                 ToolPanelApplyButton(action: onDone)
             }
 
-            TextField("Type here", text: $text, axis: .vertical)
+            TextField(
+                "",
+                text: $text,
+                prompt: Text("Type here").foregroundStyle(Color.white.opacity(0.45)),
+                axis: .vertical
+            )
                 .font(.system(size: 13))
+                .foregroundStyle(Color.toolPanelButtonForeground)
                 .lineLimit(1...6)
                 .focused($focused)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-                .background(Color(.secondarySystemBackground))
+                .toolPanelControlFill()
                 .onChange(of: text) { _, newValue in
                     applyText(newValue)
                 }
 
             HStack(spacing: 10) {
                 Image(systemName: "textformat.size")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.toolPanelSecondaryLabel)
                 Slider(value: fontSizeBinding, in: 6...200, step: 1)
                 Text("\(Int(currentFontSize))")
                     .font(.caption.monospacedDigit())
                     .frame(width: 32, alignment: .trailing)
             }
 
-            Divider()
+            ToolPanelDivider()
 
             Toggle(isOn: outlineBinding) {
                 Text("Outline")
@@ -191,9 +197,10 @@ struct TextToolPanelView: View {
 
                 Text(strokeWidthLabel)
                     .font(.caption.monospacedDigit())
+                    .foregroundStyle(Color.toolPanelButtonForeground)
                     .frame(maxWidth: .infinity)
                     .frame(height: 26)
-                    .background(Color.toolPanelButtonFill)
+                    .toolPanelControlFill()
 
                 ToolPanelIconButton(systemImage: "plus") {
                     setStrokeWidth(currentStrokeWidth + Self.strokeStep)

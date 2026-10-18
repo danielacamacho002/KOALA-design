@@ -144,7 +144,7 @@ struct ScaleToolPanelView: View {
                 .padding(.horizontal, -6)
             }
 
-            Divider()
+            ToolPanelDivider()
 
             if document.scaleUniform {
                 factorStepper(

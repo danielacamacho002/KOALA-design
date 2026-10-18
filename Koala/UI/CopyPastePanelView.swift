@@ -19,7 +19,7 @@ struct CopyPastePanelView: View {
 
             Text("Duplicate stacks a copy on the original. Paste drops the clipboard one grid step down and to the right.")
                 .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.toolPanelSecondaryLabel)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 4) {
@@ -53,12 +53,12 @@ struct CopyPastePanelView: View {
 
             Text(document.clipboard.summary)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.toolPanelSecondaryLabel)
 
             if let layer = document.activeLayer {
                 Text("Paste onto: \(layer.name)")
                     .font(.caption2)
-                    .foregroundStyle(layer.isLocked ? .red : .secondary)
+                    .foregroundStyle(layer.isLocked ? .red : Color.toolPanelSecondaryLabel)
             }
         }
         .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
