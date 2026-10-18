@@ -23,35 +23,28 @@ struct OnboardingHoverBoxView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ToolPanelHeader(step.title)
-                .foregroundStyle(.black)
 
             Text(step.body)
                 .font(.system(size: 11))
-                .foregroundStyle(.black)
                 .frame(maxWidth: .infinity, minHeight: bodyHeight, maxHeight: bodyHeight, alignment: .topLeading)
                 .lineLimit(4)
 
             Text("\(stepNumber) / \(stepCount)")
                 .font(.caption2)
-                .foregroundStyle(.black)
+                .foregroundStyle(Color.toolPanelSecondaryLabel)
 
             HStack(spacing: 8) {
                 ToolPanelLabelButton(title: "Skip all", action: onSkipAll)
                 Spacer(minLength: 0)
                 ToolPanelLabelButton(title: "Back", isDisabled: !canGoBack, action: onBack)
-                ToolPanelLabelButton(
-                    title: "Next",
-                    prominent: true,
-                    fill: Color(hex: "D1D1D6"),
-                    action: onNext
-                )
+                ToolPanelLabelButton(title: "Next", action: onNext)
             }
         }
         .toolPanelChrome(width: panelWidth)
         .overlay {
             if step.target == .none {
                 Rectangle()
-                    .strokeBorder(.black, lineWidth: 1)
+                    .strokeBorder(.white.opacity(0.35), lineWidth: 1)
             }
         }
         .accessibilityElement(children: .contain)

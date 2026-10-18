@@ -80,42 +80,42 @@ struct MoveRotatePanelView: View {
                 document.moveAxisLockEnabled.toggle()
             }
 
-            Divider()
+            ToolPanelDivider()
 
             rotateSection
 
             if isImageSelected {
-                Divider()
+                ToolPanelDivider()
                 imageOpacitySection
             }
 
             if !document.selectedTextIDs.isEmpty {
-                Divider()
+                ToolPanelDivider()
                 textStyleSection
             }
 
             if !document.selectedStrokeIDs.isEmpty {
-                Divider()
+                ToolPanelDivider()
                 thicknessSection
 
-                Divider()
+                ToolPanelDivider()
                 colorSection
             }
 
             if document.hasClosedFillableSelection {
-                Divider()
+                ToolPanelDivider()
                 fillColorSection
 
-                Divider()
+                ToolPanelDivider()
                 fillOpacitySection
             }
 
             if document.usesGroupTransform {
-                Divider()
+                ToolPanelDivider()
                 multiSelectionSection
             }
 
-            Divider()
+            ToolPanelDivider()
 
             if isImageSelected {
                 ToolPanelLabelButton(title: "Delete", fullWidth: true) {
@@ -250,9 +250,10 @@ struct MoveRotatePanelView: View {
 
                 Text(value)
                     .font(.caption.monospacedDigit())
+                    .foregroundStyle(Color.toolPanelButtonForeground)
                     .frame(maxWidth: .infinity)
                     .frame(height: 26)
-                    .background(Color.toolPanelButtonFill)
+                    .toolPanelControlFill()
 
                 ToolPanelIconButton(systemImage: "plus", action: onPlus)
             }
@@ -402,7 +403,7 @@ struct MoveRotatePanelView: View {
                 if isStrokeColorMixed {
                     Text("Mixed")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.toolPanelSecondaryLabel)
                 }
             }
         }
@@ -460,7 +461,7 @@ struct MoveRotatePanelView: View {
                 if isFillColorMixed {
                     Text("Mixed")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.toolPanelSecondaryLabel)
                 }
             }
         }

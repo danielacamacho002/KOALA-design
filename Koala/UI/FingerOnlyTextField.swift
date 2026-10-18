@@ -43,6 +43,12 @@ struct FingerOnlyTextField: UIViewRepresentable {
         field.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         field.borderStyle = .none
         field.backgroundColor = backgroundColor
+        field.textColor = .white
+        field.tintColor = .white
+        field.attributedPlaceholder = NSAttributedString(
+            string: placeholder,
+            attributes: [.foregroundColor: UIColor.white.withAlphaComponent(0.45)]
+        )
         field.textAlignment = textAlignment
         field.layer.cornerRadius = cornerRadius
         field.keyboardType = keyboardType
@@ -56,10 +62,15 @@ struct FingerOnlyTextField: UIViewRepresentable {
         if uiView.text != text {
             uiView.text = text
         }
-        uiView.placeholder = placeholder
+        uiView.attributedPlaceholder = NSAttributedString(
+            string: placeholder,
+            attributes: [.foregroundColor: UIColor.white.withAlphaComponent(0.45)]
+        )
         uiView.keyboardType = keyboardType
         uiView.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         uiView.backgroundColor = backgroundColor
+        uiView.textColor = .white
+        uiView.tintColor = .white
         uiView.textAlignment = textAlignment
         uiView.layer.cornerRadius = cornerRadius
         context.coordinator.onSubmit = onSubmit

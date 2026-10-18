@@ -45,11 +45,11 @@ struct AddAnchorPanelView: View {
             )
             .padding(.horizontal, 6)
             .frame(width: ToolPanelMetrics.pointFieldWidth, height: 28, alignment: .leading)
-            .background(Color.toolPanelButtonFill)
+            .toolPanelControlFill()
 
             Text("Current anchors: \(currentCount)")
                 .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.toolPanelSecondaryLabel)
 
             HStack(spacing: 4) {
                 ToolPanelCancelButton { onCancel() }

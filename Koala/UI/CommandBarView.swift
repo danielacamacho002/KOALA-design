@@ -21,7 +21,7 @@ struct CommandBarView: View {
                         ForEach(Array(session.commandLog.enumerated()), id: \.offset) { index, line in
                             Text(line)
                                 .font(.system(size: 12, design: .monospaced))
-                                .foregroundStyle(line.hasPrefix(">") ? .primary : .secondary)
+                                .foregroundStyle(line.hasPrefix(">") ? Color.white : Color.toolPanelSecondaryLabel)
                                 .id(index)
                         }
                     }
@@ -29,7 +29,7 @@ struct CommandBarView: View {
                     .padding(8)
                 }
                 .frame(maxHeight: 160)
-                .background(Color(.secondarySystemBackground))
+                .toolPanelControlFill()
                 .onChange(of: session.commandLog.count) { _, count in
                     if count > 0 {
                         withAnimation { proxy.scrollTo(count - 1, anchor: .bottom) }
@@ -61,21 +61,21 @@ struct CommandBarView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(session.prompt)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.toolPanelSecondaryLabel)
 
             Text(session.hint)
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color.white.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
 
             if session.points.count >= 2 {
                 Text("Drag blue points to adjust · drag canvas to move all · Close/Done to keep.")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.toolPanelSecondaryLabel)
             } else if !session.points.isEmpty {
                 Text("Drag the blue point to reposition the start.")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.toolPanelSecondaryLabel)
             }
 
             if let error = session.lastError {
@@ -85,7 +85,7 @@ struct CommandBarView: View {
             } else if !session.statusMessage.isEmpty {
                 Text(session.statusMessage)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.toolPanelSecondaryLabel)
             }
 
             HStack(spacing: 4) {
@@ -95,9 +95,12 @@ struct CommandBarView: View {
                     keyboardType: .numbersAndPunctuation,
                     fontSize: 12,
                     cornerRadius: 0,
+                    backgroundColor: .clear,
                     onSubmit: submitInput
                 )
+                .padding(.horizontal, 6)
                 .frame(height: 26)
+                .toolPanelControlFill()
 
                 ToolPanelIconButton(systemImage: "return", prominent: true, action: submitInput)
             }
@@ -123,7 +126,7 @@ struct CommandBarView: View {
                 Spacer()
                 Text("\(session.points.count) pts")
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color.white.opacity(0.45))
             }
         }
     }
@@ -153,10 +156,10 @@ struct CommandBarView: View {
                         } label: {
                             Text(entry)
                                 .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(Color.white)
                                 .padding(.horizontal, 8)
                                 .frame(height: 24)
-                                .background(Color(.secondarySystemBackground))
+                                .toolPanelControlFill()
                         }
                         .buttonStyle(.plain)
                     }
@@ -178,14 +181,15 @@ struct CommandBarView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(sequence.label)
                                     .font(.caption.weight(.medium))
+                                    .foregroundStyle(Color.toolPanelButtonForeground)
                                 Text(sequence.commands.joined(separator: " → "))
                                     .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.toolPanelSecondaryLabel)
                                     .lineLimit(2)
                             }
                             .frame(width: 140, alignment: .leading)
                             .padding(8)
-                            .background(Color(.secondarySystemBackground))
+                            .toolPanelControlFill()
                         }
                         .buttonStyle(.plain)
                         .contextMenu {

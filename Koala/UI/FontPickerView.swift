@@ -188,12 +188,12 @@ struct FontPickerView: View {
             .buttonStyle(.plain)
         }
         .frame(width: 200)
-        .background(Color.toolPanelButtonFill)
+        .toolPanelControlFill()
     }
 
     private var fontMenuDivider: some View {
         Rectangle()
-            .fill(Color.primary.opacity(0.12))
+            .fill(Color.toolPanelButtonStroke)
             .frame(height: 1)
     }
 

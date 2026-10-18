@@ -42,13 +42,16 @@ struct PrintPaperPanelView: View {
                         keyboardType: .decimalPad,
                         fontSize: 13,
                         cornerRadius: 0,
+                        backgroundColor: .clear,
                         onSubmit: applyCustomSize
                     )
+                    .padding(.horizontal, 6)
                     .frame(height: 28)
+                    .toolPanelControlFill()
 
                     Text("×")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.toolPanelSecondaryLabel)
 
                     FingerOnlyTextField(
                         placeholder: "H",
@@ -56,16 +59,19 @@ struct PrintPaperPanelView: View {
                         keyboardType: .decimalPad,
                         fontSize: 13,
                         cornerRadius: 0,
+                        backgroundColor: .clear,
                         onSubmit: applyCustomSize
                     )
+                    .padding(.horizontal, 6)
                     .frame(height: 28)
+                    .toolPanelControlFill()
                 }
                 ToolPanelLabelButton(title: "Set size", prominent: true, fullWidth: true) {
                     applyCustomSize()
                 }
             }
 
-            Divider()
+            ToolPanelDivider()
 
             VStack(alignment: .leading, spacing: 4) {
                 ToolPanelSectionLabel("Columns")
@@ -106,19 +112,19 @@ struct PrintPaperPanelView: View {
         VStack(spacing: 0) {
             paperSizeRow(.letter, .a4)
             Rectangle()
-                .fill(Color.primary.opacity(0.12))
+                .fill(Color.toolPanelButtonStroke)
                 .frame(height: 1)
             paperSizeRow(.legal, .custom)
         }
         .fixedSize(horizontal: false, vertical: true)
-        .background(Color.toolPanelButtonFill)
+        .toolPanelControlFill()
     }
 
     private func paperSizeRow(_ leading: PaperSize, _ trailing: PaperSize) -> some View {
         HStack(spacing: 0) {
             paperSizeButton(leading)
             Rectangle()
-                .fill(Color.primary.opacity(0.12))
+                .fill(Color.toolPanelButtonStroke)
                 .frame(width: 1, height: 16)
             paperSizeButton(trailing)
         }
@@ -128,7 +134,8 @@ struct PrintPaperPanelView: View {
         ToolPanelLabelButton(
             title: size.label,
             prominent: document.printLayout.paperSize == size,
-            fullWidth: true
+            fullWidth: true,
+            bordered: false
         ) {
             selectSize(size)
         }

@@ -42,7 +42,7 @@ struct PrintMoveRotatePanelView: View {
                 axisLockEnabled.toggle()
             }
 
-            Divider()
+            ToolPanelDivider()
 
             VStack(alignment: .leading, spacing: 4) {
                 ToolPanelSectionLabel("Rotate")
@@ -66,21 +66,21 @@ struct PrintMoveRotatePanelView: View {
                 }
             }
 
-            Divider()
+            ToolPanelDivider()
 
             ToolPanelSectionLabel("Flip")
             HStack(spacing: 0) {
-                ToolPanelLabelButton(title: "Flip H", fullWidth: true) {
+                ToolPanelLabelButton(title: "Flip H", fullWidth: true, bordered: false) {
                     toggleFlip(horizontal: true)
                 }
                 Rectangle()
-                    .fill(Color.primary.opacity(0.12))
+                    .fill(Color.toolPanelButtonStroke)
                     .frame(width: 1, height: 16)
-                ToolPanelLabelButton(title: "Flip V", fullWidth: true) {
+                ToolPanelLabelButton(title: "Flip V", fullWidth: true, bordered: false) {
                     toggleFlip(horizontal: false)
                 }
             }
-            .background(Color.toolPanelButtonFill)
+            .toolPanelControlFill()
         }
         .toolPanelChrome(width: ToolPanelMetrics.commandWidth)
         .onAppear { syncDegreesField() }
