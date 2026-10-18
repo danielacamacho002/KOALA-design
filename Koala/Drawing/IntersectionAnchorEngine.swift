@@ -148,7 +148,7 @@ enum IntersectionAnchorEngine {
             normalizedShapeType = .polyline
         }
 
-        return VectorStroke(
+        let rebuilt = VectorStroke(
             id: stroke.id,
             layerID: stroke.layerID,
             points: points,
@@ -162,6 +162,9 @@ enum IntersectionAnchorEngine {
             openCutoutIndices: stroke.openCutoutIndices,
             fillOpacity: stroke.fillOpacity
         )
+        // The rebuild copies every render sample. Fit that chain back to a curve
+        // so the crossing does not leave the outline densely anchored.
+        return ShapeGeometry.withSimplifiedDenseAnchors(rebuilt)
     }
 
     /// Open lines/polylines are never subdivided — repositioning a line should never carve

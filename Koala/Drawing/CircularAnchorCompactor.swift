@@ -26,27 +26,34 @@ extension ShapeGeometry {
     ) -> VectorStroke {
         // Compound SVG paths (letters, overlapping ovals) must keep every contour.
         if !stroke.cutoutPoints.isEmpty { return stroke }
+        let compacted: VectorStroke
         switch stroke.shapeType {
         case .circle:
-            return compactStandaloneCircle(stroke)
+            compacted = compactStandaloneCircle(stroke)
         case .ellipse:
-            return compactStandaloneEllipse(stroke)
+            compacted = compactStandaloneEllipse(stroke)
         case .arc:
-            return compactStandaloneArc(stroke)
+            compacted = compactStandaloneArc(stroke)
         case .curve:
             if let restored = restoreParametricCircular(
                 stroke,
                 preservingBezierHandles: preservingBezierHandles
             ) {
-                return restored
+                compacted = restored
+            } else if stroke.points.count < 8 {
+                compacted = stroke
+            } else {
+                compacted = compactCircularRuns(in: stroke, rewritingPartialRuns: rewritingPartialRuns)
             }
-            if stroke.points.count < 8 { return stroke }
-            return compactCircularRuns(in: stroke, rewritingPartialRuns: rewritingPartialRuns)
         case .polyline, .rectangle:
-            return compactCircularRuns(in: stroke, rewritingPartialRuns: rewritingPartialRuns)
+            compacted = compactCircularRuns(in: stroke, rewritingPartialRuns: rewritingPartialRuns)
         default:
-            return stroke
+            compacted = stroke
         }
+        // Join, boolean, and auto-close store a curve's render samples as anchors.
+        // Collapse that chain once, after circular compaction, so the next select
+        // or move is not handed the dense list again.
+        return withSimplifiedDenseAnchors(compacted)
     }
 
     /// Default visible anchors for a circular arc of `sweep` radians starting at `start`.
