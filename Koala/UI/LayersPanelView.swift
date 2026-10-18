@@ -82,8 +82,9 @@ struct LayersPanelView: View {
         }
         .padding(10)
         .frame(width: panelWidth)
-        .background(Rectangle().fill(Color(hex: AppearanceSettings.panelHex)))
-        .overlay(Rectangle().stroke(Color.primary.opacity(0.08), lineWidth: 1))
+        .foregroundStyle(.white)
+        .background(Rectangle().fill(Color(hex: AppearanceSettings.toolbarHex)))
+        .overlay(Rectangle().stroke(Color.white.opacity(0.12), lineWidth: 1))
         // Scoped to the expanded card so the collapsed panel does not observe
         // `geometryRevision` and wake on every frame of a canvas drag.
         .onAppear { syncOpacitySlider() }
@@ -117,7 +118,7 @@ struct LayersPanelView: View {
             } label: {
                 Image(systemName: "chevron.up")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.toolPanelSecondaryLabel)
                     .frame(width: 24, height: 24)
             }
             .buttonStyle(.plain)
@@ -130,11 +131,11 @@ struct LayersPanelView: View {
             HStack {
                 Text(opacityTargetIDs.count > 1 ? "Opacity (\(opacityTargetIDs.count))" : "Opacity")
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.toolPanelSecondaryLabel)
                 Spacer()
                 Text(opacityLabel)
                     .font(.caption2.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.toolPanelSecondaryLabel)
             }
             Slider(
                 value: opacityBinding,
@@ -158,7 +159,7 @@ struct LayersPanelView: View {
         HStack(spacing: 8) {
             Text("\(validSelection.count) selected")
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.toolPanelSecondaryLabel)
 
             Spacer()
 
@@ -187,7 +188,7 @@ struct LayersPanelView: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.toolPanelSecondaryLabel)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Clear selection")
@@ -256,7 +257,7 @@ struct LayersPanelView: View {
         switch row {
         case .folder:
             Rectangle()
-                .fill(Color.primary.opacity(0.06))
+                .fill(Color.white.opacity(0.06))
                 .padding(.vertical, 2)
         case .layer(let layer, _):
             Rectangle()
@@ -293,7 +294,7 @@ struct LayersPanelView: View {
             } label: {
                 Image(systemName: group.isCollapsed ? "chevron.right" : "chevron.down")
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.toolPanelSecondaryLabel)
                     .frame(width: 16)
             }
             .buttonStyle(.plain)
@@ -328,13 +329,13 @@ struct LayersPanelView: View {
                memberOpacities.allSatisfy({ abs($0 - first) < 0.001 }) {
                 Text("\(Int((first * 100).rounded()))%")
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.toolPanelSecondaryLabel)
             }
 
             let allVisible = document.layerGroupIsVisible(id: group.id)
             Image(systemName: allVisible ? "eye" : "eye.slash")
                 .font(.caption)
-                .foregroundStyle(allVisible ? Color.primary.opacity(0.72) : Color.primary.opacity(0.28))
+                .foregroundStyle(allVisible ? Color.white.opacity(0.85) : Color.white.opacity(0.35))
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
                 .onTapGesture {
@@ -346,7 +347,7 @@ struct LayersPanelView: View {
             let allLocked = document.layerGroupIsLocked(id: group.id)
             Image(systemName: allLocked ? "lock.fill" : "lock.open")
                 .font(.caption)
-                .foregroundStyle(allLocked ? Color.accentColor : Color.primary.opacity(0.28))
+                .foregroundStyle(allLocked ? Color.accentColor : Color.white.opacity(0.35))
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
                 .onTapGesture {
@@ -396,7 +397,7 @@ struct LayersPanelView: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.caption)
-                    .foregroundStyle(Color.primary.opacity(0.6))
+                    .foregroundStyle(Color.white.opacity(0.7))
                     .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
             }
@@ -416,7 +417,7 @@ struct LayersPanelView: View {
 
             if indented {
                 Rectangle()
-                    .fill(Color.primary.opacity(0.12))
+                    .fill(Color.white.opacity(0.18))
                     .frame(width: 1)
                     .padding(.leading, 4)
             }
@@ -445,12 +446,12 @@ struct LayersPanelView: View {
             if layer.resolvedOpacity < 0.999 {
                 Text("\(Int((layer.resolvedOpacity * 100).rounded()))%")
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.toolPanelSecondaryLabel)
             }
 
             Image(systemName: layer.isVisible ? "eye" : "eye.slash")
                 .font(.caption)
-                .foregroundStyle(layer.isVisible ? Color.primary.opacity(0.72) : Color.primary.opacity(0.28))
+                .foregroundStyle(layer.isVisible ? Color.white.opacity(0.85) : Color.white.opacity(0.35))
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
                 .onTapGesture {
@@ -461,7 +462,7 @@ struct LayersPanelView: View {
 
             Image(systemName: layer.isLocked ? "lock.fill" : "lock.open")
                 .font(.caption)
-                .foregroundStyle(layer.isLocked ? Color.accentColor : Color.primary.opacity(0.28))
+                .foregroundStyle(layer.isLocked ? Color.accentColor : Color.white.opacity(0.35))
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
                 .onTapGesture {
@@ -505,7 +506,7 @@ struct LayersPanelView: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.caption)
-                    .foregroundStyle(Color.primary.opacity(0.6))
+                    .foregroundStyle(Color.white.opacity(0.7))
                     .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
             }
@@ -517,13 +518,18 @@ struct LayersPanelView: View {
     // MARK: - Shared subviews
 
     private var renameField: some View {
-        TextField("Name", text: $renameText)
+        TextField(
+            "",
+            text: $renameText,
+            prompt: Text("Name").foregroundStyle(Color.white.opacity(0.45))
+        )
             .font(.caption)
             .textFieldStyle(.plain)
+            .foregroundStyle(.white)
             .padding(.horizontal, 6)
             .padding(.vertical, 4)
-            .background(Rectangle().fill(Color(.systemBackground)))
-            .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
+            .background(Rectangle().fill(Color(hex: AppearanceSettings.toolbarHex)))
+            .overlay(Rectangle().stroke(Color.white.opacity(0.28), lineWidth: 1))
             .focused($renameFieldFocused)
             .onSubmit { commitRenameIfNeeded() }
     }
@@ -532,7 +538,7 @@ struct LayersPanelView: View {
         Button(action: action) {
             Image(systemName: isOn ? "checkmark.circle.fill" : (isMixed ? "minus.circle.fill" : "circle"))
                 .font(.caption)
-                .foregroundStyle(isOn || isMixed ? Color.accentColor : Color.primary.opacity(0.3))
+                .foregroundStyle(isOn || isMixed ? Color.accentColor : Color.white.opacity(0.35))
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
