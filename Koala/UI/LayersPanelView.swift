@@ -126,7 +126,7 @@ struct LayersPanelView: View {
     }
 
     private var opacityControls: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(opacityTargetIDs.count > 1 ? "Opacity (\(opacityTargetIDs.count))" : "Opacity")
                     .font(.caption2.weight(.medium))
@@ -136,19 +136,13 @@ struct LayersPanelView: View {
                     .font(.caption2.weight(.semibold).monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            Slider(
-                value: opacityBinding,
-                in: 0...1,
-                onEditingChanged: { editing in
-                    if editing {
-                        document.beginInteractiveEdit()
-                    } else {
-                        onChanged()
-                    }
+            LayerOpacityBar(value: opacityBinding) { editing in
+                if editing {
+                    document.beginInteractiveEdit()
+                } else {
+                    onChanged()
                 }
-            )
-            .controlSize(.small)
-            .accessibilityLabel("Layer opacity")
+            }
         }
         .padding(.horizontal, 2)
     }
@@ -711,6 +705,100 @@ struct LayersPanelView: View {
         }
         document.reorderLayers(Array(frontToBack.reversed()))
         onChanged()
+    }
+}
+
+/// Sharp opacity slider. The track and handle reuse the layer thumbnail boxes:
+/// white rectangle, hairline stroke, with ink filling in from the left.
+private struct LayerOpacityBar: View {
+    @Binding var value: Double
+    var onEditingChanged: (Bool) -> Void
+
+    private let slotHeight: CGFloat = 2
+    private let thumbWidth: CGFloat = 8
+    private let thumbHeight: CGFloat = 14
+    private let controlHeight: CGFloat = 22
+
+    @State private var isDragging = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = max(geometry.size.width, thumbWidth)
+            let travel = max(1, width - thumbWidth)
+            let origin = CGFloat(value) * travel
+            let midY = geometry.size.height / 2
+
+            ZStack {
+                Rectangle()
+                    .fill(Color(.systemBackground))
+                    .frame(width: width, height: slotHeight)
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.78))
+                            .frame(width: max(0, origin), height: slotHeight)
+                    }
+                    .clipped()
+                    .overlay {
+                        Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1)
+                    }
+                    .position(x: width / 2, y: midY)
+
+                Rectangle()
+                    .fill(Color(.systemBackground))
+                    .overlay {
+                        Rectangle().stroke(Color.primary.opacity(0.45), lineWidth: 1)
+                    }
+                    .frame(width: thumbWidth, height: thumbHeight)
+                    .position(x: origin + thumbWidth / 2, y: midY)
+            }
+            .contentShape(Rectangle())
+            .gesture(drag(travel: travel))
+        }
+        .frame(height: controlHeight)
+        .transaction { $0.animation = nil }
+        .accessibilityElement()
+        .accessibilityLabel("Layer opacity")
+        .accessibilityValue("\(Int((value * 100).rounded())) percent")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: step(by: 0.05)
+            case .decrement: step(by: -0.05)
+            @unknown default: break
+            }
+        }
+    }
+
+    private func drag(travel: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { gesture in
+                if !isDragging {
+                    isDragging = true
+                    onEditingChanged(true)
+                }
+                let next = fraction(at: gesture.location.x, travel: travel)
+                if abs(next - value) > 0.001 {
+                    value = next
+                }
+            }
+            .onEnded { _ in
+                guard isDragging else { return }
+                isDragging = false
+                onEditingChanged(false)
+            }
+    }
+
+    private func step(by delta: Double) {
+        let next = min(1, max(0, ((value + delta) * 100).rounded() / 100))
+        guard abs(next - value) > 0.001 else { return }
+        onEditingChanged(true)
+        value = next
+        onEditingChanged(false)
+    }
+
+    private func fraction(at x: CGFloat, travel: CGFloat) -> Double {
+        let raw = Double((x - thumbWidth / 2) / travel)
+        let clamped = min(1, max(0, raw))
+        return (clamped * 100).rounded() / 100
     }
 }
 
