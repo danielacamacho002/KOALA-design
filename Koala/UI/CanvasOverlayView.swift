@@ -17,6 +17,20 @@ struct CanvasOverlayView: View {
     @State private var nodeDragOriginPoints: [CGPoint] = []
     @State private var nodeDragOriginStroke: VectorStroke?
     @State private var curveHandleDragActive = false
+    /// Curve control chosen at the start of a grab. The closest dot keeps the touch.
+    @State private var curveGrab: CurveGrab?
+    @State private var curveGrabMoved = false
+
+    private enum CurveGrab: Equatable {
+        case anchor(Int)
+        case tangent(index: Int, isOut: Bool)
+    }
+
+    private struct CurveGrabCircle {
+        var kind: CurveGrab
+        var center: CGPoint
+        var radius: CGFloat
+    }
     @State private var moveDragOriginPoints: [CGPoint] = []
     @State private var moveDragOriginStroke: VectorStroke?
     @State private var commandDragOriginPoints: [CGPoint] = []
@@ -100,12 +114,12 @@ struct CanvasOverlayView: View {
     private let handleSize: CGFloat = 22
     /// Visible side length of path anchors and the center handle at 1× zoom.
     /// Above 1× this grows with the viewport via `anchorScreenLength`. Hit testing uses `anchorTouchTargetSize`.
-    private let anchorHandleSize: CGFloat = 6
+    private let anchorHandleSize = CanvasOverlayGeometry.anchorMarkSize
     private let coordinateSpaceName = "editor"
     private let filletDragThreshold: CGFloat = 6
     private let rotateHandleOffset: CGFloat = 36
     /// Invisible finger/Pencil target around each anchor handle so small squares are easy to hit.
-    private let anchorTouchTargetSize: CGFloat = 44
+    private let anchorTouchTargetSize = CanvasOverlayGeometry.curveAnchorHitExtent
     /// Dead-zone before an individual anchor starts dragging, so taps/double-taps never nudge it.
     private let anchorDragThreshold: CGFloat = 6
     /// Window in which a second tap on the same handle counts as a double-tap.
@@ -237,12 +251,21 @@ struct CanvasOverlayView: View {
             if stroke.shapeType == .curve,
                let curveHandles = stroke.curveHandles,
                curveHandles.count == stroke.points.count {
-                curveTangentHandles(strokeID: strokeID, stroke: stroke, curveHandles: curveHandles)
+                curveTangentConnectors(stroke: stroke, curveHandles: curveHandles)
             }
             ForEach(Array(handles.enumerated()), id: \.offset) { index, point in
                 handleView(style: .edit, strokeColor: stroke.strokeColor)
                     .position(document.viewport.documentToView(point))
+                    .allowsHitTesting(stroke.shapeType != .curve)
                     .highPriorityGesture(strokeNodeDrag(strokeID: strokeID, index: index))
+            }
+            // Dots sit above the anchor so a handle can be grabbed. The bar is drawn
+            // underneath, with the anchor at its midpoint.
+            if stroke.shapeType == .curve,
+               let curveHandles = stroke.curveHandles,
+               curveHandles.count == stroke.points.count {
+                curveTangentDots(curveHandles: curveHandles, anchors: stroke.points)
+                curveGrabLayer(strokeID: strokeID, stroke: stroke, curveHandles: curveHandles, nodeEdit: true)
             }
             centerHandle(strokeID: strokeID, stroke: stroke)
 
@@ -254,9 +277,44 @@ struct CanvasOverlayView: View {
 
     // MARK: - Curve tangent handles
 
+    /// Writes an eighth-inch floor into any short tangent so the drawn curve and the
+    /// handles are the same length. A second call is a no-op once the arms already clear it.
+    private func commitMinimumTangentLength(strokeID: UUID) {
+        guard let current = document.stroke(with: strokeID),
+              current.shapeType == .curve,
+              let handles = current.curveHandles,
+              handles.count == current.points.count else { return }
+        let normalized = CanvasOverlayGeometry.tangentHandlesObservingMinimum(
+            anchors: current.points,
+            handles: handles
+        )
+        guard tangentsDiffer(normalized, handles) else { return }
+        document.beginInteractiveEdit()
+        guard var stroke = document.stroke(with: strokeID) else { return }
+        let refreshed = CanvasOverlayGeometry.tangentHandlesObservingMinimum(
+            anchors: stroke.points,
+            handles: stroke.curveHandles ?? handles
+        )
+        stroke.curveHandles = refreshed
+        document.updateStroke(stroke, recordUndo: false)
+        onChanged()
+    }
+
+    private func tangentsDiffer(_ updated: [CurveHandle], _ stored: [CurveHandle]) -> Bool {
+        guard updated.count == stored.count else { return true }
+        for (left, right) in zip(updated, stored) {
+            if hypot(left.inOffset.x - right.inOffset.x, left.inOffset.y - right.inOffset.y) > 0.01 {
+                return true
+            }
+            if hypot(left.outOffset.x - right.outOffset.x, left.outOffset.y - right.outOffset.y) > 0.01 {
+                return true
+            }
+        }
+        return false
+    }
+
     @ViewBuilder
-    private func curveTangentHandles(
-        strokeID: UUID,
+    private func curveTangentConnectors(
         stroke: VectorStroke,
         curveHandles: [CurveHandle]
     ) -> some View {
@@ -264,29 +322,49 @@ struct CanvasOverlayView: View {
         ForEach(Array(stroke.points.indices), id: \.self) { index in
             let anchor = stroke.points[index]
             let anchorView = document.viewport.documentToView(anchor)
+            let handle = curveHandles[index]
+            let out = CGPoint(x: anchor.x + handle.outOffset.x, y: anchor.y + handle.outOffset.y)
+            let incoming = CGPoint(x: anchor.x + handle.inOffset.x, y: anchor.y + handle.inOffset.y)
+            let hasOut = index < count - 1 || hypot(handle.outOffset.x, handle.outOffset.y) > CanvasOverlayGeometry.epsilon
+            let hasIn = index > 0 || hypot(handle.inOffset.x, handle.inOffset.y) > CanvasOverlayGeometry.epsilon
 
-            if index < count - 1 {
-                let out = CGPoint(
-                    x: anchor.x + curveHandles[index].outOffset.x,
-                    y: anchor.y + curveHandles[index].outOffset.y
+            if hasIn && hasOut {
+                tangentConnector(
+                    from: document.viewport.documentToView(incoming),
+                    to: document.viewport.documentToView(out)
                 )
-                let outView = document.viewport.documentToView(out)
-                tangentConnector(from: anchorView, to: outView)
+            } else if hasOut {
+                tangentConnector(from: anchorView, to: document.viewport.documentToView(out))
+            } else if hasIn {
+                tangentConnector(from: anchorView, to: document.viewport.documentToView(incoming))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func curveTangentDots(
+        curveHandles: [CurveHandle],
+        anchors: [CGPoint]
+    ) -> some View {
+        let count = anchors.count
+        ForEach(Array(anchors.indices), id: \.self) { index in
+            let anchor = anchors[index]
+            let handle = curveHandles[index]
+            let hasOut = index < count - 1 || hypot(handle.outOffset.x, handle.outOffset.y) > CanvasOverlayGeometry.epsilon
+            let hasIn = index > 0 || hypot(handle.inOffset.x, handle.inOffset.y) > CanvasOverlayGeometry.epsilon
+
+            if hasOut {
+                let out = CGPoint(x: anchor.x + handle.outOffset.x, y: anchor.y + handle.outOffset.y)
                 tangentDot()
-                    .position(outView)
-                    .highPriorityGesture(curveTangentDrag(strokeID: strokeID, index: index, isOut: true))
+                    .position(document.viewport.documentToView(out))
+                    .allowsHitTesting(false)
             }
 
-            if index > 0 {
-                let inControl = CGPoint(
-                    x: anchor.x + curveHandles[index].inOffset.x,
-                    y: anchor.y + curveHandles[index].inOffset.y
-                )
-                let inView = document.viewport.documentToView(inControl)
-                tangentConnector(from: anchorView, to: inView)
+            if hasIn {
+                let incoming = CGPoint(x: anchor.x + handle.inOffset.x, y: anchor.y + handle.inOffset.y)
                 tangentDot()
-                    .position(inView)
-                    .highPriorityGesture(curveTangentDrag(strokeID: strokeID, index: index, isOut: false))
+                    .position(document.viewport.documentToView(incoming))
+                    .allowsHitTesting(false)
             }
         }
     }
@@ -303,87 +381,272 @@ struct CanvasOverlayView: View {
 
     private func tangentDot() -> some View {
         let side = anchorScreenLength(base: anchorHandleSize)
+        let hit = curveTangentHitExtent
         return Circle()
             .fill(Color.teal)
             .frame(width: side, height: side)
             .shadow(color: .white.opacity(0.85), radius: 0.5)
-            .frame(width: anchorHitTarget(visible: side), height: anchorHitTarget(visible: side))
-            .contentShape(Rectangle())
+            .frame(width: hit, height: hit)
+            .contentShape(Circle())
     }
 
-    private func curveTangentDrag(strokeID: UUID, index: Int, isOut: Bool) -> some Gesture {
+    private func performTangentDrag(strokeID: UUID, index: Int, isOut: Bool, location: CGPoint) {
+        guard var stroke = document.stroke(with: strokeID),
+              stroke.shapeType == .curve,
+              var handles = stroke.curveHandles,
+              handles.indices.contains(index),
+              stroke.points.indices.contains(index) else { return }
+        if !curveHandleDragActive {
+            curveHandleDragActive = true
+            document.beginInteractiveEdit()
+        }
+        // Tangent handles are exempt from grid snapping so curvature can be tuned freely.
+        let docPoint = document.viewport.viewToDocument(location)
+        let anchor = stroke.points[index]
+        let proposed = CGPoint(x: docPoint.x - anchor.x, y: docPoint.y - anchor.y)
+        let stored = isOut ? handles[index].outOffset : handles[index].inOffset
+        let separated = CanvasOverlayGeometry.separatedTangentOffset(
+            proposed: proposed,
+            anchor: anchor,
+            obstacles: [],
+            minimumLength: CanvasOverlayGeometry.minimumTangentLength,
+            fallbackDirection: tangentFallbackDirection(
+                anchors: stroke.points,
+                index: index,
+                isOut: isOut,
+                stored: stored
+            )
+        )
+        // Mirror the opposite handle so the pair stays a single straight tangent line.
+        let mirrored = CGPoint(x: -separated.x, y: -separated.y)
+        if isOut {
+            handles[index].outOffset = separated
+            handles[index].inOffset = mirrored
+        } else {
+            handles[index].inOffset = separated
+            handles[index].outOffset = mirrored
+        }
+        stroke.curveHandles = handles
+        document.updateStroke(stroke, recordUndo: false)
+        onChanged()
+    }
+
+    private func finishTangentDrag() {
+        let didEdit = curveHandleDragActive
+        curveHandleDragActive = false
+        guard didEdit else { return }
+        onChanged()
+    }
+
+    /// One hit target over every curve anchor and tangent dot. Overlapping circles
+    /// resolve to whichever center is closest, so zooming out does not stack grabs.
+    @ViewBuilder
+    private func curveGrabLayer(
+        strokeID: UUID,
+        stroke: VectorStroke,
+        curveHandles: [CurveHandle],
+        nodeEdit: Bool
+    ) -> some View {
+        let circles = curveGrabCircles(anchors: stroke.points, handles: curveHandles)
+        Color.clear
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(curveGrabPath(circles))
+            .highPriorityGesture(curveGrabGesture(strokeID: strokeID, circles: circles, nodeEdit: nodeEdit))
+            .onAppear { commitMinimumTangentLength(strokeID: strokeID) }
+    }
+
+    private func curveGrabCircles(anchors: [CGPoint], handles: [CurveHandle]) -> [CurveGrabCircle] {
+        guard anchors.count == handles.count else { return [] }
+        let anchorRadius = anchorHitTarget(visible: anchorScreenLength(base: anchorHandleSize)) / 2
+        let tangentRadius = curveTangentHitExtent / 2
+        let count = anchors.count
+        var circles: [CurveGrabCircle] = []
+        for index in anchors.indices {
+            let anchor = anchors[index]
+            circles.append(CurveGrabCircle(
+                kind: .anchor(index),
+                center: document.viewport.documentToView(anchor),
+                radius: anchorRadius
+            ))
+            let handle = handles[index]
+            let hasOut = index < count - 1 || hypot(handle.outOffset.x, handle.outOffset.y) > CanvasOverlayGeometry.epsilon
+            let hasIn = index > 0 || hypot(handle.inOffset.x, handle.inOffset.y) > CanvasOverlayGeometry.epsilon
+            if hasOut {
+                let out = CGPoint(x: anchor.x + handle.outOffset.x, y: anchor.y + handle.outOffset.y)
+                circles.append(CurveGrabCircle(
+                    kind: .tangent(index: index, isOut: true),
+                    center: document.viewport.documentToView(out),
+                    radius: tangentRadius
+                ))
+            }
+            if hasIn {
+                let incoming = CGPoint(x: anchor.x + handle.inOffset.x, y: anchor.y + handle.inOffset.y)
+                circles.append(CurveGrabCircle(
+                    kind: .tangent(index: index, isOut: false),
+                    center: document.viewport.documentToView(incoming),
+                    radius: tangentRadius
+                ))
+            }
+        }
+        return circles
+    }
+
+    private func curveGrabPath(_ circles: [CurveGrabCircle]) -> Path {
+        var path = Path()
+        for circle in circles {
+            path.addEllipse(in: CGRect(
+                x: circle.center.x - circle.radius,
+                y: circle.center.y - circle.radius,
+                width: circle.radius * 2,
+                height: circle.radius * 2
+            ))
+        }
+        return path
+    }
+
+    private func curveGrabGesture(
+        strokeID: UUID,
+        circles: [CurveGrabCircle],
+        nodeEdit: Bool
+    ) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
             .onChanged { value in
-                guard var stroke = document.stroke(with: strokeID),
-                      stroke.shapeType == .curve,
-                      var handles = stroke.curveHandles,
-                      handles.indices.contains(index),
-                      stroke.points.indices.contains(index) else { return }
-                if !curveHandleDragActive {
-                    curveHandleDragActive = true
-                    document.beginInteractiveEdit()
+                if curveGrab == nil {
+                    let centers = circles.map(\.center)
+                    let radii = circles.map(\.radius)
+                    if let index = CanvasOverlayGeometry.nearestGrab(at: value.startLocation, centers: centers, radii: radii),
+                       circles.indices.contains(index) {
+                        curveGrab = circles[index].kind
+                    }
+                    curveGrabMoved = false
                 }
-                // Tangent handles are exempt from grid snapping so curvature can be tuned freely.
-                let docPoint = document.viewport.viewToDocument(value.location)
-                let anchor = stroke.points[index]
-                let offset = CGPoint(x: docPoint.x - anchor.x, y: docPoint.y - anchor.y)
-                // Mirror the opposite handle so the pair stays a single straight tangent line.
-                let mirrored = CGPoint(x: -offset.x, y: -offset.y)
-                if isOut {
-                    handles[index].outOffset = offset
-                    handles[index].inOffset = mirrored
-                } else {
-                    handles[index].inOffset = offset
-                    handles[index].outOffset = mirrored
+                guard let grab = curveGrab else { return }
+                let moved = hypot(value.translation.width, value.translation.height) >= anchorDragThreshold
+                switch grab {
+                case .anchor(let index):
+                    if nodeEdit {
+                        curveGrabMoved = true
+                        performNodeAnchorDrag(strokeID: strokeID, index: index, location: value.location)
+                    } else if moved {
+                        curveGrabMoved = true
+                        guard let stroke = document.stroke(with: strokeID) else { return }
+                        handleMoveDragChanged(
+                            strokeID: strokeID,
+                            stroke: stroke,
+                            value: OverlayPointerValue(
+                                startLocation: value.startLocation,
+                                location: value.location,
+                                translation: value.translation
+                            ),
+                            anchorIndex: index
+                        )
+                    }
+                case .tangent(let index, let isOut):
+                    curveGrabMoved = true
+                    performTangentDrag(strokeID: strokeID, index: index, isOut: isOut, location: value.location)
                 }
-                stroke.curveHandles = handles
-                document.updateStroke(stroke, recordUndo: false)
-                onChanged()
             }
             .onEnded { _ in
-                let didEdit = curveHandleDragActive
-                curveHandleDragActive = false
-                guard didEdit else { return }
-                onChanged()
+                let grab = curveGrab
+                let moved = curveGrabMoved
+                curveGrab = nil
+                curveGrabMoved = false
+                switch grab {
+                case .anchor(let index):
+                    if nodeEdit {
+                        finishNodeAnchorDrag(strokeID: strokeID)
+                    } else if moved {
+                        finishMoveDrag(strokeID: strokeID)
+                    } else {
+                        handleAnchorTap(at: index)
+                    }
+                case .tangent:
+                    finishTangentDrag()
+                case nil:
+                    break
+                }
             }
+    }
+
+    /// Direction used when a drag lands on the anchor and the proposed offset has no length.
+    private func tangentFallbackDirection(
+        anchors: [CGPoint],
+        index: Int,
+        isOut: Bool,
+        stored: CGPoint
+    ) -> CGPoint {
+        if hypot(stored.x, stored.y) > CanvasOverlayGeometry.epsilon {
+            return stored
+        }
+        guard anchors.indices.contains(index) else { return CGPoint(x: 1, y: 0) }
+        let neighborIndex = isOut
+            ? min(index + 1, anchors.count - 1)
+            : max(index - 1, 0)
+        let anchor = anchors[index]
+        let neighbor = anchors[neighborIndex]
+        return CGPoint(x: neighbor.x - anchor.x, y: neighbor.y - anchor.y)
+    }
+
+    /// Keeps one curve anchor from landing on another. Pairs that are already closer than
+    /// the grab gap can move apart, but a drag cannot stack them further.
+    private func separatedCurveAnchor(_ stroke: VectorStroke, index: Int, proposed: CGPoint) -> CGPoint {
+        guard stroke.shapeType == .curve, stroke.points.indices.contains(index) else { return proposed }
+        let others = stroke.points.enumerated().compactMap { offset, point in
+            offset == index ? nil : point
+        }
+        return CanvasOverlayGeometry.separatedPoint(
+            proposed: proposed,
+            current: stroke.points[index],
+            obstacles: others,
+            minimumDistance: curveAnchorGrabGap
+        )
     }
 
     private func strokeNodeDrag(strokeID: UUID, index: Int) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
             .onChanged { value in
-                if nodeDragOriginPoints.isEmpty {
-                    document.beginInteractiveEdit()
-                    nodeDragOriginStroke = document.stroke(with: strokeID)
-                    nodeDragOriginPoints = nodeDragOriginStroke.map {
-                        ShapeGeometry.handlePoints(for: $0)
-                    } ?? []
-                }
-                // Edit the geometry captured at drag start. A parametric shape rewrites its
-                // anchor set on every edit, so re-reading the live stroke would let `index`
-                // land on a different anchor (or out of bounds) part-way through the drag.
-                guard let stroke = nodeDragOriginStroke ?? document.stroke(with: strokeID),
-                      stroke.points.indices.contains(index) else { return }
-                let rawPoint = document.viewport.viewToDocument(value.location)
-                let moved = ShapeGeometry.applyingMovedAnchor(
-                    stroke,
-                    at: index,
-                    to: resolveNodeSnap(
-                        rawPoint: rawPoint,
-                        strokeID: strokeID
-                    )
-                )
-                document.updateStroke(moved, recordUndo: false)
-                onChanged()
+                performNodeAnchorDrag(strokeID: strokeID, index: index, location: value.location)
             }
             .onEnded { _ in
-                let didEdit = !nodeDragOriginPoints.isEmpty
-                nodeDragOriginPoints = []
-                nodeDragOriginStroke = nil
-                clearMoveSnap()
-                guard didEdit else { return }
-                document.reconcileIntersectionAnchors(around: [strokeID])
-                onChanged()
+                finishNodeAnchorDrag(strokeID: strokeID)
             }
+    }
+
+    private func performNodeAnchorDrag(strokeID: UUID, index: Int, location: CGPoint) {
+        if nodeDragOriginPoints.isEmpty {
+            document.beginInteractiveEdit()
+            nodeDragOriginStroke = document.stroke(with: strokeID)
+            nodeDragOriginPoints = nodeDragOriginStroke.map {
+                ShapeGeometry.handlePoints(for: $0)
+            } ?? []
+        }
+        // Edit the geometry captured at drag start. A parametric shape rewrites its
+        // anchor set on every edit, so re-reading the live stroke would let `index`
+        // land on a different anchor (or out of bounds) part-way through the drag.
+        guard let stroke = nodeDragOriginStroke ?? document.stroke(with: strokeID),
+              stroke.points.indices.contains(index) else { return }
+        let rawPoint = document.viewport.viewToDocument(location)
+        let snapped = resolveNodeSnap(
+            rawPoint: rawPoint,
+            strokeID: strokeID
+        )
+        let moved = ShapeGeometry.applyingMovedAnchor(
+            stroke,
+            at: index,
+            to: separatedCurveAnchor(stroke, index: index, proposed: snapped)
+        )
+        document.updateStroke(moved, recordUndo: false)
+        onChanged()
+    }
+
+    private func finishNodeAnchorDrag(strokeID: UUID) {
+        let didEdit = !nodeDragOriginPoints.isEmpty
+        nodeDragOriginPoints = []
+        nodeDragOriginStroke = nil
+        clearMoveSnap()
+        guard didEdit else { return }
+        document.reconcileIntersectionAnchors(around: [strokeID])
+        onChanged()
     }
 
     /// Snaps a node-edit vertex to nearby object geometry (endpoints/center/on-rim/intersection).
@@ -977,6 +1240,12 @@ struct CanvasOverlayView: View {
                 rotationHandle(strokeID: strokeID, pivot: pivot)
             }
 
+            if stroke.shapeType == .curve,
+               let curveHandles = stroke.curveHandles,
+               curveHandles.count == stroke.points.count {
+                curveTangentConnectors(stroke: stroke, curveHandles: curveHandles)
+            }
+
             ForEach(Array(handles.enumerated()), id: \.offset) { index, point in
                 let selected = document.selectedAnchorIndices.contains(index)
                 let isPivot = document.isMoveRotateMode
@@ -993,6 +1262,7 @@ struct CanvasOverlayView: View {
                 .frame(width: anchorHitTarget(visible: ring), height: anchorHitTarget(visible: ring))
                 .contentShape(Rectangle())
                 .position(document.viewport.documentToView(point))
+                .allowsHitTesting(stroke.shapeType != .curve)
                 .highPriorityGesture(anchorMoveDrag(strokeID: strokeID, stroke: stroke, anchorIndex: index))
                 .onTapGesture { handleAnchorTap(at: index) }
             }
@@ -1000,7 +1270,8 @@ struct CanvasOverlayView: View {
             if stroke.shapeType == .curve,
                let curveHandles = stroke.curveHandles,
                curveHandles.count == stroke.points.count {
-                curveTangentHandles(strokeID: strokeID, stroke: stroke, curveHandles: curveHandles)
+                curveTangentDots(curveHandles: curveHandles, anchors: stroke.points)
+                curveGrabLayer(strokeID: strokeID, stroke: stroke, curveHandles: curveHandles, nodeEdit: false)
             }
 
             centerHandle(
@@ -1147,6 +1418,23 @@ struct CanvasOverlayView: View {
         for index in indices where moveDragOriginPoints.indices.contains(index) {
             let anchor = moveDragOriginPoints[index]
             moves[index] = CGPoint(x: anchor.x + delta.x, y: anchor.y + delta.y)
+        }
+        // One curve anchor cannot be dragged onto another. A group of anchors moving
+        // together keeps its spacing, including a pair that was already close.
+        if indices.count == 1,
+           let index = indices.first,
+           origin.shapeType == .curve,
+           let proposed = moves[index],
+           moveDragOriginPoints.indices.contains(index) {
+            let others = moveDragOriginPoints.enumerated().compactMap { offset, point in
+                offset == index ? nil : point
+            }
+            moves[index] = CanvasOverlayGeometry.separatedPoint(
+                proposed: proposed,
+                current: moveDragOriginPoints[index],
+                obstacles: others,
+                minimumDistance: curveAnchorGrabGap
+            )
         }
         guard !moves.isEmpty else { return }
         document.updateStroke(
@@ -2117,6 +2405,21 @@ struct CanvasOverlayView: View {
     /// Hit target stays at least `anchorTouchTargetSize`, and widens if the visible mark would be clipped.
     private func anchorHitTarget(visible: CGFloat) -> CGFloat {
         max(anchorTouchTargetSize, visible)
+    }
+
+    /// On-screen diameter of a tangent handle. Grows with the dot once zoom exceeds the floor.
+    private var curveTangentHitExtent: CGFloat {
+        CanvasOverlayGeometry.screenGrabExtent(
+            minimum: CanvasOverlayGeometry.curveTangentHitDiameter,
+            mark: anchorHandleSize,
+            scale: document.viewport.scale
+        )
+    }
+
+    /// Document distance between curve anchors so their grab squares do not stack.
+    private var curveAnchorGrabGap: CGFloat {
+        let anchorHit = anchorHitTarget(visible: anchorScreenLength(base: anchorHandleSize))
+        return document.viewport.viewToDocument(distance: anchorHit)
     }
 
     /// Light stroke colors need a dark edge so the anchor still reads on the line and the canvas.

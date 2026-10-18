@@ -75,7 +75,8 @@ enum AnchorPointEngine {
     static func insertAtTap(
         stroke: VectorStroke,
         point: CGPoint,
-        threshold: CGFloat
+        threshold: CGFloat,
+        minimumSeparation: CGFloat = 0
     ) -> VectorStroke? {
         guard canEditAnchors(on: stroke) else { return nil }
 
@@ -85,7 +86,13 @@ enum AnchorPointEngine {
         if stroke.shapeType == .curve,
            let handles = stroke.curveHandles,
            handles.count == stroke.points.count {
-            return insertOnCurve(stroke: stroke, handles: handles, point: point, threshold: threshold)
+            return insertOnCurve(
+            stroke: stroke,
+            handles: handles,
+            point: point,
+            threshold: threshold,
+            minimumSeparation: minimumSeparation
+        )
         }
 
         // Bake live fillets into permanent anchors first so the rounded corners survive editing.
@@ -136,6 +143,9 @@ enum AnchorPointEngine {
             }
         }
         guard let insertIndex, insertIndex <= points.count else { return nil }
+        guard separationAllows(projection.point, among: points, minimum: minimumSeparation) else {
+            return nil
+        }
 
         points.insert(projection.point, at: insertIndex)
 
@@ -162,7 +172,8 @@ enum AnchorPointEngine {
         stroke: VectorStroke,
         handles: [CurveHandle],
         point: CGPoint,
-        threshold: CGFloat
+        threshold: CGFloat,
+        minimumSeparation: CGFloat
     ) -> VectorStroke? {
         let anchors = stroke.points
         let count = anchors.count
@@ -212,8 +223,12 @@ enum AnchorPointEngine {
             // Keep the closing edge straight: zero-offset handles produce a line.
             let p0 = anchors[count - 1]
             let p3 = anchors[0]
+            let inserted = lerp(p0, p3, best.t)
+            guard separationAllows(inserted, among: anchors, minimum: minimumSeparation) else {
+                return nil
+            }
             newHandles[count - 1].outOffset = .zero
-            newPoints.append(lerp(p0, p3, best.t))
+            newPoints.append(inserted)
             newHandles.append(CurveHandle())
         } else {
             let index = best.segment
@@ -222,6 +237,9 @@ enum AnchorPointEngine {
             let c1 = controlOut(anchor: p0, handle: handles[index])
             let c2 = controlIn(anchor: p3, handle: handles[index + 1])
             let split = subdivideCubic(p0, c1, c2, p3, t: best.t)
+            guard separationAllows(split.f, among: anchors, minimum: minimumSeparation) else {
+                return nil
+            }
 
             // Left half controls: p0, split.a, split.d, split.f
             newHandles[index].outOffset = offset(from: p0, to: split.a)
@@ -578,6 +596,13 @@ enum AnchorPointEngine {
             return
         }
         points.append(point)
+    }
+
+    /// A new anchor closer than `minimum` to one that already exists lands inside that
+    /// anchor's grab target, so the tap stacks a point instead of adding a grabbable one.
+    private static func separationAllows(_ point: CGPoint, among anchors: [CGPoint], minimum: CGFloat) -> Bool {
+        guard minimum > 0 else { return true }
+        return anchors.allSatisfy { distance($0, point) + 0.0001 >= minimum }
     }
 
     private static func distance(_ a: CGPoint, _ b: CGPoint) -> CGFloat {
