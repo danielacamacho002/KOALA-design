@@ -1785,22 +1785,95 @@ final class KoalaDocument {
         return isSelectableStroke(hit) ? hit : nil
     }
 
-    /// Front-most stroke on the active layer or in front of it.
+    /// Stroke a tap should grab. Layers are walked front-to-back so a shape on a
+    /// layer in front still blocks the active layer. Within one layer, an outline
+    /// within `threshold` beats a containing fill, and otherwise the smallest
+    /// containing shape wins so a line or shape inside a larger one can be selected.
     func topmostOccupyingStroke(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
-        let candidates = occupyingStrokes()
-        if let fillHit = candidates.reversed().first(where: { $0.contains(documentPoint) }) {
-            return fillHit
+        preferredStrokeHit(in: occupyingStrokes(), near: documentPoint, threshold: threshold)
+    }
+
+    /// `strokes` are back-to-front. The first layer (front-most) with any hit wins.
+    private func preferredStrokeHit(
+        in strokes: [VectorStroke],
+        near point: CGPoint,
+        threshold: CGFloat
+    ) -> VectorStroke? {
+        let order = layerIndexByID()
+        var byLayer: [UUID: [VectorStroke]] = [:]
+        var layerIDs: [UUID] = []
+        for stroke in strokes {
+            if byLayer[stroke.layerID] == nil {
+                layerIDs.append(stroke.layerID)
+            }
+            byLayer[stroke.layerID, default: []].append(stroke)
         }
-        var best: VectorStroke?
-        var bestDistance = threshold
-        for stroke in candidates.reversed() {
-            let distance = stroke.distance(to: documentPoint)
-            if distance < bestDistance {
-                bestDistance = distance
-                best = stroke
+        let frontToBack = layerIDs.sorted { (order[$0] ?? 0) > (order[$1] ?? 0) }
+        for layerID in frontToBack {
+            if let hit = Self.preferredStrokeHit(
+                inLayer: byLayer[layerID] ?? [],
+                near: point,
+                threshold: threshold
+            ) {
+                return hit
             }
         }
-        return best
+        return nil
+    }
+
+    /// `strokes` are back-to-front within a single layer. Closest outline within
+    /// `threshold` wins; exact distance ties stay front-most. Otherwise the
+    /// smallest containing fill wins, and equal areas stay front-most.
+    private static func preferredStrokeHit(
+        inLayer strokes: [VectorStroke],
+        near point: CGPoint,
+        threshold: CGFloat
+    ) -> VectorStroke? {
+        var bestOutline: VectorStroke?
+        var bestDistance = threshold
+        for stroke in strokes.reversed() {
+            let distance = stroke.distance(to: point)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestOutline = stroke
+            }
+        }
+        if let bestOutline {
+            return bestOutline
+        }
+
+        var bestFill: VectorStroke?
+        var bestArea = CGFloat.greatestFiniteMagnitude
+        for stroke in strokes.reversed() {
+            guard stroke.contains(point) else { continue }
+            let area = visibleHitArea(of: stroke)
+            if bestFill == nil || area < bestArea {
+                bestArea = area
+                bestFill = stroke
+            }
+        }
+        return bestFill
+    }
+
+    /// Bounding area of the drawn outline. Circles and curves store a few anchors
+    /// whose box is smaller than the shape you see.
+    private static func visibleHitArea(of stroke: VectorStroke) -> CGFloat {
+        let points = ShapeGeometry.renderPoints(for: stroke)
+        guard let first = points.first else { return .greatestFiniteMagnitude }
+        var minX = first.x
+        var maxX = first.x
+        var minY = first.y
+        var maxY = first.y
+        for point in points.dropFirst() {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+        }
+        let width = maxX - minX
+        let height = maxY - minY
+        guard width > 0, height > 0 else { return .greatestFiniteMagnitude }
+        return width * height
     }
 
     /// Topmost stroke whose outline is within `threshold` of the point, ignoring fill.
@@ -2994,32 +3067,48 @@ final class KoalaDocument {
         geometryRevision += 1
     }
 
-    /// Interior fill tap for the Delete tool: when the topmost filled shape under
-    /// `documentPoint` overlaps a closed shape beneath it, subtracts the top shape
-    /// (Boolean: base MINUS target) and removes the top shape. When the target sits
-    /// fully inside the base a hole is punched; when it crosses the base's edge the
-    /// base outline is reshaped into the notch/bite instead of leaving a seam.
-    /// Returns `true` when a subtraction was performed.
+    /// Interior fill tap for the Delete tool. Subtracts the shape under the tap
+    /// from the closed shape around it (base MINUS target) and removes the cutter.
+    /// A smaller shape inside a larger one is the cutter even when the larger
+    /// shape was drawn later. When the target sits fully inside the base a hole
+    /// is punched; when it crosses the base's edge the outline is reshaped into
+    /// the notch instead of leaving a seam. Returns `true` when a subtraction
+    /// was performed.
     @discardableResult
     func punchOverlapHole(at documentPoint: CGPoint) -> Bool {
         if isHitOnInactiveLayer(near: documentPoint, threshold: 0) { return false }
         let candidates = selectableStrokes()
-        guard let targetIndex = candidates.lastIndex(where: {
-            $0.isClosed && !$0.isConstruction && $0.contains(documentPoint)
-        }) else { return false }
+        let containing = candidates.enumerated().compactMap { index, stroke -> (index: Int, area: CGFloat)? in
+            guard stroke.isClosed, !stroke.isConstruction, stroke.contains(documentPoint) else { return nil }
+            return (index, Self.visibleHitArea(of: stroke))
+        }
+        guard containing.count >= 2 else { return false }
+
+        // A shape sitting inside a larger one is the cutter, even when the larger
+        // shape was drawn later and its fill is in front. Otherwise the front-most
+        // shape is the cutter and shapes beneath it are the bases, so a grid of
+        // similar cells still cuts the one on top.
+        let smallest = containing.min { $0.area < $1.area }!
+        let largestArea = containing.map(\.area).max() ?? 0
+        let targetIndex: Int
+        let orderedBeneath: [Int]
+        if smallest.area < largestArea * 0.98 {
+            targetIndex = smallest.index
+            let hosts = containing.filter { $0.index != smallest.index && $0.area > smallest.area }
+            guard let host = hosts.min(by: { $0.area < $1.area }) else { return false }
+            orderedBeneath = [host.index]
+        } else {
+            guard let front = containing.max(by: { $0.index < $1.index }) else { return false }
+            targetIndex = front.index
+            let beneath = Array(stride(from: targetIndex - 1, through: 0, by: -1))
+            orderedBeneath = beneath.filter { candidates[$0].contains(documentPoint) }
+                + beneath.filter { !candidates[$0].contains(documentPoint) }
+        }
 
         let target = candidates[targetIndex]
         let targetContour = ShapeGeometry.renderPoints(for: target)
         guard targetContour.count >= 3 else { return false }
 
-        // Search shapes beneath the target for an overlap, but try the shape directly
-        // under the tap first. In a grid of adjacent cells, a neighbor that merely abuts
-        // (or slightly overlaps) the target sits beneath it in draw order; without this
-        // ordering it could steal the cut, deleting the target while leaving the real
-        // base untouched. The shape under the finger is the one the user means to carve.
-        let beneath = Array(stride(from: targetIndex - 1, through: 0, by: -1))
-        let orderedBeneath = beneath.filter { candidates[$0].contains(documentPoint) }
-            + beneath.filter { !candidates[$0].contains(documentPoint) }
         for index in orderedBeneath {
             let base = candidates[index]
             guard base.id != target.id, base.isClosed, !base.isConstruction else { continue }
@@ -3527,24 +3616,12 @@ final class KoalaDocument {
     #endif
 
     func printStrokeHit(near documentPoint: CGPoint, threshold: CGFloat) -> VectorStroke? {
-        for stroke in printLayoutStrokes().reversed() {
-            let transformed = transformedPrintStroke(stroke)
-            if transformed.contains(documentPoint) {
-                return stroke
-            }
+        let strokes = printLayoutStrokes()
+        let placed = strokes.map { transformedPrintStroke($0) }
+        guard let hit = preferredStrokeHit(in: placed, near: documentPoint, threshold: threshold) else {
+            return nil
         }
-
-        var best: VectorStroke?
-        var bestDistance = threshold
-        for stroke in printLayoutStrokes().reversed() {
-            let transformed = transformedPrintStroke(stroke)
-            let distance = transformed.distance(to: documentPoint)
-            if distance < bestDistance {
-                bestDistance = distance
-                best = stroke
-            }
-        }
-        return best
+        return strokes.first { $0.id == hit.id }
     }
 
     func selectPrintElements(in rect: CGRect) {

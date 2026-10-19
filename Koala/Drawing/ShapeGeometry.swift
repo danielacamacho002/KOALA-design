@@ -2005,6 +2005,43 @@ nonisolated enum ShapeGeometry: Sendable {
         return handles
     }
 
+    /// Writes each smooth-midpoint run as circular cubic handles, so a baked fillet
+    /// keeps its sweep once the stroke becomes a `.curve` (which ignores
+    /// `smoothCornerIndices` and would otherwise draw straight chords).
+    static func curveHandlesBakingSmoothCorners(
+        points: [CGPoint],
+        handles: [CurveHandle],
+        closed: Bool,
+        smooth: Set<Int>
+    ) -> [CurveHandle] {
+        let count = points.count
+        guard handles.count == count, count >= 3 else { return handles }
+        var baked = handles
+        for run in consecutiveSmoothRuns(count: count, smooth: smooth, closed: closed) {
+            guard run.count < count, let first = run.first, let last = run.last else { continue }
+            let chain = [(first - 1 + count) % count] + run + [(last + 1) % count]
+            guard let circle = arcCenter(
+                start: points[chain[0]],
+                end: points[chain[chain.count - 1]],
+                through: points[chain[chain.count / 2]]
+            ) else { continue }
+            for step in 0..<(chain.count - 1) {
+                let from = chain[step]
+                let to = chain[step + 1]
+                let offsets = circularArcHandleOffsets(
+                    from: points[from],
+                    to: points[to],
+                    center: circle.center,
+                    radius: circle.radius,
+                    through: points[to]
+                )
+                baked[from].outOffset = offsets.outFromStart
+                baked[to].inOffset = offsets.inToEnd
+            }
+        }
+        return baked
+    }
+
     /// Standard cubic approximation of a circular arc: κ = 4/3 · tan(θ/4).
     static func circularArcHandleOffsets(
         from start: CGPoint,
