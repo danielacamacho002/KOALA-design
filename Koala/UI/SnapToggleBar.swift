@@ -28,7 +28,7 @@ struct SnapToggleBar: View {
         HStack(spacing: 2) {
             StudioIconButton(
                 systemImage: "circle.grid.cross",
-                isActive: isExpanded,
+                isActive: isExpanded && !isSnapTourActive,
                 size: iconSize
             ) {
                 withAnimation(.easeOut(duration: 0.15)) {
@@ -49,7 +49,7 @@ struct SnapToggleBar: View {
                 .fill(Color.primary.opacity(0.05))
         }
         .onboardingAnchor(.snaps)
-        .onboardingHighlight(highlightedTarget == .snaps, cornerRadius: 10, color: .accentColor)
+        .onboardingHighlight(highlightedTarget == .snaps, cornerRadius: 10)
         // The bar sits on the cream canvas, so icons must stay dark even when
         // the rest of the app is in dark mode (Color.primary would otherwise
         // go white and vanish).
@@ -114,13 +114,13 @@ struct SnapToggleBar: View {
     ) -> some View {
         StudioIconButton(
             systemImage: systemImage,
-            isActive: isActive,
+            isActive: isActive || highlightedTarget == .snap(kind),
             size: iconSize,
             action: action
         )
         .accessibilityLabel(snapAccessibilityLabel(kind))
         .onboardingAnchor(.snap(kind))
-        .onboardingHighlight(highlightedTarget == .snap(kind), color: .accentColor)
+        .onboardingHighlight(highlightedTarget == .snap(kind))
     }
 
     private func constraintButton<Icon: View>(
@@ -130,14 +130,14 @@ struct SnapToggleBar: View {
         @ViewBuilder icon: () -> Icon
     ) -> some View {
         StudioIconButton(
-            isActive: isActive,
+            isActive: isActive || highlightedTarget == .snap(kind),
             size: iconSize,
             action: action,
             icon: icon
         )
         .accessibilityLabel(snapAccessibilityLabel(kind))
         .onboardingAnchor(.snap(kind))
-        .onboardingHighlight(highlightedTarget == .snap(kind), color: .accentColor)
+        .onboardingHighlight(highlightedTarget == .snap(kind))
     }
 
     private func snapAccessibilityLabel(_ kind: SnapConstraint) -> String {
