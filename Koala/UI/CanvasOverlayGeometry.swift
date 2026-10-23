@@ -104,11 +104,35 @@ nonisolated enum CanvasOverlayGeometry: Sendable {
         return max(4, origin * (distance / max(originDistance, epsilon)))
     }
 
+    /// Lowest zoom factor an anchor mark tracks. Below this the square holds at half
+    /// its 1× size so a zoomed-out shape stays the subject and the mark stays visible.
+    static let anchorTrackScaleFloor: CGFloat = 0.5
+
+    /// How many times the on-screen stroke an anchor square must cover. The mark is
+    /// the same color as the line, so once the stroke grows past the 1× size the
+    /// square has to stay a little wider or it vanishes inside the stroke.
+    static let anchorStrokeClearance: CGFloat = 1.5
+
+    /// Largest on-screen stroke width while zoomed in. A stroke that is already
+    /// thicker than this at 1× keeps that width and does not grow further.
+    static let displayStrokeScreenCap: CGFloat = 12
+
+    /// On-screen stroke width. Grows with zoom until `displayStrokeScreenCap`, then holds,
+    /// so the line and the anchor on it stay a readable size instead of filling the view.
+    static func displayStrokeScreenWidth(strokeWidth: CGFloat, scale: CGFloat) -> CGFloat {
+        let width = max(strokeWidth, 0)
+        let trueScreen = width * max(scale, 0)
+        return min(trueScreen, max(width, displayStrokeScreenCap))
+    }
+
     /// Screen length of an anchor that measures `base` points at 1× zoom.
-    /// Below 1× the mark stays `base` so zooming out does not shrink it.
-    /// Above 1× it grows with the design through the full zoom range, matching stroke width.
-    static func anchorScreenLength(base: CGFloat, scale: CGFloat) -> CGFloat {
-        base * max(scale, 1)
+    /// From the floor up to 1× the mark shrinks with the viewport, then holds at `base`.
+    /// When `strokeWidth` is set, the square also stays `anchorStrokeClearance` times
+    /// the capped on-screen stroke so zooming in does not bury it in the line.
+    static func anchorScreenLength(base: CGFloat, scale: CGFloat, strokeWidth: CGFloat = 0) -> CGFloat {
+        let designed = base * min(1, max(anchorTrackScaleFloor, scale))
+        let strokeScreen = displayStrokeScreenWidth(strokeWidth: strokeWidth, scale: scale)
+        return max(designed, strokeScreen * anchorStrokeClearance)
     }
 
     /// Marquee rectangle from two document-space points. `nil` while the drag is still
@@ -239,10 +263,15 @@ nonisolated enum CanvasOverlayGeometry: Sendable {
         return best?.index
     }
 
-    /// Screen size of a grab target: at least `minimum`, and larger when the mark itself
-    /// has grown with zoom so the target never clips the dot.
-    static func screenGrabExtent(minimum: CGFloat, mark: CGFloat, scale: CGFloat) -> CGFloat {
-        max(minimum, anchorScreenLength(base: mark, scale: scale))
+    /// Screen size of a grab target: at least `minimum`, and wider when the visible
+    /// mark is larger so the target never clips the dot.
+    static func screenGrabExtent(
+        minimum: CGFloat,
+        mark: CGFloat,
+        scale: CGFloat,
+        strokeWidth: CGFloat = 0
+    ) -> CGFloat {
+        max(minimum, anchorScreenLength(base: mark, scale: scale, strokeWidth: strokeWidth))
     }
 
     /// A dragged tangent offset that stays `minimumLength` from its anchor and keeps both

@@ -229,7 +229,8 @@ final class DrawingCanvasUIView: UIView {
                     existing,
                     stroke: stroke,
                     viewport: document.viewport,
-                    opacity: document.opacity(forLayerID: stroke.layerID)
+                    opacity: document.opacity(forLayerID: stroke.layerID),
+                    limitZoomedWidth: true
                 )
             } else {
                 addStrokeLayer(stroke)
@@ -333,7 +334,8 @@ final class DrawingCanvasUIView: UIView {
         let shapeLayer = StrokeRenderer.makeShapeLayer(
             for: stroke,
             viewport: document.viewport,
-            opacity: document.opacity(forLayerID: stroke.layerID)
+            opacity: document.opacity(forLayerID: stroke.layerID),
+            limitZoomedWidth: true
         )
         layer.addSublayer(shapeLayer)
         strokeLayers[stroke.id] = shapeLayer
@@ -395,7 +397,8 @@ final class DrawingCanvasUIView: UIView {
                     layer,
                     stroke: stroke,
                     viewport: document.viewport,
-                    opacity: document.opacity(forLayerID: stroke.layerID)
+                    opacity: document.opacity(forLayerID: stroke.layerID),
+                    limitZoomedWidth: true
                 )
             }
         }
@@ -977,10 +980,12 @@ final class DrawingCanvasUIView: UIView {
             return
         }
 
+        let previewStyle = continuationPreviewStyle()
         let pointRadius = CanvasOverlayGeometry.anchorScreenLength(
-            base: 4,
-            scale: document.viewport.scale
-        )
+            base: 8,
+            scale: document.viewport.scale,
+            strokeWidth: previewStyle.width
+        ) / 2
         for point in curveAnchors {
             let dot = CAShapeLayer()
             let viewPoint = document.viewport.documentToView(point)
@@ -1025,10 +1030,9 @@ final class DrawingCanvasUIView: UIView {
             viewport: document.viewport,
             closed: false
         ).cgPath
-        let style = continuationPreviewStyle()
-        pathLayer.strokeColor = style.color
-        pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: style.width))
-        pathLayer.opacity = style.opacity
+        pathLayer.strokeColor = previewStyle.color
+        pathLayer.lineWidth = previewLineWidth(previewStyle.width)
+        pathLayer.opacity = previewStyle.opacity
     }
 
     /// Seeded curves keep their stored tangents. A new draft still uses the cardinal spline.
@@ -1055,6 +1059,18 @@ final class DrawingCanvasUIView: UIView {
             stroke.strokeColor.platformCGColor,
             stroke.strokeWidth,
             Float(document.opacity(forLayerID: stroke.layerID))
+        )
+    }
+
+    /// Preview strokes stay at least `minimum` points, and stop thickening once zoom
+    /// passes the same cap as the committed strokes.
+    private func previewLineWidth(_ strokeWidth: CGFloat, minimum: CGFloat = 2) -> CGFloat {
+        max(
+            minimum,
+            CanvasOverlayGeometry.displayStrokeScreenWidth(
+                strokeWidth: strokeWidth,
+                scale: document.viewport.scale
+            )
         )
     }
 
@@ -1087,9 +1103,10 @@ final class DrawingCanvasUIView: UIView {
         }
 
         let pointRadius = CanvasOverlayGeometry.anchorScreenLength(
-            base: 5,
-            scale: document.viewport.scale
-        )
+            base: 10,
+            scale: document.viewport.scale,
+            strokeWidth: document.strokeWidth
+        ) / 2
         for point in dots {
             let dot = CAShapeLayer()
             let viewPoint = document.viewport.documentToView(point)
@@ -1159,7 +1176,7 @@ final class DrawingCanvasUIView: UIView {
         pathLayer.fillColor = isClosed && !isConstructionPreview
             ? UIColor.systemGray.withAlphaComponent(0.2).cgColor
             : UIColor.clear.cgColor
-        pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
+        pathLayer.lineWidth = previewLineWidth(document.strokeWidth)
         pathLayer.lineDashPattern = isConstructionPreview ? [10, 6] : nil
         pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
     }
@@ -1219,7 +1236,7 @@ final class DrawingCanvasUIView: UIView {
         pathLayer.fillColor = isClosed
             ? UIColor.systemGray.withAlphaComponent(0.15).cgColor
             : UIColor.clear.cgColor
-        pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
+        pathLayer.lineWidth = previewLineWidth(document.strokeWidth)
         pathLayer.lineDashPattern = isConstruction ? [10, 6] : nil
         pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
     }
@@ -1260,7 +1277,7 @@ final class DrawingCanvasUIView: UIView {
             pathLayer.strokeColor = UIColor.systemRed.cgColor
             pathLayer.lineWidth = max(
                 3,
-                document.viewport.documentToView(distance: trimPreviewStrokeWidth) + 2
+                previewLineWidth(trimPreviewStrokeWidth, minimum: 0) + 2
             )
         }
     }
@@ -1306,7 +1323,7 @@ final class DrawingCanvasUIView: UIView {
         pathLayer.path = path.cgPath
         pathLayer.strokeColor = document.strokeColor.platformCGColor
         pathLayer.fillColor = UIColor.systemGray.withAlphaComponent(0.15).cgColor
-        pathLayer.lineWidth = max(2, document.viewport.documentToView(distance: document.strokeWidth))
+        pathLayer.lineWidth = previewLineWidth(document.strokeWidth)
         pathLayer.lineDashPattern = nil
         pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
     }
