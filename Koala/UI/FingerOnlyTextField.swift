@@ -6,19 +6,20 @@
 import SwiftUI
 import UIKit
 
-private final class FingerOnlyUITextField: UITextField, UIScribbleInteractionDelegate {
+private final class FingerOnlyUITextField: UITextField {
     override init(frame: CGRect) {
         super.init(frame: frame)
-        // Consume Pencil touches as plain taps but never accept handwriting.
-        addInteraction(UIScribbleInteraction(delegate: self))
+        PencilTextEntry.install()
+        PencilTextEntry.suppressHandwriting(on: self)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func scribbleInteraction(_ interaction: UIScribbleInteraction, shouldBeginAt location: CGPoint) -> Bool {
-        false
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        PencilTextEntry.suppressHandwriting(on: self)
     }
 }
 
@@ -32,6 +33,7 @@ struct FingerOnlyTextField: UIViewRepresentable {
     var cornerRadius: CGFloat = 8
     var backgroundColor: UIColor = .secondarySystemBackground
     var textAlignment: NSTextAlignment = .natural
+    var trailingLabel: String? = nil
     var onSubmit: (() -> Void)?
     var onEditingEnded: (() -> Void)?
     var onEditingChanged: ((Bool) -> Void)? = nil
@@ -54,6 +56,7 @@ struct FingerOnlyTextField: UIViewRepresentable {
         field.keyboardType = keyboardType
         field.autocorrectionType = .no
         field.autocapitalizationType = .none
+        applyTrailingLabel(to: field)
         field.addTarget(context.coordinator, action: #selector(Coordinator.textChanged(_:)), for: .editingChanged)
         return field
     }
@@ -73,9 +76,32 @@ struct FingerOnlyTextField: UIViewRepresentable {
         uiView.tintColor = .white
         uiView.textAlignment = textAlignment
         uiView.layer.cornerRadius = cornerRadius
+        applyTrailingLabel(to: uiView)
         context.coordinator.onSubmit = onSubmit
         context.coordinator.onEditingEnded = onEditingEnded
         context.coordinator.onEditingChanged = onEditingChanged
+    }
+
+    private func applyTrailingLabel(to field: UITextField) {
+        guard let trailingLabel, !trailingLabel.isEmpty else {
+            field.rightView = nil
+            field.rightViewMode = .never
+            return
+        }
+        let font = UIFont.systemFont(ofSize: 10)
+        let textWidth = ceil((trailingLabel as NSString).size(withAttributes: [.font: font]).width)
+        let pad: CGFloat = 3
+        let height = ceil(font.lineHeight)
+        let container = UIView(frame: CGRect(x: 0, y: 0, width: textWidth + pad, height: height))
+        let unit = UILabel(frame: CGRect(x: pad, y: 0, width: textWidth, height: height))
+        unit.text = trailingLabel
+        unit.font = font
+        unit.textColor = UIColor.white.withAlphaComponent(0.65)
+        unit.isUserInteractionEnabled = false
+        container.isUserInteractionEnabled = false
+        container.addSubview(unit)
+        field.rightView = container
+        field.rightViewMode = .always
     }
 
     func makeCoordinator() -> Coordinator {

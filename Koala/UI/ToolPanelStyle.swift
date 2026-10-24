@@ -225,27 +225,28 @@ struct ToolPanelNumericStepper: View {
                         .font(.system(size: 12, design: .monospaced))
                         .hidden()
                         .fixedSize()
-                        .overlay {
-                            FingerOnlyTextField(
-                                placeholder: placeholder,
-                                text: $text,
-                                keyboardType: keyboardType,
-                                fontSize: 12,
-                                cornerRadius: 0,
-                                backgroundColor: .clear,
-                                textAlignment: .center,
-                                onSubmit: onSubmit,
-                                onEditingEnded: onSubmit,
-                                onEditingChanged: onEditingChanged
-                            )
-                        }
-
                     if let unitLabel {
                         Text(unitLabel)
                             .font(.system(size: 10))
-                            .foregroundStyle(Color.toolPanelSecondaryLabel)
+                            .hidden()
                             .fixedSize()
                     }
+                }
+                .frame(minHeight: 28)
+                .overlay {
+                    FingerOnlyTextField(
+                        placeholder: placeholder,
+                        text: $text,
+                        keyboardType: keyboardType,
+                        fontSize: 12,
+                        cornerRadius: 0,
+                        backgroundColor: .clear,
+                        textAlignment: unitLabel == nil ? .center : .right,
+                        trailingLabel: unitLabel,
+                        onSubmit: onSubmit,
+                        onEditingEnded: onSubmit,
+                        onEditingChanged: onEditingChanged
+                    )
                 }
 
                 Spacer(minLength: 4)
