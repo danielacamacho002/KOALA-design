@@ -43,19 +43,6 @@ enum OnboardingTarget: Equatable {
         case .printTool(let tool): return "printTool.\(tool.rawValue)"
         }
     }
-
-    /// Where the hover box sits. Snaps lifts above the bar; layers through the
-    /// last design steps park on the trailing edge and stay there.
-    var boxPlacement: OnboardingBoxPlacement {
-        switch self {
-        case .snaps, .snap: return .aboveSnaps
-        case .layers, .share, .printLayout: return .trailingPark
-        case .tool, .commandPanel, .paperGrid, .margins: return .besideCommandPanel
-        case .printTool(let tool):
-            return tool == .select ? .besideCommandPanel : .followTarget
-        default: return .followTarget
-        }
-    }
 }
 
 /// Individual snap / constraint toggles in the bottom-left bar.
@@ -90,35 +77,22 @@ enum SnapConstraint: String, CaseIterable {
     }
 }
 
-enum OnboardingBoxPlacement: Equatable {
-    case followTarget
-    case aboveSnaps
-    case trailingPark
-    case besideCommandPanel
-}
-
 /// A single instructional hover-box step.
 struct OnboardingStep: Identifiable, Equatable {
     let id: String
     let title: String
     let body: String
-    let alignment: Alignment
-    let padding: EdgeInsets
     let target: OnboardingTarget
 
     init(
         id: String,
         title: String,
         body: String,
-        alignment: Alignment,
-        padding: EdgeInsets,
         target: OnboardingTarget = .none
     ) {
         self.id = id
         self.title = title
         self.body = body
-        self.alignment = alignment
-        self.padding = padding
         self.target = target
     }
 
@@ -141,8 +115,6 @@ struct OnboardingTour: Equatable {
                 id: "design.intro",
                 title: "Quick tutorial",
                 body: "A short walk through the main controls. Tap Next to continue, or Skip all to dismiss.",
-                alignment: .center,
-                padding: EdgeInsets()
             ),
             designTool(
                 .line,
@@ -164,24 +136,12 @@ struct OnboardingTour: Equatable {
                 id: "design.type",
                 title: "Text",
                 body: "Place and edit text on the canvas.",
-                alignment: .topLeading,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .tool(.type)
-            ),
-            OnboardingStep(
-                id: "design.command",
-                title: "Command panel",
-                body: "Select a sub-tool, type in points, and set line thickness or color.",
-                alignment: .topLeading,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
-                target: .commandPanel
             ),
             OnboardingStep(
                 id: "design.move",
                 title: "Edit",
                 body: "Allows you to move and edit a shape.",
-                alignment: .topLeading,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .tool(.move)
             ),
             designTool(
@@ -220,8 +180,6 @@ struct OnboardingTour: Equatable {
                 id: "design.snaps",
                 title: "Constraints",
                 body: "Tap a constraint to turn it on or off while you draw.",
-                alignment: .bottomLeading,
-                padding: EdgeInsets(top: 0, leading: 16, bottom: 64, trailing: 16),
                 target: .snaps
             ),
             snapConstraint(.endpoint),
@@ -233,24 +191,18 @@ struct OnboardingTour: Equatable {
                 id: "design.layers",
                 title: "Layers",
                 body: "Show, hide, lock, and reorder layers to keep artwork organized.",
-                alignment: .topTrailing,
-                padding: EdgeInsets(top: 56, leading: 12, bottom: 0, trailing: 12),
                 target: .layers
             ),
             OnboardingStep(
                 id: "design.share",
-                title: "Import and Export",
+                title: "Settings",
                 body: "Open Settings to import a file or photo, or to export this design.",
-                alignment: .topTrailing,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .share
             ),
             OnboardingStep(
                 id: "design.printLayout",
                 title: "Print Layout",
                 body: "Open Print Layout to tile artwork across pages.",
-                alignment: .topTrailing,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .printLayout
             ),
         ]
@@ -263,55 +215,41 @@ struct OnboardingTour: Equatable {
                 id: "print.intro",
                 title: "Quick tutorial",
                 body: "A short walk through Print Layout. Tap Next to continue, or Skip all to dismiss.",
-                alignment: .center,
-                padding: EdgeInsets()
             ),
             OnboardingStep(
                 id: "print.paper",
                 title: "Paper & grid",
                 body: "Set the page size and how many columns and rows make up the print grid.",
-                alignment: .topLeading,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .paperGrid
             ),
             OnboardingStep(
                 id: "print.margins",
                 title: "Margins",
                 body: "Choose the print border style and margin width on each page.",
-                alignment: .topLeading,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .margins
             ),
             OnboardingStep(
                 id: "print.select",
                 title: "Select",
                 body: "Move and rotate artwork on the grid.",
-                alignment: .topLeading,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .printTool(.select)
             ),
             OnboardingStep(
                 id: "print.cut",
                 title: "Cut",
                 body: "Split artwork across page borders.",
-                alignment: .topLeading,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .printTool(.cut)
             ),
             OnboardingStep(
                 id: "print.export",
                 title: "Export",
                 body: "Export a tiled multi-page PDF.",
-                alignment: .topTrailing,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .export
             ),
             OnboardingStep(
                 id: "print.back",
                 title: "Back to Design",
                 body: "Tap Design to return to the drawing editor.",
-                alignment: .topLeading,
-                padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
                 target: .designChip
             ),
         ]
@@ -322,8 +260,6 @@ struct OnboardingTour: Equatable {
             id: "design.\(category.rawValue)",
             title: category.label,
             body: body,
-            alignment: .topLeading,
-            padding: EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12),
             target: .tool(category)
         )
     }
@@ -333,8 +269,6 @@ struct OnboardingTour: Equatable {
             id: "design.snap.\(kind.rawValue)",
             title: kind.title,
             body: kind.body,
-            alignment: .bottomLeading,
-            padding: EdgeInsets(top: 0, leading: 16, bottom: 64, trailing: 16),
             target: .snap(kind)
         )
     }

@@ -27,14 +27,13 @@ struct PrintLayoutView: View {
         tour: .printLayout,
         completedKey: OnboardingSettings.printTourCompletedKey
     )
-    @State private var onboardingAnchors: [String: CGRect] = [:]
     @State private var onboardingOverlayFrame: CGRect = .zero
     @State private var printAxisLockEnabled = false
 
     /// Drives the move/rotate panel. The Cut tool leaves its fresh pieces selected,
     /// but the overlay handles are only live for Select, so the panel stays hidden
     /// until the tool can actually use it. The Select tour step opens it anyway so
-    /// the instruction can sit beside the panel.
+    /// the highlighted controls are on screen.
     private var hasPrintSelection: Bool {
         document.printLayout.activeTool == .select && !document.printSelectionIsEmpty
     }
@@ -115,24 +114,6 @@ struct PrintLayoutView: View {
                     .transition(.identity)
                 }
             }
-            .overlay(alignment: .topLeading) {
-                if printOnboarding.currentStep?.target.boxPlacement == .besideCommandPanel,
-                   let step = printOnboarding.currentStep {
-                    OnboardingHoverBoxView(
-                        step: step,
-                        stepNumber: printOnboarding.stepNumber,
-                        stepCount: printOnboarding.stepCount,
-                        onNext: { printOnboarding.advance() },
-                        onBack: { printOnboarding.retreat() },
-                        onSkipAll: { printOnboarding.skipAll() },
-                        canGoBack: !printOnboarding.isFirstStep
-                    )
-                    .id(step.id)
-                    .padding(.leading, ToolPanelMetrics.commandWidth + 12)
-                    .transition(.identity)
-                    .transaction { $0.animation = nil }
-                }
-            }
             .onChange(of: document.printSelectedStrokeID) { _, _ in printRotateMode = false }
             .onChange(of: document.printSelectedTextID) { _, _ in printRotateMode = false }
             .onChange(of: document.printSelectionCount) { _, _ in printRotateMode = false }
@@ -160,7 +141,6 @@ struct PrintLayoutView: View {
             }
             .onboardingTourOverlay(
                 controller: printOnboarding,
-                anchors: onboardingAnchors,
                 overlayFrame: onboardingOverlayFrame
             )
             .onAppear {
@@ -186,7 +166,6 @@ struct PrintLayoutView: View {
                 highlightedTarget: printOnboarding.currentTarget
             )
         }
-        .onPreferenceChange(OnboardingAnchorPreferenceKey.self) { onboardingAnchors = $0 }
         .onPreferenceChange(OnboardingOverlayFrameKey.self) { onboardingOverlayFrame = $0 }
         .onChange(of: printOnboarding.stepIndex) { _, _ in
             syncPrintTourStep()

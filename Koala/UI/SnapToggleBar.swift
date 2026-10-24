@@ -28,7 +28,7 @@ struct SnapToggleBar: View {
         HStack(spacing: 2) {
             StudioIconButton(
                 systemImage: "circle.grid.cross",
-                isActive: isExpanded,
+                isActive: isExpanded && !isSnapTourActive,
                 size: iconSize
             ) {
                 withAnimation(.easeOut(duration: 0.15)) {
@@ -114,7 +114,7 @@ struct SnapToggleBar: View {
     ) -> some View {
         StudioIconButton(
             systemImage: systemImage,
-            isActive: isActive,
+            isActive: isActive || highlightedTarget == .snap(kind),
             size: iconSize,
             action: action
         )
@@ -130,7 +130,7 @@ struct SnapToggleBar: View {
         @ViewBuilder icon: () -> Icon
     ) -> some View {
         StudioIconButton(
-            isActive: isActive,
+            isActive: isActive || highlightedTarget == .snap(kind),
             size: iconSize,
             action: action,
             icon: icon
