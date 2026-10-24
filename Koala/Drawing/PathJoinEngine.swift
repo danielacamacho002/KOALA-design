@@ -72,7 +72,13 @@ enum PathJoinEngine {
             if canChainOpenContours(usable, tolerance: tolerance) { return true }
             // Mirrored halves often overlap so a boundary lies on itself instead
             // of meeting at the endpoints. That stacked run is still one outline.
-            return hasStackedLineOverlap(usable, tolerance: tolerance)
+            if hasStackedLineOverlap(usable, tolerance: tolerance) { return true }
+            // A line that ends on an edge, not on a corner, is still one outline.
+            if usable.allSatisfy(isStraightPolyline),
+               uniteTouchingOutlines(usable, tolerance: tolerance, base: usable[0]) != nil {
+                return true
+            }
+            return false
         }
         if hasTouchingAnchors(usable, tolerance: tolerance) { return true }
 
@@ -102,6 +108,13 @@ enum PathJoinEngine {
             if let fused = fuseStackedOpenLines(usable, tolerance: tolerance, base: base) {
                 return fused
             }
+            // Closed triangles (and open sides that land on them) share an edge.
+            // Chaining those at one corner leaves the other region open, so the
+            // seam never meets the base and the added area does not fill.
+            if usable.allSatisfy(isStraightPolyline),
+               let united = uniteTouchingOutlines(usable, tolerance: tolerance, base: base) {
+                return united
+            }
             return joinOpenContours(usable, tolerance: tolerance, base: base)
         }
 
@@ -125,6 +138,20 @@ enum PathJoinEngine {
         default:
             return false
         }
+    }
+
+    /// Straight anchors only. Curves and arcs stay on the chain path so a cubic
+    /// is not rewritten as the union of its chords.
+    private static func isStraightPolyline(_ stroke: VectorStroke) -> Bool {
+        guard stroke.shapeType == .polyline else { return false }
+        if let smooth = stroke.smoothCornerIndices, !smooth.isEmpty { return false }
+        if let handles = stroke.curveHandles {
+            for handle in handles {
+                if hypot(handle.inOffset.x, handle.inOffset.y) > 0.01 { return false }
+                if hypot(handle.outOffset.x, handle.outOffset.y) > 0.01 { return false }
+            }
+        }
+        return stroke.points.count >= 2
     }
 
     // MARK: - Normalization
@@ -1869,6 +1896,626 @@ enum PathJoinEngine {
     /// Signed angle (counterclockwise positive) turning from vector `a` to `b`.
     private static func signedAngle(_ a: CGPoint, _ b: CGPoint) -> CGFloat {
         atan2(a.x * b.y - a.y * b.x, a.x * b.x + a.y * b.y)
+    }
+
+    // MARK: - Closed outlines that share an edge
+
+    /// Unions straight polygons that overlap or that an open chain closes against,
+    /// including a chain that lands in the middle of an edge. A near miss within
+    /// the join gap is pulled onto that edge first, so a side that stops just
+    /// short of the base still closes and fills.
+    private static func uniteTouchingOutlines(
+        _ strokes: [VectorStroke],
+        tolerance: CGFloat,
+        base: VectorStroke
+    ) -> [VectorStroke]? {
+        guard strokes.allSatisfy(isStraightPolyline) else { return nil }
+        let closedStrokes = strokes.filter { $0.isClosed && $0.points.count >= 3 }
+        guard !closedStrokes.isEmpty else { return nil }
+        let openStrokes = strokes.filter { !$0.isClosed && $0.points.count >= 2 }
+
+        var polygons = closedStrokes.map { closedRing($0.points) }.filter { $0.count >= 3 }
+        guard !polygons.isEmpty else { return nil }
+        snapSmallerRings(&polygons, tolerance: tolerance)
+
+        let atoms = openStrokes.enumerated().flatMap { index, stroke in
+            lineAtoms(of: stroke, owner: index, slop: 0.5)
+        }
+        let chains = junctionChains(atoms, slop: tolerance)
+
+        var bumps: [[CGPoint]] = []
+        var pending: [[CGPoint]] = []
+        for chain in chains {
+            if chain.count >= 4,
+               let first = chain.first,
+               let last = chain.last,
+               distance(first, last) <= tolerance {
+                let ring = closedRing(chain)
+                if ring.count >= 3 {
+                    polygons.append(ring)
+                }
+                continue
+            }
+            let split = splitChain(chain, against: polygons, tolerance: tolerance)
+            pending.append(contentsOf: split.loose)
+            for bridge in split.bridges {
+                switch bridgeRole(bridge, polygons: polygons, tolerance: tolerance) {
+                case .bump:
+                    if let bump = makeBump(bridge, on: &polygons, tolerance: tolerance) {
+                        bumps.append(bump)
+                    } else {
+                        pending.append(bridge)
+                    }
+                case .divider:
+                    pending.append(bridge)
+                case .ignore:
+                    break
+                }
+            }
+        }
+        let addedOutline = !bumps.isEmpty || polygons.count > closedStrokes.count
+        polygons.append(contentsOf: bumps)
+        guard polygons.count >= 2, addedOutline || bumps.count > 0 || closedStrokes.count >= 2 else {
+            return nil
+        }
+
+        let paths = polygons.map { closedPath($0) }
+        var merged = mergeClosedContours(paths, tolerance: tolerance)
+        guard merged.count < paths.count, merged.contains(where: { $0.isClosed && $0.points.count >= 3 }) else {
+            return nil
+        }
+        // The union outline fills the shape. Edges that ended up inside it were
+        // real strokes — put them back so Join does not delete a line.
+        spliceInteriorEdges(of: polygons, into: &merged, tolerance: tolerance)
+
+        let cutouts = closedStrokes.flatMap(\.cutoutPoints)
+        if !cutouts.isEmpty,
+           let outer = merged.indices.max(by: {
+               abs(signedArea(merged[$0].points)) < abs(signedArea(merged[$1].points))
+           }) {
+            merged[outer].cutouts += cutouts
+        }
+
+        var loose: [[CGPoint]] = []
+        for chain in pending {
+            if !spliceDivider(chain, into: &merged, tolerance: tolerance) {
+                loose.append(chain)
+            }
+        }
+
+        var results = merged.map { stroke(from: $0, base: base, rewritingPartialRuns: false) }
+        let looseStrokes = loose.compactMap { openStroke(from: $0, base: base) }
+        if looseStrokes.isEmpty { return results }
+        if let chained = joinOpenContours(results + looseStrokes, tolerance: tolerance, base: base) {
+            return chained
+        }
+        return results + looseStrokes
+    }
+
+    private enum BridgeRole {
+        case bump
+        case divider
+        case ignore
+    }
+
+    /// A bridge whose middle sits outside every polygon extends the outline.
+    /// One whose middle sits inside is a divider and must stay stroked.
+    /// A bridge that already lies on the boundary adds nothing.
+    private static func bridgeRole(
+        _ chain: [CGPoint],
+        polygons: [[CGPoint]],
+        tolerance: CGFloat
+    ) -> BridgeRole {
+        guard chain.count >= 2, let sample = chainSample(chain) else { return .ignore }
+        if polygons.contains(where: { pointInsidePolygon(sample, $0) }) {
+            return .divider
+        }
+        if let host = hostRing(for: chain, polygons: polygons, tolerance: tolerance),
+           abs(bumpArea(chain, on: host, tolerance: tolerance)) <= 1 {
+            return .ignore
+        }
+        return .bump
+    }
+
+    private static func chainSample(_ chain: [CGPoint]) -> CGPoint? {
+        guard let first = chain.first, let last = chain.last else { return nil }
+        if chain.count == 2 {
+            return CGPoint(x: (first.x + last.x) / 2, y: (first.y + last.y) / 2)
+        }
+        return chain[chain.count / 2]
+    }
+
+    private struct ChainSplit {
+        var bridges: [[CGPoint]]
+        var loose: [[CGPoint]]
+    }
+
+    /// Cuts a chain wherever a vertex lands on a closed outline. The span between
+    /// two landings is a bridge; a tail with only one landing stays loose.
+    private static func splitChain(
+        _ chain: [CGPoint],
+        against polygons: [[CGPoint]],
+        tolerance: CGFloat
+    ) -> ChainSplit {
+        guard chain.count >= 2 else { return ChainSplit(bridges: [], loose: []) }
+        let hits = chain.indices.filter { index in
+            polygons.contains { ring in
+                let limit = joinGapLimit(
+                    lengthA: ringLength(ring),
+                    lengthB: contourLength(chain),
+                    tolerance: tolerance
+                )
+                return nearestBoundaryHit(chain[index], on: ring, limit: limit) != nil
+            }
+        }
+        guard hits.count >= 2 else {
+            return ChainSplit(bridges: [], loose: [chain])
+        }
+        var bridges: [[CGPoint]] = []
+        for pair in zip(hits, hits.dropFirst()) where pair.1 > pair.0 {
+            bridges.append(Array(chain[pair.0...pair.1]))
+        }
+        var loose: [[CGPoint]] = []
+        if let first = hits.first, first > 0 {
+            loose.append(Array(chain[0...first]))
+        }
+        if let last = hits.last, last < chain.count - 1 {
+            loose.append(Array(chain[last...]))
+        }
+        return ChainSplit(bridges: bridges, loose: loose)
+    }
+
+    private static func hostRing(
+        for chain: [CGPoint],
+        polygons: [[CGPoint]],
+        tolerance: CGFloat
+    ) -> [CGPoint]? {
+        guard let start = chain.first, let end = chain.last else { return nil }
+        var best: (ring: [CGPoint], gap: CGFloat)?
+        for ring in polygons {
+            let limit = joinGapLimit(
+                lengthA: ringLength(ring),
+                lengthB: contourLength(chain),
+                tolerance: tolerance
+            )
+            guard let hit0 = nearestBoundaryHit(start, on: ring, limit: limit),
+                  let hit1 = nearestBoundaryHit(end, on: ring, limit: limit),
+                  distance(hit0.point, hit1.point) > 0.05
+            else { continue }
+            let gap = hit0.distance + hit1.distance
+            if best == nil || gap < best!.gap {
+                best = (ring, gap)
+            }
+        }
+        return best?.ring
+    }
+
+    private static func bumpArea(
+        _ chain: [CGPoint],
+        on ring: [CGPoint],
+        tolerance: CGFloat
+    ) -> CGFloat {
+        guard let bump = bumpPolygon(chain, on: ring, tolerance: tolerance) else { return 0 }
+        return abs(signedArea(bump))
+    }
+
+    /// Inserts the chain's landings into `polygons` and returns the smaller loop
+    /// the chain closes against that outline.
+    private static func makeBump(
+        _ chain: [CGPoint],
+        on polygons: inout [[CGPoint]],
+        tolerance: CGFloat
+    ) -> [CGPoint]? {
+        guard let start = chain.first, let end = chain.last else { return nil }
+        var bestIndex: Int?
+        var bestGap = CGFloat.greatestFiniteMagnitude
+        for index in polygons.indices {
+            let ring = polygons[index]
+            let limit = joinGapLimit(
+                lengthA: ringLength(ring),
+                lengthB: contourLength(chain),
+                tolerance: tolerance
+            )
+            guard let hit0 = nearestBoundaryHit(start, on: ring, limit: limit),
+                  let hit1 = nearestBoundaryHit(end, on: ring, limit: limit),
+                  distance(hit0.point, hit1.point) > 0.05
+            else { continue }
+            let gap = hit0.distance + hit1.distance
+            if gap < bestGap {
+                bestGap = gap
+                bestIndex = index
+            }
+        }
+        guard let bestIndex else { return nil }
+        let limit = joinGapLimit(
+            lengthA: ringLength(polygons[bestIndex]),
+            lengthB: contourLength(chain),
+            tolerance: tolerance
+        )
+        guard let hit0 = nearestBoundaryHit(start, on: polygons[bestIndex], limit: limit),
+              let hit1 = nearestBoundaryHit(end, on: polygons[bestIndex], limit: limit),
+              let bump = insertedBump(chain, hit0: hit0, hit1: hit1, into: &polygons[bestIndex])
+        else { return nil }
+        return bump
+    }
+
+    private static func insertedBump(
+        _ chain: [CGPoint],
+        hit0: BoundaryHit,
+        hit1: BoundaryHit,
+        into ring: inout [CGPoint]
+    ) -> [CGPoint]? {
+        ring = inserting([hit0, hit1], into: ring)
+        guard let startIndex = ring.firstIndex(where: { distance($0, hit0.point) <= 0.05 }),
+              let endIndex = ring.firstIndex(where: { distance($0, hit1.point) <= 0.05 }),
+              startIndex != endIndex
+        else { return nil }
+        return bumpPolygon(chain, from: startIndex, to: endIndex, on: ring, hit0: hit0, hit1: hit1)
+    }
+
+    private static func bumpPolygon(
+        _ chain: [CGPoint],
+        on ring: [CGPoint],
+        tolerance: CGFloat
+    ) -> [CGPoint]? {
+        guard let start = chain.first, let end = chain.last else { return nil }
+        let limit = joinGapLimit(
+            lengthA: ringLength(ring),
+            lengthB: contourLength(chain),
+            tolerance: tolerance
+        )
+        guard let hit0 = nearestBoundaryHit(start, on: ring, limit: limit),
+              let hit1 = nearestBoundaryHit(end, on: ring, limit: limit)
+        else { return nil }
+        var working = inserting([hit0, hit1], into: ring)
+        guard let startIndex = working.firstIndex(where: { distance($0, hit0.point) <= 0.05 }),
+              let endIndex = working.firstIndex(where: { distance($0, hit1.point) <= 0.05 }),
+              startIndex != endIndex
+        else { return nil }
+        return bumpPolygon(chain, from: startIndex, to: endIndex, on: working, hit0: hit0, hit1: hit1)
+    }
+
+    private static func bumpPolygon(
+        _ chain: [CGPoint],
+        from startIndex: Int,
+        to endIndex: Int,
+        on ring: [CGPoint],
+        hit0: BoundaryHit,
+        hit1: BoundaryHit
+    ) -> [CGPoint]? {
+        var oriented = chain
+        if distance(oriented[0], hit0.point) > distance(oriented[0], hit1.point) {
+            oriented.reverse()
+        }
+        oriented[0] = ring[startIndex]
+        oriented[oriented.count - 1] = ring[endIndex]
+        let back = ringArc(ring, from: endIndex, to: startIndex)
+        let other = Array(ringArc(ring, from: startIndex, to: endIndex).reversed())
+        let loop1 = closedRing(oriented + back.dropFirst().dropLast())
+        let loop2 = closedRing(oriented + other.dropFirst().dropLast())
+        let area1 = abs(signedArea(loop1))
+        let area2 = abs(signedArea(loop2))
+        let bump = area1 <= area2 ? loop1 : loop2
+        guard min(area1, area2) > 1, bump.count >= 3 else { return nil }
+        return bump
+    }
+
+    /// Puts back every input edge whose middle sits inside the filled outline.
+    /// Those edges are the lines the union would otherwise delete.
+    private static func spliceInteriorEdges(
+        of polygons: [[CGPoint]],
+        into paths: inout [Path],
+        tolerance: CGFloat
+    ) {
+        guard let outline = paths.first(where: { $0.isClosed && $0.points.count >= 3 })?.points else { return }
+        var seen = Set<String>()
+        for ring in polygons {
+            guard ring.count >= 2 else { continue }
+            for index in ring.indices {
+                let start = ring[index]
+                let end = ring[(index + 1) % ring.count]
+                guard distance(start, end) > 0.05 else { continue }
+                let key = undirectedEdgeKey(start, end)
+                guard seen.insert(key).inserted else { continue }
+                let middle = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+                if liesOnRing(middle, outline) { continue }
+                guard pointInsidePolygon(middle, outline) else { continue }
+                _ = spliceDivider([start, end], into: &paths, tolerance: tolerance)
+            }
+        }
+    }
+
+    private static func undirectedEdgeKey(_ a: CGPoint, _ b: CGPoint) -> String {
+        let ka = unionKey(a)
+        let kb = unionKey(b)
+        return ka < kb ? ka + "|" + kb : kb + "|" + ka
+    }
+
+    private static func liesOnRing(_ point: CGPoint, _ ring: [CGPoint]) -> Bool {
+        guard ring.count >= 2 else { return false }
+        for index in ring.indices {
+            let start = ring[index]
+            let end = ring[(index + 1) % ring.count]
+            if distance(point, start) <= 0.5 || distance(point, end) <= 0.5 { return true }
+            if pointOnSegment(point, start, end, snap: 0.5) { return true }
+        }
+        return false
+    }
+
+    /// Draws a divider that now lands on the united outline, out and back, so the
+    /// line meets the base without opening the fill.
+    private static func spliceDivider(
+        _ chain: [CGPoint],
+        into paths: inout [Path],
+        tolerance: CGFloat
+    ) -> Bool {
+        guard chain.count >= 2, let start = chain.first, let end = chain.last else { return false }
+        for index in paths.indices where paths[index].isClosed {
+            let ring = paths[index].points
+            let limit = joinGapLimit(
+                lengthA: ringLength(ring),
+                lengthB: contourLength(chain),
+                tolerance: tolerance
+            )
+            guard let hit0 = nearestBoundaryHit(start, on: ring, limit: limit),
+                  let hit1 = nearestBoundaryHit(end, on: ring, limit: limit),
+                  distance(hit0.point, hit1.point) > 0.05,
+                  let sample = chainSample(chain)
+            else { continue }
+            let landsOnEdge = hit0.vertexIndex == nil || hit1.vertexIndex == nil
+            guard pointInsidePolygon(sample, ring) || landsOnEdge else { continue }
+            var points = chain
+            let anchorHit: BoundaryHit
+            let farHit: BoundaryHit
+            if hit0.vertexIndex == nil, hit1.vertexIndex != nil {
+                points.reverse()
+                anchorHit = hit1
+                farHit = hit0
+            } else {
+                anchorHit = hit0
+                farHit = hit1
+            }
+            points[0] = anchorHit.point
+            points[points.count - 1] = farHit.point
+            var host = paths[index]
+            host.points = inserting([hit0, hit1], into: host.points)
+            host.handles = Array(repeating: CurveHandle(), count: host.points.count)
+            host.contour = host.points
+            let guest = Path(
+                points: points,
+                handles: Array(repeating: CurveHandle(), count: points.count),
+                isClosed: false,
+                isCurve: false,
+                contour: points
+            )
+            paths[index] = splice(host, guest, at: points[0], tolerance: max(limit, 0.5))
+            return true
+        }
+        return false
+    }
+
+    private struct BoundaryHit {
+        var point: CGPoint
+        var distance: CGFloat
+        var vertexIndex: Int?
+        var edgeIndex: Int?
+        var edgeT: CGFloat
+    }
+
+    private static func nearestBoundaryHit(
+        _ point: CGPoint,
+        on ring: [CGPoint],
+        limit: CGFloat
+    ) -> BoundaryHit? {
+        guard ring.count >= 2, limit >= 0 else { return nil }
+        var best: BoundaryHit?
+        func consider(_ hit: BoundaryHit) {
+            if best == nil || hit.distance < best!.distance - 0.001 {
+                best = hit
+            }
+        }
+        for index in ring.indices {
+            let gap = distance(point, ring[index])
+            if gap <= limit {
+                consider(BoundaryHit(
+                    point: ring[index],
+                    distance: gap,
+                    vertexIndex: index,
+                    edgeIndex: nil,
+                    edgeT: 0
+                ))
+            }
+        }
+        for index in ring.indices {
+            let start = ring[index]
+            let end = ring[(index + 1) % ring.count]
+            let axis = CGPoint(x: end.x - start.x, y: end.y - start.y)
+            let lengthSquared = axis.x * axis.x + axis.y * axis.y
+            let length = sqrt(lengthSquared)
+            guard length > 0.05 else { continue }
+            let t = ((point.x - start.x) * axis.x + (point.y - start.y) * axis.y) / lengthSquared
+            guard t > 0.001, t < 0.999 else { continue }
+            let projected = CGPoint(x: start.x + t * axis.x, y: start.y + t * axis.y)
+            let gap = distance(point, projected)
+            let edgeLimit = min(limit, max(1.5, length * 0.35))
+            guard gap <= edgeLimit else { continue }
+            consider(BoundaryHit(
+                point: projected,
+                distance: gap,
+                vertexIndex: nil,
+                edgeIndex: index,
+                edgeT: t
+            ))
+        }
+        return best
+    }
+
+    /// Pulls vertices of a smaller outline onto a larger one it already touches,
+    /// so a corner that stops just short of a shared edge becomes that edge.
+    private static func snapSmallerRings(_ polygons: inout [[CGPoint]], tolerance: CGFloat) {
+        let snapshot = polygons
+        let areas = snapshot.map { abs(signedArea($0)) }
+        var touching = Array(repeating: Set<Int>(), count: polygons.count)
+        for index in snapshot.indices {
+            for point in snapshot[index] {
+                for other in snapshot.indices where other != index {
+                    let limit = joinGapLimit(
+                        lengthA: ringLength(snapshot[index]),
+                        lengthB: ringLength(snapshot[other]),
+                        tolerance: tolerance
+                    )
+                    if nearestBoundaryHit(point, on: snapshot[other], limit: limit) != nil {
+                        touching[index].insert(other)
+                    }
+                }
+            }
+        }
+        for index in polygons.indices {
+            for vertex in polygons[index].indices {
+                let point = snapshot[index][vertex]
+                var best: BoundaryHit?
+                for other in touching[index] {
+                    let otherIsHost = areas[other] > areas[index] + 0.5
+                        || (abs(areas[other] - areas[index]) <= 0.5 && other < index)
+                    guard otherIsHost else { continue }
+                    let limit = joinGapLimit(
+                        lengthA: ringLength(snapshot[index]),
+                        lengthB: ringLength(snapshot[other]),
+                        tolerance: tolerance
+                    )
+                    guard let hit = nearestBoundaryHit(point, on: snapshot[other], limit: limit) else { continue }
+                    if best == nil || hit.distance < best!.distance {
+                        best = hit
+                    }
+                }
+                if let best, best.distance > 0.05 {
+                    polygons[index][vertex] = best.point
+                }
+            }
+        }
+    }
+
+    private static func inserting(_ hits: [BoundaryHit], into ring: [CGPoint]) -> [CGPoint] {
+        var extras: [Int: [(t: CGFloat, point: CGPoint)]] = [:]
+        for hit in hits {
+            guard hit.vertexIndex == nil, let edge = hit.edgeIndex else { continue }
+            extras[edge, default: []].append((hit.edgeT, hit.point))
+        }
+        var result: [CGPoint] = []
+        for index in ring.indices {
+            result.append(ring[index])
+            let additions = (extras[index] ?? []).sorted { $0.t < $1.t }
+            for addition in additions {
+                if let last = result.last, distance(last, addition.point) <= 0.05 { continue }
+                let next = ring[(index + 1) % ring.count]
+                if distance(next, addition.point) <= 0.05 { continue }
+                result.append(addition.point)
+            }
+        }
+        return result
+    }
+
+    private static func ringArc(_ points: [CGPoint], from start: Int, to end: Int) -> [CGPoint] {
+        guard points.indices.contains(start), points.indices.contains(end) else { return [] }
+        var arc = [points[start]]
+        var index = start
+        var guardCount = 0
+        while index != end, guardCount <= points.count {
+            index = (index + 1) % points.count
+            arc.append(points[index])
+            guardCount += 1
+        }
+        return arc
+    }
+
+    private static func closedRing(_ points: [CGPoint]) -> [CGPoint] {
+        var ring: [CGPoint] = []
+        for point in points {
+            if let last = ring.last, distance(last, point) <= 0.05 { continue }
+            ring.append(point)
+        }
+        if ring.count >= 2,
+           let first = ring.first,
+           let last = ring.last,
+           distance(first, last) <= 0.05 {
+            ring.removeLast()
+        }
+        return ring
+    }
+
+    private static func ringLength(_ points: [CGPoint]) -> CGFloat {
+        guard let first = points.first, let last = points.last, points.count >= 2 else { return 0 }
+        return contourLength(points) + distance(first, last)
+    }
+
+    private static func closedPath(_ points: [CGPoint]) -> Path {
+        let ring = closedRing(points)
+        return Path(
+            points: ring,
+            handles: Array(repeating: CurveHandle(), count: ring.count),
+            isClosed: true,
+            isCurve: false,
+            contour: ring
+        )
+    }
+
+    private static func openStroke(from points: [CGPoint], base: VectorStroke) -> VectorStroke? {
+        let ring = closedRing(points)
+        guard ring.count >= 2 else { return nil }
+        var path = closedPath(ring)
+        path.isClosed = false
+        return stroke(from: path, base: base, rewritingPartialRuns: false)
+    }
+
+    /// Chains straight edges through ordinary corners and stops at a fork, so a
+    /// line that leaves the outline is not swallowed into the outline chain.
+    private static func junctionChains(_ atoms: [LineAtom], slop: CGFloat) -> [[CGPoint]] {
+        let welded = weldingEndpoints(atoms, slop: slop).filter { distance($0.from, $0.to) > 0.05 }
+        guard !welded.isEmpty else { return [] }
+        func key(_ point: CGPoint) -> String {
+            let scale: CGFloat = 1000
+            return "\((point.x * scale).rounded() / scale)|\((point.y * scale).rounded() / scale)"
+        }
+        var at: [String: [Int]] = [:]
+        for (index, atom) in welded.enumerated() {
+            at[key(atom.from), default: []].append(index)
+            at[key(atom.to), default: []].append(index)
+        }
+        func degree(_ point: CGPoint) -> Int { at[key(point)]?.count ?? 0 }
+        var used = [Bool](repeating: false, count: welded.count)
+
+        func walk(from atomIndex: Int, forward: Bool) -> [CGPoint] {
+            var points: [CGPoint] = []
+            var index = atomIndex
+            var forward = forward
+            while !used[index] {
+                used[index] = true
+                let atom = welded[index]
+                let start = forward ? atom.from : atom.to
+                let end = forward ? atom.to : atom.from
+                if points.isEmpty { points.append(start) }
+                points.append(end)
+                if degree(end) != 2 { break }
+                guard let next = (at[key(end)] ?? []).first(where: { !used[$0] }) else { break }
+                let nextAtom = welded[next]
+                forward = distance(nextAtom.from, end) <= slop
+                index = next
+            }
+            return points
+        }
+
+        var chains: [[CGPoint]] = []
+        for index in welded.indices where !used[index] {
+            let atom = welded[index]
+            if degree(atom.from) == 2, degree(atom.to) == 2 { continue }
+            let points = walk(from: index, forward: degree(atom.from) != 2)
+            if points.count >= 2 { chains.append(points) }
+        }
+        for index in welded.indices where !used[index] {
+            let points = walk(from: index, forward: true)
+            if points.count >= 2 { chains.append(points) }
+        }
+        return chains
     }
 
     private static func signedArea(_ points: [CGPoint]) -> CGFloat {
