@@ -63,7 +63,8 @@ struct OnboardingHoverBoxView: View {
     }
 }
 
-/// Centers the instruction card in the window for every tour step.
+/// Pins the instruction card near the top of the canvas so the area below
+/// stays open for drawing while the tour is visible.
 struct OnboardingTourOverlay: View {
     var controller: OnboardingController
     var overlayFrame: CGRect
@@ -79,27 +80,24 @@ struct OnboardingTourOverlay: View {
                 onSkipAll: { controller.skipAll() },
                 canGoBack: !controller.isFirstStep
             )
-            .offset(windowCenterOffset)
+            .offset(x: horizontalWindowOffset)
             .id(step.id)
             .transition(.identity)
             .transaction { $0.animation = nil }
         }
     }
 
-    /// The overlay is the canvas, below the toolbar. Shift from that center to
-    /// the window center so the card stays in the middle of the screen.
-    private var windowCenterOffset: CGSize {
+    /// The overlay is the canvas. Shift horizontally when that canvas is not
+    /// centered in the window so the card stays in the middle of the screen.
+    private var horizontalWindowOffset: CGFloat {
         guard overlayFrame.width > 0, overlayFrame.height > 0,
               let window = Self.keyWindow
-        else { return .zero }
+        else { return 0 }
 
         let windowOnScreen = window.convert(window.bounds, to: window.screen.coordinateSpace)
         let overlayCenter = CGPoint(x: overlayFrame.midX, y: overlayFrame.midY)
         let screenFrame = windowOnScreen.contains(overlayCenter) ? windowOnScreen : window.bounds
-        return CGSize(
-            width: screenFrame.midX - overlayCenter.x,
-            height: screenFrame.midY - overlayCenter.y
-        )
+        return screenFrame.midX - overlayCenter.x
     }
 
     private static var keyWindow: UIWindow? {
@@ -133,16 +131,18 @@ struct OnboardingOverlayFrameKey: PreferenceKey {
 }
 
 extension View {
-    /// Hosts the onboarding hover box in the center of the window.
+    /// Hosts the onboarding hover box just below the toolbar, leaving the
+    /// canvas underneath free to draw on.
     func onboardingTourOverlay(
         controller: OnboardingController,
         overlayFrame: CGRect = .zero
     ) -> some View {
-        overlay(alignment: .center) {
+        overlay(alignment: .top) {
             OnboardingTourOverlay(
                 controller: controller,
                 overlayFrame: overlayFrame
             )
+            .padding(.top, 16)
             .transaction { $0.animation = nil }
         }
         .animation(nil, value: controller.stepIndex)

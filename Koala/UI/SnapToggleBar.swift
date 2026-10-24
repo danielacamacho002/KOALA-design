@@ -49,7 +49,7 @@ struct SnapToggleBar: View {
                 .fill(Color.primary.opacity(0.05))
         }
         .onboardingAnchor(.snaps)
-        .onboardingHighlight(highlightedTarget == .snaps, cornerRadius: 10)
+        .onboardingHighlight(highlightedTarget == .snaps, cornerRadius: 10, color: .accentColor)
         // The bar sits on the cream canvas, so icons must stay dark even when
         // the rest of the app is in dark mode (Color.primary would otherwise
         // go white and vanish).
@@ -120,7 +120,7 @@ struct SnapToggleBar: View {
         )
         .accessibilityLabel(snapAccessibilityLabel(kind))
         .onboardingAnchor(.snap(kind))
-        .onboardingHighlight(highlightedTarget == .snap(kind))
+        .onboardingHighlight(highlightedTarget == .snap(kind), color: .accentColor)
     }
 
     private func constraintButton<Icon: View>(
@@ -137,7 +137,7 @@ struct SnapToggleBar: View {
         )
         .accessibilityLabel(snapAccessibilityLabel(kind))
         .onboardingAnchor(.snap(kind))
-        .onboardingHighlight(highlightedTarget == .snap(kind))
+        .onboardingHighlight(highlightedTarget == .snap(kind), color: .accentColor)
     }
 
     private func snapAccessibilityLabel(_ kind: SnapConstraint) -> String {
