@@ -904,6 +904,106 @@ struct PathJoinEngineTests {
         #expect(rendered.contains { hypot($0.x - 65, $0.y - 40) < 12 })
     }
 
+    /// Two triangles that share part of an edge join into one closed outline.
+    /// The shared edge stays — Join fills the shape without deleting a line.
+    @Test func joiningClosedTrianglesThatShareAnEdgeFillsBoth() {
+        let apex = CGPoint(x: 0, y: 100)
+        let bottomLeft = CGPoint(x: -80, y: 0)
+        let bottomRight = CGPoint(x: 80, y: 0)
+        let onEdge = CGPoint(x: 40, y: 50)
+        let tip = CGPoint(x: 130, y: 55)
+        let big = polygon([apex, bottomLeft, bottomRight])
+        let small = polygon([onEdge, tip, bottomRight])
+
+        let joined = PathJoinEngine.join([big, small], tolerance: joinTolerance) ?? []
+        #expect(joined.count == 1)
+        guard let stroke = joined.first else { return }
+        #expect(stroke.isClosed)
+        #expect(stroke.contains(CGPoint(x: 0, y: 40)))
+        #expect(stroke.contains(CGPoint(x: 90, y: 40)))
+        #expect(!stroke.contains(CGPoint(x: 150, y: 40)))
+        #expect(edge(onEdge, bottomRight, in: stroke.points))
+    }
+
+    /// The second triangle is an open chain. One end sits on the slanted edge
+    /// and the other stops just short of the base corner. Join still closes it.
+    @Test func joiningAnOpenTriangleOntoAClosedEdgeFillsTheAddedArea() {
+        let apex = CGPoint(x: 0, y: 100)
+        let bottomLeft = CGPoint(x: -80, y: 0)
+        let bottomRight = CGPoint(x: 80, y: 0)
+        let onEdge = CGPoint(x: 40, y: 50)
+        let tip = CGPoint(x: 130, y: 55)
+        let almostCorner = CGPoint(x: 80, y: 5)
+        let big = polygon([apex, bottomLeft, bottomRight])
+        let side = polygon([onEdge, tip, almostCorner], closed: false)
+
+        #expect(PathJoinEngine.canJoin([big, side], tolerance: joinTolerance))
+        let joined = PathJoinEngine.join([big, side], tolerance: joinTolerance) ?? []
+        #expect(joined.count == 1)
+        guard let stroke = joined.first else { return }
+        #expect(stroke.isClosed)
+        #expect(stroke.contains(CGPoint(x: 0, y: 40)))
+        #expect(stroke.contains(CGPoint(x: 90, y: 40)))
+    }
+
+    /// A line across the added triangle that stops short of the base is pulled
+    /// onto that base, and the whole outline stays filled.
+    @Test func joiningADividerThatMissesTheBaseConnectsItAndKeepsTheFill() {
+        let apex = CGPoint(x: 0, y: 100)
+        let bottomLeft = CGPoint(x: -80, y: 0)
+        let bottomRight = CGPoint(x: 80, y: 0)
+        let onEdge = CGPoint(x: 40, y: 50)
+        let tip = CGPoint(x: 130, y: 55)
+        let big = polygon([apex, bottomLeft, bottomRight])
+        let side = polygon([onEdge, tip, bottomRight], closed: false)
+        let shortOfBase = CGPoint(x: 105, y: 32.5)
+        let divider = line(onEdge, shortOfBase)
+
+        let joined = PathJoinEngine.join([big, side, divider], tolerance: joinTolerance) ?? []
+        #expect(joined.count == 1, "joined into \(joined.count)")
+        guard let stroke = joined.first else { return }
+        #expect(stroke.isClosed)
+        #expect(stroke.contains(CGPoint(x: 0, y: 40)))
+        #expect(stroke.contains(CGPoint(x: 90, y: 40)))
+        let onBase = CGPoint(x: 105, y: 27.5)
+        #expect(stroke.points.contains { hypot($0.x - onBase.x, $0.y - onBase.y) < 1.5 })
+    }
+
+    /// The junction is stored on the edge and again where the divider lands.
+    /// Dragging the highlighted anchor has to move both, or the line disconnects.
+    @Test func draggingAJunctionAnchorKeepsTheDividerWelded() {
+        let apex = CGPoint(x: 0, y: 100)
+        let bottomLeft = CGPoint(x: -80, y: 0)
+        let bottomRight = CGPoint(x: 80, y: 0)
+        let onEdge = CGPoint(x: 40, y: 50)
+        let tip = CGPoint(x: 130, y: 55)
+        let big = polygon([apex, bottomLeft, bottomRight])
+        let side = polygon([onEdge, tip, bottomRight], closed: false)
+        let divider = line(onEdge, CGPoint(x: 105, y: 32.5))
+
+        let joined = PathJoinEngine.join([big, side, divider], tolerance: joinTolerance) ?? []
+        guard let stroke = joined.first else {
+            #expect(joined.count == 1)
+            return
+        }
+        let points = stroke.points
+        var pair: (Int, Int)?
+        for index in points.indices {
+            for other in (index + 1)..<points.count
+            where hypot(points[index].x - points[other].x, points[index].y - points[other].y) <= 0.5 {
+                pair = (index, other)
+                break
+            }
+            if pair != nil { break }
+        }
+        #expect(pair != nil)
+        guard let pair else { return }
+        let target = CGPoint(x: points[pair.0].x + 14, y: points[pair.0].y - 9)
+        let moved = ShapeGeometry.applyingMovedAnchors(stroke, moves: [pair.0: target])
+        #expect(hypot(moved.points[pair.0].x - target.x, moved.points[pair.0].y - target.y) < 0.01)
+        #expect(hypot(moved.points[pair.1].x - target.x, moved.points[pair.1].y - target.y) < 0.01)
+    }
+
     private func distanceFromChord(_ point: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
         let dx = b.x - a.x
         let dy = b.y - a.y
@@ -931,6 +1031,29 @@ struct PathJoinEngineTests {
             rendered.contains { hypot($0.x - bulge.x, $0.y - bulge.y) < 14 },
             "\(name) lost bulge \(bulge); \(summary)"
         )
+    }
+
+    private func polygon(_ points: [CGPoint], closed: Bool = true) -> VectorStroke {
+        VectorStroke(
+            layerID: layerID,
+            points: points,
+            isClosed: closed,
+            shapeType: .polyline
+        )
+    }
+
+    private func edge(_ a: CGPoint, _ b: CGPoint, in points: [CGPoint]) -> Bool {
+        guard points.count >= 2 else { return false }
+        func near(_ p: CGPoint, _ q: CGPoint) -> Bool {
+            hypot(p.x - q.x, p.y - q.y) < 1.5
+        }
+        for index in points.indices {
+            let next = points[(index + 1) % points.count]
+            if (near(points[index], a) && near(next, b)) || (near(points[index], b) && near(next, a)) {
+                return true
+            }
+        }
+        return false
     }
 
     private func line(_ start: CGPoint, _ end: CGPoint) -> VectorStroke {

@@ -35,7 +35,10 @@ enum TextRenderer {
         if element.isOutline {
             layer.fillColor = nil
             layer.strokeColor = element.strokeCGColor
-            layer.lineWidth = viewport.documentToView(distance: element.strokeWidth)
+            layer.lineWidth = CanvasOverlayGeometry.displayStrokeScreenWidth(
+                strokeWidth: element.strokeWidth,
+                scale: viewport.scale
+            )
         } else {
             layer.fillColor = element.cgColor
             layer.strokeColor = nil

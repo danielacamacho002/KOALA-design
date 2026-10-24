@@ -368,12 +368,33 @@ nonisolated enum ShapeGeometry: Sendable {
         }
 
         var updated = stroke
-        for (index, point) in moves where updated.points.indices.contains(index) {
+        let welded = weldedMoves(stroke.points, moves: moves)
+        for (index, point) in welded where updated.points.indices.contains(index) {
             updated.points[index] = point
         }
         // `CurveHandle` offsets are relative to their anchor, so leaving them alone makes
         // the tangents travel with the dragged anchor and the segment stays curved.
         return updated
+    }
+
+    /// A joined T-junction is stored twice: once on the edge, once where the line
+    /// lands. Dragging either copy has to move both, or the line peels off the edge.
+    private static func weldedMoves(_ points: [CGPoint], moves: [Int: CGPoint]) -> [Int: CGPoint] {
+        var expanded = moves
+        for (index, target) in moves {
+            guard points.indices.contains(index) else { continue }
+            let origin = points[index]
+            let delta = CGPoint(x: target.x - origin.x, y: target.y - origin.y)
+            for other in points.indices where expanded[other] == nil {
+                let gap = hypot(points[other].x - origin.x, points[other].y - origin.y)
+                guard gap <= 0.5 else { continue }
+                expanded[other] = CGPoint(
+                    x: points[other].x + delta.x,
+                    y: points[other].y + delta.y
+                )
+            }
+        }
+        return expanded
     }
 
     /// The single delta shared by `moves` when they cover every anchor, else nil.

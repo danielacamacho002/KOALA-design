@@ -71,10 +71,18 @@ enum StrokeRenderer {
         for stroke: VectorStroke,
         viewport: ViewportTransform,
         pointTransform: PrintStrokeTransform? = nil,
-        opacity: CGFloat = 1
+        opacity: CGFloat = 1,
+        limitZoomedWidth: Bool = false
     ) -> CAShapeLayer {
         let layer = CAShapeLayer()
-        configure(layer, stroke: stroke, viewport: viewport, pointTransform: pointTransform, opacity: opacity)
+        configure(
+            layer,
+            stroke: stroke,
+            viewport: viewport,
+            pointTransform: pointTransform,
+            opacity: opacity,
+            limitZoomedWidth: limitZoomedWidth
+        )
         return layer
     }
 
@@ -83,9 +91,17 @@ enum StrokeRenderer {
         stroke: VectorStroke,
         viewport: ViewportTransform,
         pointTransform: PrintStrokeTransform? = nil,
-        opacity: CGFloat = 1
+        opacity: CGFloat = 1,
+        limitZoomedWidth: Bool = false
     ) {
-        configure(layer, stroke: stroke, viewport: viewport, pointTransform: pointTransform, opacity: opacity)
+        configure(
+            layer,
+            stroke: stroke,
+            viewport: viewport,
+            pointTransform: pointTransform,
+            opacity: opacity,
+            limitZoomedWidth: limitZoomedWidth
+        )
     }
 
     private static let outlineSublayerName = "cutOutlineSublayer"
@@ -99,10 +115,16 @@ enum StrokeRenderer {
         stroke: VectorStroke,
         viewport: ViewportTransform,
         pointTransform: PrintStrokeTransform?,
-        opacity: CGFloat
+        opacity: CGFloat,
+        limitZoomedWidth: Bool
     ) {
         let fillPath = path(for: stroke, viewport: viewport, pointTransform: pointTransform).cgPath
-        let lineWidth = viewport.documentToView(distance: stroke.strokeWidth)
+        let lineWidth = limitZoomedWidth
+            ? CanvasOverlayGeometry.displayStrokeScreenWidth(
+                strokeWidth: stroke.strokeWidth,
+                scale: viewport.scale
+            )
+            : viewport.documentToView(distance: stroke.strokeWidth)
         layer.lineCap = .round
         layer.lineJoin = .round
         layer.contentsScale = UIScreen.main.scale

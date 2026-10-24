@@ -60,7 +60,6 @@ struct EditorView: View {
         tour: .design,
         completedKey: OnboardingSettings.designTourCompletedKey
     )
-    @State private var onboardingAnchors: [String: CGRect] = [:]
     @State private var onboardingOverlayFrame: CGRect = .zero
     @State private var trimPreviewPoints: [CGPoint] = []
     @State private var trimPreviewStrokeWidth: CGFloat = 1
@@ -450,23 +449,6 @@ struct EditorView: View {
                 }
             }
             .overlay(alignment: .topLeading) {
-                if designOnboarding.currentStep?.target.boxPlacement == .besideCommandPanel,
-                   let step = designOnboarding.currentStep {
-                    OnboardingHoverBoxView(
-                        step: step,
-                        stepNumber: designOnboarding.stepNumber,
-                        stepCount: designOnboarding.stepCount,
-                        onNext: { designOnboarding.advance() },
-                        onBack: { designOnboarding.retreat() },
-                        onSkipAll: { designOnboarding.skipAll() },
-                        canGoBack: !designOnboarding.isFirstStep
-                    )
-                    .padding(.leading, ToolPanelMetrics.commandWidth + 12)
-                    .transition(.identity)
-                    .transaction { $0.animation = nil }
-                }
-            }
-            .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .type && editingTextID == nil {
                     FontPickerView(
                         document: store.document,
@@ -489,26 +471,10 @@ struct EditorView: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                VStack(alignment: .leading, spacing: 8) {
-                    if designOnboarding.currentStep?.target.boxPlacement == .aboveSnaps,
-                       let step = designOnboarding.currentStep {
-                        OnboardingHoverBoxView(
-                            step: step,
-                            stepNumber: designOnboarding.stepNumber,
-                            stepCount: designOnboarding.stepCount,
-                            onNext: { designOnboarding.advance() },
-                            onBack: { designOnboarding.retreat() },
-                            onSkipAll: { designOnboarding.skipAll() },
-                            canGoBack: !designOnboarding.isFirstStep
-                        )
-                        .transition(.identity)
-                        .transaction { $0.animation = nil }
-                    }
-                    SnapToggleBar(
-                        document: store.document,
-                        highlightedTarget: designOnboarding.currentTarget
-                    )
-                }
+                SnapToggleBar(
+                    document: store.document,
+                    highlightedTarget: designOnboarding.currentTarget
+                )
                 .padding(.leading, 16)
                 .padding(.bottom, 16)
             }
@@ -544,7 +510,6 @@ struct EditorView: View {
             }
             .onboardingTourOverlay(
                 controller: designOnboarding,
-                anchors: onboardingAnchors,
                 overlayFrame: onboardingOverlayFrame
             )
             .onAppear {
@@ -580,10 +545,14 @@ struct EditorView: View {
                 }
             )
         }
-        .onPreferenceChange(OnboardingAnchorPreferenceKey.self) { onboardingAnchors = $0 }
         .onPreferenceChange(OnboardingOverlayFrameKey.self) { onboardingOverlayFrame = $0 }
         .onChange(of: designOnboarding.stepIndex) { _, _ in
             syncPanelForTourStep()
+        }
+        .onChange(of: designOnboarding.isActive) { _, active in
+            if !active {
+                showLayersPanel = false
+            }
         }
     }
 
@@ -1105,11 +1074,10 @@ struct EditorView: View {
         switch designOnboarding.currentTarget {
         case .tool(let category):
             selectToolForTour(category)
-        case .commandPanel:
-            selectToolForTour(.line)
         default:
-            break
+            clearToolHighlightForTour()
         }
+        showLayersPanel = designOnboarding.currentTarget == .layers
     }
 
     /// Selects a tool during the tour without committing destructive actions
@@ -1131,6 +1099,16 @@ struct EditorView: View {
             store.document.selectTool(category)
             handleToolSelected(category)
         }
+    }
+
+    /// Tool steps paint the active tool blue. Later steps, including Constraints,
+    /// should not leave that selection on.
+    private func clearToolHighlightForTour() {
+        guard store.document.activeCategory != .move || store.document.isMoveToolHighlighted else { return }
+        store.document.clearActiveTool()
+        showCommandPanel = false
+        commandSession.cancel()
+        updateChromeInsets()
     }
 
     private func handleToolSelected(_ category: ToolCategory?) {
@@ -1519,7 +1497,8 @@ struct EditorView: View {
                     let anchorHit = CanvasOverlayGeometry.screenGrabExtent(
                         minimum: CanvasOverlayGeometry.curveAnchorHitExtent,
                         mark: CanvasOverlayGeometry.anchorMarkSize,
-                        scale: store.document.viewport.scale
+                        scale: store.document.viewport.scale,
+                        strokeWidth: stroke.strokeWidth
                     )
                     let minimumSeparation = store.document.viewport.viewToDocument(distance: anchorHit)
                     if store.document.insertAnchor(

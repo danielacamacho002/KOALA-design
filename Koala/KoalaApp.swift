@@ -10,6 +10,7 @@ import SwiftUI
 @main
 struct KoalaApp: App {
     init() {
+        PencilTextEntry.install()
         FontLibrary.prepareAtLaunch()
     }
 

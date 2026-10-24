@@ -44,7 +44,7 @@ struct LayersPanelView: View {
         }
         .animation(.easeOut(duration: 0.15), value: isExpanded)
         .onboardingAnchor(.layers)
-        .onboardingHighlight(isTourHighlighted, cornerRadius: isExpanded ? 0 : 8, color: .accentColor)
+        .onboardingHighlight(isTourHighlighted, cornerRadius: isExpanded ? 0 : 8)
         .onChange(of: isExpanded) { _, expanded in
             if !expanded {
                 commitRenameIfNeeded()
