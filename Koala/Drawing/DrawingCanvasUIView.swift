@@ -758,7 +758,7 @@ final class DrawingCanvasUIView: UIView {
             applyAngleSnap: shouldAngleSnapDrawnSegment,
             grid: document.grid,
             settings: document.settings,
-            gridSnapEnabled: document.snapEnabled && document.grid.snapEnabled,
+            gridSnapEnabled: shouldGridSnapDrawnPoint,
             scale: document.viewport.scale,
             objectSnap: { query, alignmentOrigin, alignmentThrough in
                 resolveObjectSnap(
@@ -768,6 +768,13 @@ final class DrawingCanvasUIView: UIView {
                 )
             }
         )
+    }
+
+    /// Curve anchors follow the pencil. Object snap still applies. Lines, circles,
+    /// and rectangles keep the grid lattice.
+    private var shouldGridSnapDrawnPoint: Bool {
+        guard activeCategory != .curve else { return false }
+        return document.snapEnabled && document.grid.snapEnabled
     }
 
     /// Polar tracking applies to straight segments (line / construction / curve), not arcs
