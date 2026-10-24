@@ -1497,7 +1497,8 @@ struct EditorView: View {
                     let anchorHit = CanvasOverlayGeometry.screenGrabExtent(
                         minimum: CanvasOverlayGeometry.curveAnchorHitExtent,
                         mark: CanvasOverlayGeometry.anchorMarkSize,
-                        scale: store.document.viewport.scale
+                        scale: store.document.viewport.scale,
+                        strokeWidth: stroke.strokeWidth
                     )
                     let minimumSeparation = store.document.viewport.viewToDocument(distance: anchorHit)
                     if store.document.insertAnchor(

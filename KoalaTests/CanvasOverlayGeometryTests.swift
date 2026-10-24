@@ -139,14 +139,38 @@ struct CanvasOverlayGeometryTests {
         #expect(rect == nil)
     }
 
-    @Test func anchorScreenLengthFloorsBelowOneXAndKeepsGrowingAtMaxZoom() {
+    @Test func anchorScreenLengthFloorsWhenZoomedOutAndCapsAtOneX() {
         let base: CGFloat = 6
-        #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 0) == base)
-        #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 0.5) == base)
+        let floor = CanvasOverlayGeometry.anchorTrackScaleFloor
+        #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 0) == base * floor)
+        #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: floor) == base * floor)
+        #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 0.75) == base * 0.75)
         #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 1) == base)
-        #expect(abs(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 4) - 24) < 1e-9)
+        #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 4) == base)
         let maxZoom = ViewportTransform.maxScale
-        #expect(abs(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: maxZoom) - base * maxZoom) < 1e-9)
+        #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: maxZoom) == base)
+    }
+
+    /// A same-colored square has to stay wider than the stroke or it vanishes inside the line.
+    /// Past the screen cap both the line and the square hold, so zooming in does not inflate them.
+    @Test func anchorScreenLengthStaysWiderThanTheStrokeWhenZoomedIn() {
+        let base: CGFloat = 6
+        let stroke: CGFloat = 2
+        let clearance = CanvasOverlayGeometry.anchorStrokeClearance
+        let cap = CanvasOverlayGeometry.displayStrokeScreenCap
+        #expect(CanvasOverlayGeometry.displayStrokeScreenWidth(strokeWidth: stroke, scale: 1) == stroke)
+        #expect(CanvasOverlayGeometry.displayStrokeScreenWidth(strokeWidth: stroke, scale: 4) == stroke * 4)
+        #expect(CanvasOverlayGeometry.displayStrokeScreenWidth(strokeWidth: stroke, scale: 24) == cap)
+        #expect(CanvasOverlayGeometry.displayStrokeScreenWidth(strokeWidth: 20, scale: 1) == 20)
+        #expect(CanvasOverlayGeometry.displayStrokeScreenWidth(strokeWidth: 20, scale: 24) == 20)
+        #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 1, strokeWidth: stroke) == base)
+        let capped = cap * clearance
+        #expect(capped > base)
+        #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 8, strokeWidth: stroke) == capped)
+        let maxZoom = ViewportTransform.maxScale
+        #expect(
+            CanvasOverlayGeometry.anchorScreenLength(base: base, scale: maxZoom, strokeWidth: stroke) == capped
+        )
     }
 
     @Test func missingTangentArmIsMirroredSoTheAnchorStaysCentered() {

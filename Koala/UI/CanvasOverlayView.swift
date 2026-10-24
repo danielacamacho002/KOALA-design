@@ -113,7 +113,9 @@ struct CanvasOverlayView: View {
 
     private let handleSize: CGFloat = 22
     /// Visible side length of path anchors and the center handle at 1× zoom.
-    /// Above 1× this grows with the viewport via `anchorScreenLength`. Hit testing uses `anchorTouchTargetSize`.
+    /// `anchorScreenLength` shrinks this down to half when zoomed out, holds it at 1×,
+    /// and widens it past the stroke when the line would otherwise cover the square.
+    /// Hit testing uses `anchorTouchTargetSize`.
     private let anchorHandleSize = CanvasOverlayGeometry.anchorMarkSize
     private let coordinateSpaceName = "editor"
     private let filletDragThreshold: CGFloat = 6
@@ -171,7 +173,11 @@ struct CanvasOverlayView: View {
     @ViewBuilder
     private var commandPreviewHandles: some View {
         ForEach(Array(commandSession.controlPoints.enumerated()), id: \.offset) { index, point in
-            handleView(style: .command, strokeColor: document.strokeColor)
+            handleView(
+                style: .command,
+                strokeColor: document.strokeColor,
+                strokeWidth: document.strokeWidth
+            )
                 .position(document.viewport.documentToView(point))
                 .highPriorityGesture(commandPointDrag(index: index))
         }
@@ -254,7 +260,11 @@ struct CanvasOverlayView: View {
                 curveTangentConnectors(stroke: stroke, curveHandles: curveHandles)
             }
             ForEach(Array(handles.enumerated()), id: \.offset) { index, point in
-                handleView(style: .edit, strokeColor: stroke.strokeColor)
+                handleView(
+                    style: .edit,
+                    strokeColor: stroke.strokeColor,
+                    strokeWidth: stroke.strokeWidth
+                )
                     .position(document.viewport.documentToView(point))
                     .allowsHitTesting(stroke.shapeType != .curve)
                     .highPriorityGesture(strokeNodeDrag(strokeID: strokeID, index: index))
@@ -447,7 +457,11 @@ struct CanvasOverlayView: View {
         curveHandles: [CurveHandle],
         nodeEdit: Bool
     ) -> some View {
-        let circles = curveGrabCircles(anchors: stroke.points, handles: curveHandles)
+        let circles = curveGrabCircles(
+            anchors: stroke.points,
+            handles: curveHandles,
+            strokeWidth: stroke.strokeWidth
+        )
         Color.clear
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(curveGrabPath(circles))
@@ -455,9 +469,15 @@ struct CanvasOverlayView: View {
             .onAppear { commitMinimumTangentLength(strokeID: strokeID) }
     }
 
-    private func curveGrabCircles(anchors: [CGPoint], handles: [CurveHandle]) -> [CurveGrabCircle] {
+    private func curveGrabCircles(
+        anchors: [CGPoint],
+        handles: [CurveHandle],
+        strokeWidth: CGFloat
+    ) -> [CurveGrabCircle] {
         guard anchors.count == handles.count else { return [] }
-        let anchorRadius = anchorHitTarget(visible: anchorScreenLength(base: anchorHandleSize)) / 2
+        let anchorRadius = anchorHitTarget(
+            visible: anchorScreenLength(base: anchorHandleSize, strokeWidth: strokeWidth)
+        ) / 2
         let tangentRadius = curveTangentHitExtent / 2
         let count = anchors.count
         var circles: [CurveGrabCircle] = []
@@ -598,7 +618,7 @@ struct CanvasOverlayView: View {
             proposed: proposed,
             current: stroke.points[index],
             obstacles: others,
-            minimumDistance: curveAnchorGrabGap
+            minimumDistance: curveAnchorGrabGap(strokeWidth: stroke.strokeWidth)
         )
     }
 
@@ -1250,9 +1270,14 @@ struct CanvasOverlayView: View {
                 let selected = document.selectedAnchorIndices.contains(index)
                 let isPivot = document.isMoveRotateMode
                     && document.moveRotationPivotAnchorIndex == index
-                let ring = anchorScreenLength(base: anchorHandleSize + 6)
+                let side = anchorScreenLength(base: anchorHandleSize, strokeWidth: stroke.strokeWidth)
+                let ring = side + 6
                 ZStack {
-                    handleView(style: selected ? .selectedAnchor : .move, strokeColor: stroke.strokeColor)
+                    handleView(
+                        style: selected ? .selectedAnchor : .move,
+                        strokeColor: stroke.strokeColor,
+                        strokeWidth: stroke.strokeWidth
+                    )
                     if isPivot {
                         Circle()
                             .stroke(Color.yellow, lineWidth: 2)
@@ -1433,7 +1458,7 @@ struct CanvasOverlayView: View {
                 proposed: proposed,
                 current: moveDragOriginPoints[index],
                 obstacles: others,
-                minimumDistance: curveAnchorGrabGap
+                minimumDistance: curveAnchorGrabGap(strokeWidth: origin.strokeWidth)
             )
         }
         guard !moves.isEmpty else { return }
@@ -1705,7 +1730,11 @@ struct CanvasOverlayView: View {
             let handles = ShapeGeometry.handlePoints(for: stroke)
 
             ForEach(Array(handles.enumerated()), id: \.offset) { _, point in
-                handleView(style: .addAnchor, strokeColor: stroke.strokeColor)
+                handleView(
+                    style: .addAnchor,
+                    strokeColor: stroke.strokeColor,
+                    strokeWidth: stroke.strokeWidth
+                )
                     .position(document.viewport.documentToView(point))
             }
 
@@ -1724,7 +1753,11 @@ struct CanvasOverlayView: View {
             ForEach(cornerIndices, id: \.self) { index in
                 let point = handles[index]
                 let selected = document.selectedFilletCornerIndices.contains(index)
-                handleView(style: selected ? .selectedAnchor : .fillet, strokeColor: stroke.strokeColor)
+                handleView(
+                    style: selected ? .selectedAnchor : .fillet,
+                    strokeColor: stroke.strokeColor,
+                    strokeWidth: stroke.strokeWidth
+                )
                     .frame(width: anchorTouchTargetSize, height: anchorTouchTargetSize)
                     .contentShape(Rectangle())
                     .position(document.viewport.documentToView(point))
@@ -1812,7 +1845,11 @@ struct CanvasOverlayView: View {
                 CGPoint(x: bbox.minX, y: bbox.maxY)
             ]
             ForEach(Array(corners.enumerated()), id: \.offset) { index, corner in
-                handleView(style: .edit, strokeColor: stroke.strokeColor)
+                handleView(
+                    style: .edit,
+                    strokeColor: stroke.strokeColor,
+                    strokeWidth: stroke.strokeWidth
+                )
                     .position(document.viewport.documentToView(corner))
                     .highPriorityGesture(scaleDrag(strokeID: strokeID, cornerIndex: index, bbox: bbox))
             }
@@ -2361,7 +2398,11 @@ struct CanvasOverlayView: View {
         case edit, move, command, selectedAnchor, fillet, addAnchor
     }
 
-    private func handleView(style: HandleStyle, strokeColor: CodableColor? = nil) -> some View {
+    private func handleView(
+        style: HandleStyle,
+        strokeColor: CodableColor? = nil,
+        strokeWidth: CGFloat = 0
+    ) -> some View {
         let fill: Color
         let halo: Color
         let outline: Color?
@@ -2383,7 +2424,7 @@ struct CanvasOverlayView: View {
             halo = .white.opacity(0.85)
             outline = nil
         }
-        let side = anchorScreenLength(base: anchorHandleSize)
+        let side = anchorScreenLength(base: anchorHandleSize, strokeWidth: strokeWidth)
         return Rectangle()
             .fill(fill)
             .overlay {
@@ -2397,9 +2438,14 @@ struct CanvasOverlayView: View {
             .contentShape(Rectangle())
     }
 
-    /// On-screen side of an anchor whose 1× size is `base`. Grows with zoom above 1×.
-    private func anchorScreenLength(base: CGFloat) -> CGFloat {
-        CanvasOverlayGeometry.anchorScreenLength(base: base, scale: document.viewport.scale)
+    /// On-screen side of an anchor whose 1× size is `base`. Holds at that size above 1×,
+    /// unless `strokeWidth` would cover the square, in which case the mark stays wider than the line.
+    private func anchorScreenLength(base: CGFloat, strokeWidth: CGFloat = 0) -> CGFloat {
+        CanvasOverlayGeometry.anchorScreenLength(
+            base: base,
+            scale: document.viewport.scale,
+            strokeWidth: strokeWidth
+        )
     }
 
     /// Hit target stays at least `anchorTouchTargetSize`, and widens if the visible mark would be clipped.
@@ -2407,7 +2453,7 @@ struct CanvasOverlayView: View {
         max(anchorTouchTargetSize, visible)
     }
 
-    /// On-screen diameter of a tangent handle. Grows with the dot once zoom exceeds the floor.
+    /// On-screen diameter of a tangent handle. Stays at the grab minimum unless the dot is larger.
     private var curveTangentHitExtent: CGFloat {
         CanvasOverlayGeometry.screenGrabExtent(
             minimum: CanvasOverlayGeometry.curveTangentHitDiameter,
@@ -2417,8 +2463,10 @@ struct CanvasOverlayView: View {
     }
 
     /// Document distance between curve anchors so their grab squares do not stack.
-    private var curveAnchorGrabGap: CGFloat {
-        let anchorHit = anchorHitTarget(visible: anchorScreenLength(base: anchorHandleSize))
+    private func curveAnchorGrabGap(strokeWidth: CGFloat) -> CGFloat {
+        let anchorHit = anchorHitTarget(
+            visible: anchorScreenLength(base: anchorHandleSize, strokeWidth: strokeWidth)
+        )
         return document.viewport.viewToDocument(distance: anchorHit)
     }
 
