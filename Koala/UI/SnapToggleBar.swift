@@ -12,6 +12,8 @@ import SwiftUI
 /// kinds via the document toggles.
 struct SnapToggleBar: View {
     @Bindable var document: KoalaDocument
+    /// Top-left of this chrome overlay, in canvas-view coordinates.
+    var overlayOrigin: CGPoint
     var highlightedTarget: OnboardingTarget? = nil
     @State private var isExpanded = false
 
@@ -24,12 +26,21 @@ struct SnapToggleBar: View {
 
     private let iconSize: CGFloat = 34
 
+    /// Sheet rectangle in this overlay's coordinate space. Read from `body` so
+    /// icon color tracks pan and zoom without refreshing the rest of the editor.
+    private var sheetRect: CGRect {
+        CanvasIconContrast.sheetRect(
+            viewport: document.viewport,
+            canvasSize: document.settings.canvasSize,
+            overlayOrigin: overlayOrigin
+        )
+    }
+
     var body: some View {
         HStack(spacing: 2) {
-            StudioIconButton(
+            canvasIcon(
                 systemImage: "circle.grid.cross",
-                isActive: isExpanded && !isSnapTourActive,
-                size: iconSize
+                isActive: isExpanded && !isSnapTourActive
             ) {
                 withAnimation(.easeOut(duration: 0.15)) {
                     isExpanded.toggle()
@@ -46,14 +57,10 @@ struct SnapToggleBar: View {
         .padding(.vertical, 3)
         .background {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(0.05))
+                .fill(Color.black.opacity(0.05))
         }
         .onboardingAnchor(.snaps)
         .onboardingHighlight(highlightedTarget == .snaps, cornerRadius: 10, color: .accentColor)
-        // The bar sits on the cream canvas, so icons must stay dark even when
-        // the rest of the app is in dark mode (Color.primary would otherwise
-        // go white and vanish).
-        .environment(\.colorScheme, .light)
         .onAppear {
             if isSnapTourActive { isExpanded = true }
         }
@@ -112,10 +119,9 @@ struct SnapToggleBar: View {
         isActive: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        StudioIconButton(
+        canvasIcon(
             systemImage: systemImage,
             isActive: isActive || highlightedTarget == .snap(kind),
-            size: iconSize,
             action: action
         )
         .accessibilityLabel(snapAccessibilityLabel(kind))
@@ -127,17 +133,45 @@ struct SnapToggleBar: View {
         _ kind: SnapConstraint,
         isActive: Bool,
         action: @escaping () -> Void,
-        @ViewBuilder icon: () -> Icon
+        @ViewBuilder icon: @escaping () -> Icon
     ) -> some View {
-        StudioIconButton(
-            isActive: isActive || highlightedTarget == .snap(kind),
-            size: iconSize,
-            action: action,
-            icon: icon
-        )
-        .accessibilityLabel(snapAccessibilityLabel(kind))
-        .onboardingAnchor(.snap(kind))
-        .onboardingHighlight(highlightedTarget == .snap(kind), color: .accentColor)
+        canvasIcon(isActive: isActive || highlightedTarget == .snap(kind), action: action, icon: icon)
+            .accessibilityLabel(snapAccessibilityLabel(kind))
+            .onboardingAnchor(.snap(kind))
+            .onboardingHighlight(highlightedTarget == .snap(kind), color: .accentColor)
+    }
+
+    /// Black while this glyph sits on the sheet, white once it is over the pasteboard.
+    private func canvasIcon(
+        systemImage: String,
+        isActive: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        CanvasContrastTint(canvasRect: sheetRect) { overCanvas in
+            StudioIconButton(
+                systemImage: systemImage,
+                isActive: isActive,
+                size: iconSize,
+                inactiveColor: CanvasIconContrast.iconColor(isOverCanvas: overCanvas),
+                action: action
+            )
+        }
+    }
+
+    private func canvasIcon<Icon: View>(
+        isActive: Bool,
+        action: @escaping () -> Void,
+        @ViewBuilder icon: @escaping () -> Icon
+    ) -> some View {
+        CanvasContrastTint(canvasRect: sheetRect) { overCanvas in
+            StudioIconButton(
+                isActive: isActive,
+                size: iconSize,
+                inactiveColor: CanvasIconContrast.iconColor(isOverCanvas: overCanvas),
+                action: action,
+                icon: icon
+            )
+        }
     }
 
     private func snapAccessibilityLabel(_ kind: SnapConstraint) -> String {

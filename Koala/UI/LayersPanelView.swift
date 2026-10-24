@@ -15,6 +15,8 @@ struct LayersPanelView: View {
     @Binding var isExpanded: Bool
     /// Called after any mutation so the owner can mark the document dirty.
     var onChanged: () -> Void
+    /// Top-left of this chrome overlay, in canvas-view coordinates.
+    var overlayOrigin: CGPoint
     var isTourHighlighted: Bool = false
 
     @State private var renamingLayerID: UUID?
@@ -56,17 +58,25 @@ struct LayersPanelView: View {
     // MARK: - Collapsed toggle
 
     private var toggleButton: some View {
-        StudioIconButton(
-            systemImage: "square.3.layers.3d",
-            isActive: isExpanded,
-            size: 34
-        ) {
-            isExpanded.toggle()
+        let sheet = CanvasIconContrast.sheetRect(
+            viewport: document.viewport,
+            canvasSize: document.settings.canvasSize,
+            overlayOrigin: overlayOrigin
+        )
+        return CanvasContrastTint(canvasRect: sheet) { overCanvas in
+            StudioIconButton(
+                systemImage: "square.3.layers.3d",
+                isActive: isExpanded,
+                size: 34,
+                inactiveColor: CanvasIconContrast.iconColor(isOverCanvas: overCanvas)
+            ) {
+                isExpanded.toggle()
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 3)
+            .background(Rectangle().fill(CanvasIconContrast.washColor(isOverCanvas: overCanvas)))
+            .accessibilityLabel(isExpanded ? "Hide layers" : "Show layers")
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 3)
-        .background(Rectangle().fill(Color.primary.opacity(0.05)))
-        .accessibilityLabel(isExpanded ? "Hide layers" : "Show layers")
     }
 
     // MARK: - Expanded card

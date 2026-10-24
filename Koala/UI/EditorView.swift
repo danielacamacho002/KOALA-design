@@ -358,6 +358,7 @@ struct EditorView: View {
                 .frame(width: 1, height: 1)
                 .allowsHitTesting(false)
             }
+            .coordinateSpace(name: CanvasOverlayCoordinateSpace.name)
             .overlay(alignment: .topLeading) {
                 if store.document.activeCategory == .fillet {
                     FilletRadiusPanelView(
@@ -473,6 +474,7 @@ struct EditorView: View {
             .overlay(alignment: .bottomLeading) {
                 SnapToggleBar(
                     document: store.document,
+                    overlayOrigin: overlayOriginInCanvasView,
                     highlightedTarget: designOnboarding.currentTarget
                 )
                 .padding(.leading, 16)
@@ -482,13 +484,16 @@ struct EditorView: View {
                 LayersPanelView(
                     document: store.document,
                     isExpanded: $showLayersPanel,
+                    onChanged: { store.markDirty() },
+                    overlayOrigin: overlayOriginInCanvasView,
                     isTourHighlighted: designOnboarding.currentTarget == .layers
-                ) {
-                    store.markDirty()
-                }
+                )
             }
             .overlay(alignment: .bottomTrailing) {
-                RecenterCanvasButton {
+                RecenterCanvasButton(
+                    document: store.document,
+                    overlayOrigin: overlayOriginInCanvasView
+                ) {
                     recenterAnimated()
                 }
                 .padding(.trailing, 16)
@@ -884,6 +889,12 @@ struct EditorView: View {
                   $0.fileURL.standardizedFileURL.path == fileURL.standardizedFileURL.path
               }) else { return }
         store.fileName = record.name
+    }
+
+    /// Top-left of the design chrome overlays, in canvas UIView coordinates.
+    /// Stable while panning and zooming; only layout (rotation, toolbar) moves it.
+    private var overlayOriginInCanvasView: CGPoint {
+        visibleRectInCanvasSpace.origin
     }
 
     /// Visible drawing area in canvas UIView coordinates. The GeometryReader is already the
