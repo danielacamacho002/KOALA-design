@@ -1052,7 +1052,7 @@ struct EditorView: View {
         let panelWidth: CGFloat
         switch store.document.activeCategory {
         case .fillet, .addAnchor, .pattern, .copy:
-            panelWidth = ToolPanelMetrics.commandWidth
+            panelWidth = ToolPanelMetrics.scaledCommandWidth
         default:
             panelWidth = 0
         }

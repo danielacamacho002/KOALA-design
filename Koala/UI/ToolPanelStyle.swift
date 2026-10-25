@@ -12,9 +12,47 @@ import UIKit
 
 /// Shared size of every floating tool command panel. The move panel is the reference.
 enum ToolPanelMetrics {
+    /// Design width on an 11" iPad at Default Display Zoom (~1180pt long side).
     static let commandWidth: CGFloat = 172
     /// Compact point/value field, matching the shape panel's start-point box.
     static let pointFieldWidth: CGFloat = 100
+
+    /// Long-side points for the design reference (11" iPad Air, Default zoom).
+    static let referenceLongSide: CGFloat = 1180
+
+    /// Layout width after compensating for denser point canvases (Display Zoom
+    /// "More Space" on iPad Pro/Air, or larger 13" Default).
+    static var scaledCommandWidth: CGFloat {
+        (commandWidth * densityScale).rounded()
+    }
+
+    /// ≥1 scale so Default/Zoomed keep the design size; More Space grows chrome
+    /// so a fixed-pt panel does not look tiny on the same physical screen.
+    static var densityScale: CGFloat {
+        densityScale(longSidePoints: activeScreenLongSide)
+    }
+
+    static func densityScale(longSidePoints: CGFloat) -> CGFloat {
+        guard longSidePoints > 1 else { return 1 }
+        return max(1, longSidePoints / referenceLongSide)
+    }
+
+    private static var activeScreenLongSide: CGFloat {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let screen = scenes.first(where: { $0.activationState == .foregroundActive })?.screen
+            ?? scenes.first?.screen
+        let bounds = screen?.bounds ?? .zero
+        return max(bounds.width, bounds.height)
+    }
+}
+
+private struct ToolPanelIntrinsicSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        if next != .zero { value = next }
+    }
 }
 
 extension Color {
@@ -52,14 +90,28 @@ extension View {
 private struct ToolPanelChrome: ViewModifier {
     var width: CGFloat?
     var fillOverride: Color?
+    @State private var intrinsicSize: CGSize = .zero
 
     func body(content: Content) -> some View {
+        let scale = ToolPanelMetrics.densityScale
         content
             .padding(8)
             .frame(width: width)
             .foregroundStyle(.white)
             .background(Rectangle().fill(fillOverride ?? Color(hex: AppearanceSettings.toolbarHex)))
             .overlay(Rectangle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+            .background {
+                GeometryReader { geo in
+                    Color.clear.preference(key: ToolPanelIntrinsicSizeKey.self, value: geo.size)
+                }
+            }
+            .onPreferenceChange(ToolPanelIntrinsicSizeKey.self) { intrinsicSize = $0 }
+            .scaleEffect(scale, anchor: .topLeading)
+            .frame(
+                width: (width ?? intrinsicSize.width) * scale,
+                height: intrinsicSize.height > 0 ? intrinsicSize.height * scale : nil,
+                alignment: .topLeading
+            )
     }
 }
 
