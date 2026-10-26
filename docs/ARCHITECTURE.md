@@ -19,6 +19,8 @@ iPad vector editor: design on a canvas, then arrange artwork for tiled print. iP
 
 `KoalaApp` → `ContentView` → iPad `ProjectGalleryView` → `EditorView` (`DocumentStore` + `KoalaDocument`).
 
+iPad Display Zoom **More Space** is neutralized in `UI/DisplayZoomCompensation.swift` (window lays out at the Default point size, then scales up). Default and Larger Text are not scaled.
+
 - **Design:** `DrawingCanvasView` → `DrawingCanvasUIView` (CAShapeLayer strokes + CG grid)
 - **Print:** `PrintLayoutView` → `PrintLayoutCanvasView` → `PrintLayoutCanvasUIView`
 - **Save/export:** `DocumentCodec` / `ExportRouter` (PDF, tiled PDF, SVG, JPEG)

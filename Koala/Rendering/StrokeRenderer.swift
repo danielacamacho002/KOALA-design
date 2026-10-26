@@ -127,7 +127,7 @@ enum StrokeRenderer {
             : viewport.documentToView(distance: stroke.strokeWidth)
         layer.lineCap = .round
         layer.lineJoin = .round
-        layer.contentsScale = UIScreen.main.scale
+        layer.contentsScale = DisplayZoomCompensation.layerContentsScale
         layer.fillRule = stroke.resolvedCGFillRule == .evenOdd ? .evenOdd : .nonZero
         layer.opacity = Float(opacity)
 
@@ -145,7 +145,7 @@ enum StrokeRenderer {
             outline.lineWidth = lineWidth
             outline.lineCap = .round
             outline.lineJoin = .round
-            outline.contentsScale = UIScreen.main.scale
+            outline.contentsScale = DisplayZoomCompensation.layerContentsScale
         } else {
             removeOutlineSublayer(from: layer)
             layer.path = fillPath

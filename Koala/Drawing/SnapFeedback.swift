@@ -92,7 +92,7 @@ final class SnapIndicatorRenderer {
         created.strokeColor = UIColor.white.cgColor
         created.lineWidth = 1.5
         created.lineJoin = .round
-        created.contentsScale = UIScreen.main.scale
+        created.contentsScale = DisplayZoomCompensation.layerContentsScale
         hostLayer.addSublayer(created)
         indicatorLayer = created
         return created

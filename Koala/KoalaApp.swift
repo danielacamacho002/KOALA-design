@@ -12,11 +12,17 @@ struct KoalaApp: App {
     init() {
         PencilTextEntry.install()
         FontLibrary.prepareAtLaunch()
+        DisplayZoomCompensation.startIfNeeded()
     }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .background {
+                    if DisplayZoomCompensation.liveFactor > 1.01 {
+                        DisplayZoomInstaller()
+                    }
+                }
         }
     }
 }

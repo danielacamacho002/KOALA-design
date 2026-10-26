@@ -452,7 +452,7 @@ final class DrawingCanvasUIView: UIView {
         layer.lineJoin = .miter
         layer.anchorPoint = .zero
         layer.position = .zero
-        layer.contentsScale = traitCollection.displayScale
+        layer.contentsScale = max(traitCollection.displayScale, DisplayZoomCompensation.layerContentsScale)
     }
 
     /// Pans and zooms via a world transform. Paths rebuild only when LOD, settings,
