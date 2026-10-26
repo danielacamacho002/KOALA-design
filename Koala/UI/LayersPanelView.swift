@@ -153,15 +153,21 @@ struct LayersPanelView: View {
         HStack(spacing: 8) {
             Text("\(validSelection.count) selected")
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(Color.toolPanelSecondaryLabel)
+                .foregroundStyle(SelectionHighlight.font)
 
             Spacer()
 
             Button {
                 groupSelected()
             } label: {
-                Label("Group", systemImage: "folder.badge.plus")
-                    .font(.caption2.weight(.semibold))
+                Label {
+                    Text("Group")
+                        .foregroundStyle(SelectionHighlight.font)
+                } icon: {
+                    Image(systemName: "folder.badge.plus")
+                        .foregroundStyle(SelectionHighlight.icon)
+                }
+                .font(.caption2.weight(.semibold))
             }
             .buttonStyle(.plain)
             .disabled(validSelection.isEmpty)
@@ -170,8 +176,14 @@ struct LayersPanelView: View {
             Button {
                 mergeSelected()
             } label: {
-                Label("Merge", systemImage: "arrow.triangle.merge")
-                    .font(.caption2.weight(.semibold))
+                Label {
+                    Text("Merge")
+                        .foregroundStyle(SelectionHighlight.font)
+                } icon: {
+                    Image(systemName: "arrow.triangle.merge")
+                        .foregroundStyle(SelectionHighlight.icon)
+                }
+                .font(.caption2.weight(.semibold))
             }
             .buttonStyle(.plain)
             .disabled(validSelection.count < 2)
@@ -182,14 +194,14 @@ struct LayersPanelView: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Color.toolPanelSecondaryLabel)
+                    .foregroundStyle(SelectionHighlight.icon)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Clear selection")
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 4)
-        .background(Rectangle().fill(Color.accentColor.opacity(0.08)))
+        .background(Rectangle().fill(SelectionHighlight.background))
     }
 
     private var layerList: some View {
@@ -255,9 +267,7 @@ struct LayersPanelView: View {
                 .padding(.vertical, 2)
         case .layer(let layer, _):
             Rectangle()
-                .fill(layer.id == document.activeLayerID
-                    ? Color.accentColor.opacity(0.16)
-                    : Color.clear)
+                .fill(layerIsHighlighted(layer) ? SelectionHighlight.background : Color.clear)
                 .padding(.vertical, 2)
         }
     }
@@ -425,6 +435,7 @@ struct LayersPanelView: View {
             } else {
                 Text(layer.name)
                     .font(.caption.weight(layer.id == document.activeLayerID ? .semibold : .regular))
+                    .foregroundStyle(layerIsHighlighted(layer) ? SelectionHighlight.font : Color.white)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -532,7 +543,7 @@ struct LayersPanelView: View {
         Button(action: action) {
             Image(systemName: isOn ? "checkmark.circle.fill" : (isMixed ? "minus.circle.fill" : "circle"))
                 .font(.caption)
-                .foregroundStyle(isOn || isMixed ? Color.accentColor : Color.white.opacity(0.35))
+                .foregroundStyle(isOn || isMixed ? SelectionHighlight.icon : Color.white.opacity(0.35))
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
@@ -541,6 +552,10 @@ struct LayersPanelView: View {
     }
 
     // MARK: - Selection helpers
+
+    private func layerIsHighlighted(_ layer: Layer) -> Bool {
+        layer.id == document.activeLayerID || selectedLayerIDs.contains(layer.id)
+    }
 
     private var validSelection: Set<UUID> {
         selectedLayerIDs.intersection(Set(document.layers.map(\.id)))

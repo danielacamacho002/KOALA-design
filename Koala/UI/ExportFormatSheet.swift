@@ -107,15 +107,15 @@ struct ExportFormatSheet: View {
                 Text(format.label)
                 Spacer()
                 Text(".\(format.fileExtension)")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(selectedFormat == format ? SelectionHighlight.font.opacity(0.75) : Color.secondary)
                     .font(.caption.monospaced())
             }
             .font(.body)
-            .foregroundStyle(.white)
+            .foregroundStyle(selectedFormat == format ? SelectionHighlight.font : Color.white)
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selectedFormat == format ? SettingsSelection.highlight : Color.clear)
+            .background(selectedFormat == format ? SelectionHighlight.background : Color.clear)
         }
         .buttonStyle(.plain)
     }

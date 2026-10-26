@@ -387,7 +387,7 @@ struct MoveRotatePanelView: View {
                 } label: {
                     Image(systemName: "eyedropper")
                         .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(Color(hex: "BBD159"))
                         .frame(width: 24, height: 32)
                         .contentShape(Rectangle())
                 }
@@ -445,7 +445,7 @@ struct MoveRotatePanelView: View {
                 } label: {
                     Image(systemName: "eyedropper")
                         .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(Color(hex: "BBD159"))
                         .frame(width: 24, height: 32)
                         .contentShape(Rectangle())
                 }
