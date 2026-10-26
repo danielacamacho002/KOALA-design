@@ -599,6 +599,311 @@ struct PathJoinEngineTests {
         #expect(!PathJoinEngine.canJoin([top, bottom], tolerance: joinTolerance))
     }
 
+    /// A line that ends on a corner of a closed shape, not on that shape's
+    /// first or last point, is still a join.
+    @Test func lineEndingOnAMiddleCornerCanJoin() {
+        let shape = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 100, y: 0),
+                CGPoint(x: 100, y: 100),
+                CGPoint(x: 0, y: 100)
+            ],
+            isClosed: true,
+            shapeType: .polyline
+        )
+        let spur = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 100, y: 0), CGPoint(x: 140, y: 40)],
+            isClosed: false,
+            shapeType: .polyline
+        )
+
+        #expect(PathJoinEngine.canJoin([shape, spur], tolerance: joinTolerance))
+        let joined = PathJoinEngine.join([shape, spur], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        let points = joined?.first?.points ?? []
+        #expect(points.contains { hypot($0.x - 140, $0.y - 40) < 0.01 })
+        #expect(points.contains { hypot($0.x - 100, $0.y - 100) < 0.01 })
+    }
+
+    /// A closed lens whose bulges are baked smooth corners must stay curved
+    /// after it is welded into the outline. Dropping those midpoints draws a diamond.
+    @Test func joiningASmoothLensIntoAShapeKeepsTheBulge() {
+        let shape = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 120, y: 0),
+                CGPoint(x: 120, y: 80),
+                CGPoint(x: 0, y: 80)
+            ],
+            isClosed: true,
+            shapeType: .polyline
+        )
+        var lens = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 60, y: -30),
+                CGPoint(x: 120, y: 0),
+                CGPoint(x: 60, y: 30)
+            ],
+            isClosed: true,
+            shapeType: .polyline
+        )
+        lens.smoothCornerIndices = [1, 3]
+
+        let joined = PathJoinEngine.join([shape, lens], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        #expect(stroke.smoothCornerIndices?.isEmpty == false)
+        let rendered = ShapeGeometry.renderPoints(for: stroke)
+        #expect(rendered.count > stroke.points.count)
+        #expect(rendered.contains { hypot($0.x - 60, $0.y - 30) < 1 })
+    }
+
+    /// Curves that only sit inside a selected outline join to each other.
+    /// Splicing them into the outline traced each cubic twice and drew a diamond.
+    @Test func joiningCurvesInsideAShapeDoesNotCopyThemIntoTheOutline() {
+        let outline = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 200, y: 0),
+                CGPoint(x: 200, y: 80),
+                CGPoint(x: 200, y: 160),
+                CGPoint(x: 0, y: 160),
+                CGPoint(x: 0, y: 80)
+            ],
+            isClosed: true,
+            shapeType: .polyline
+        )
+        let left = cubic(
+            from: CGPoint(x: 0, y: 80),
+            to: CGPoint(x: 100, y: 80),
+            out: CGPoint(x: 0, y: 40),
+            inn: CGPoint(x: 0, y: 40)
+        )
+        let right = cubic(
+            from: CGPoint(x: 100, y: 80),
+            to: CGPoint(x: 200, y: 80),
+            out: CGPoint(x: 0, y: 40),
+            inn: CGPoint(x: 0, y: 40)
+        )
+
+        #expect(PathJoinEngine.canJoin([outline, left, right], tolerance: joinTolerance))
+        let joined = PathJoinEngine.join([outline, left, right], tolerance: joinTolerance)
+        #expect(joined?.count == 2)
+
+        let container = joined?.first { $0.isClosed }
+        #expect(container?.points.count == outline.points.count)
+
+        let curve = joined?.first { !$0.isClosed }
+        #expect(curve?.shapeType == .curve)
+        #expect(curve?.curveHandles?.count == curve?.points.count)
+        let rendered = ShapeGeometry.renderPoints(for: curve ?? left)
+        #expect(rendered.contains { abs($0.y - 110) < 12 && $0.x > 20 && $0.x < 180 })
+        let containerRendered = ShapeGeometry.renderPoints(for: container ?? outline)
+        #expect(!containerRendered.contains { abs($0.y - 110) < 8 && $0.x > 20 && $0.x < 180 })
+    }
+
+    /// A neckline whose ends sit on the outline is a join. The curve replaces
+    /// that edge once — walking it back used to draw a flipped second copy.
+    @Test func joiningANecklineIntoAnOutlineInsertsTheCurveOnce() {
+        let outline = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 200, y: 0),
+                CGPoint(x: 200, y: 80),
+                CGPoint(x: 200, y: 160),
+                CGPoint(x: 0, y: 160),
+                CGPoint(x: 0, y: 80)
+            ],
+            isClosed: true,
+            shapeType: .polyline
+        )
+        let neckline = cubic(
+            from: CGPoint(x: 0, y: 80),
+            to: CGPoint(x: 200, y: 80),
+            out: CGPoint(x: 0, y: 40),
+            inn: CGPoint(x: 0, y: 40)
+        )
+
+        #expect(PathJoinEngine.canJoin([outline, neckline], tolerance: joinTolerance))
+        let joined = PathJoinEngine.join([outline, neckline], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        #expect(stroke.points.count == 4)
+        #expect(stroke.points.contains { abs($0.y) < 1 })
+        #expect(!stroke.points.contains { abs($0.y - 160) < 1 })
+        let rendered = ShapeGeometry.renderPoints(for: stroke)
+        #expect(rendered.contains { abs($0.x - 100) < 15 && abs($0.y - 110) < 12 })
+        #expect(!rendered.contains { abs($0.x - 100) < 15 && abs($0.y - 50) < 12 })
+    }
+
+    /// A closed curve that shares anchors with the outline welds in once.
+    /// Each inner anchor is inserted a single time, and its handles stay put.
+    @Test func joiningAClosedCurveInsideAShapeWeldsOnce() {
+        let outline = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 200, y: 0),
+                CGPoint(x: 200, y: 80),
+                CGPoint(x: 200, y: 160),
+                CGPoint(x: 0, y: 160),
+                CGPoint(x: 0, y: 80)
+            ],
+            isClosed: true,
+            shapeType: .polyline
+        )
+        let lens = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 80),
+                CGPoint(x: 100, y: 40),
+                CGPoint(x: 200, y: 80),
+                CGPoint(x: 100, y: 120)
+            ],
+            isClosed: true,
+            shapeType: .curve,
+            curveHandles: [
+                CurveHandle(inOffset: CGPoint(x: 0, y: 20), outOffset: CGPoint(x: 30, y: -10)),
+                CurveHandle(inOffset: CGPoint(x: -20, y: 10), outOffset: CGPoint(x: 20, y: 10)),
+                CurveHandle(inOffset: CGPoint(x: -30, y: -10), outOffset: CGPoint(x: 0, y: 20)),
+                CurveHandle(inOffset: CGPoint(x: 20, y: -10), outOffset: CGPoint(x: -20, y: -10))
+            ]
+        )
+
+        #expect(PathJoinEngine.canJoin([outline, lens], tolerance: joinTolerance))
+        let joined = PathJoinEngine.join([outline, lens], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        #expect(stroke.points.filter { hypot($0.x - 100, $0.y - 40) < 0.01 }.count == 1)
+        #expect(stroke.points.filter { hypot($0.x - 100, $0.y - 120) < 0.01 }.count == 1)
+        let handles = stroke.curveHandles ?? []
+        #expect(handles.count == stroke.points.count)
+        #expect(handles.contains {
+            hypot($0.outOffset.x, $0.outOffset.y) > 5 || hypot($0.inOffset.x, $0.inOffset.y) > 5
+        })
+    }
+
+    /// A curve drawn without stored handles renders as a spline. Joining it used
+    /// to give it zero handles, so the lens became a straight diamond.
+    @Test func joiningAHandlelessCurveKeepsTheSpline() {
+        let outline = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 200, y: 0),
+                CGPoint(x: 200, y: 80),
+                CGPoint(x: 200, y: 160),
+                CGPoint(x: 0, y: 160),
+                CGPoint(x: 0, y: 80)
+            ],
+            isClosed: true,
+            shapeType: .polyline
+        )
+        let lens = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 80),
+                CGPoint(x: 100, y: 40),
+                CGPoint(x: 200, y: 80),
+                CGPoint(x: 100, y: 120)
+            ],
+            isClosed: true,
+            shapeType: .curve
+        )
+        let before = ShapeGeometry.renderPoints(for: lens)
+
+        let joined = PathJoinEngine.join([outline, lens], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        let after = ShapeGeometry.renderPoints(for: stroke)
+        let lost = stride(from: 0, to: before.count, by: 6).map { before[$0] }.filter { sample in
+            !after.contains { hypot($0.x - sample.x, $0.y - sample.y) < 3 }
+        }
+        #expect(lost.isEmpty, "lens samples missing after join: \(lost.prefix(4))")
+    }
+
+    /// A rounded lens stored as smooth midpoints on a polyline, joined to a
+    /// Bézier outline. The result is a `.curve`, which used to drop those
+    /// midpoints and draw the lens as straight chords.
+    @Test func joiningASmoothLensIntoACurvedOutlineKeepsTheBulge() {
+        let outline = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 120, y: 0),
+                CGPoint(x: 120, y: 80),
+                CGPoint(x: 0, y: 80)
+            ],
+            isClosed: true,
+            shapeType: .curve,
+            curveHandles: [
+                CurveHandle(),
+                CurveHandle(),
+                CurveHandle(inOffset: .zero, outOffset: CGPoint(x: 0, y: 30)),
+                CurveHandle(inOffset: CGPoint(x: 0, y: 30), outOffset: .zero)
+            ]
+        )
+        var lens = VectorStroke(
+            layerID: layerID,
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 60, y: -30),
+                CGPoint(x: 120, y: 0),
+                CGPoint(x: 60, y: 30)
+            ],
+            isClosed: true,
+            shapeType: .polyline
+        )
+        lens.smoothCornerIndices = [1, 3]
+        let before = ShapeGeometry.renderPoints(for: lens)
+
+        let joined = PathJoinEngine.join([outline, lens], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        let after = ShapeGeometry.renderPoints(for: stroke)
+        let lost = stride(from: 0, to: before.count, by: 4).map { before[$0] }.filter { sample in
+            !after.contains { hypot($0.x - sample.x, $0.y - sample.y) < 3 }
+        }
+        #expect(lost.isEmpty, "lens samples missing after join: \(lost.prefix(4))")
+        #expect(after.contains { $0.y > 95 })
+    }
+
+    /// A cubic that meets another curve at a mid-anchor, not an endpoint, keeps
+    /// its bulge. Anchor welding must not boolean-union the rendered contour.
+    @Test func joiningACubicAtAMiddleAnchorKeepsTheBulge() {
+        let host = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 0, y: 0), CGPoint(x: 50, y: 0), CGPoint(x: 100, y: 0)],
+            isClosed: false,
+            shapeType: .curve,
+            curveHandles: [
+                CurveHandle(inOffset: .zero, outOffset: CGPoint(x: 0, y: 40)),
+                CurveHandle(),
+                CurveHandle(inOffset: .zero, outOffset: .zero)
+            ]
+        )
+        let spur = cubic(
+            from: CGPoint(x: 50, y: 0),
+            to: CGPoint(x: 50, y: 80),
+            out: CGPoint(x: 30, y: 0),
+            inn: CGPoint(x: 30, y: 0)
+        )
+
+        #expect(PathJoinEngine.canJoin([host, spur], tolerance: joinTolerance))
+        let joined = PathJoinEngine.join([host, spur], tolerance: joinTolerance)
+        let rendered = (joined ?? []).flatMap { ShapeGeometry.renderPoints(for: $0) }
+        #expect(rendered.contains { hypot($0.x - 25, $0.y - 20) < 8 })
+        #expect(rendered.contains { hypot($0.x - 65, $0.y - 40) < 12 })
+    }
+
     /// Two triangles that share part of an edge join into one closed outline.
     /// The shared edge stays — Join fills the shape without deleting a line.
     @Test func joiningClosedTrianglesThatShareAnEdgeFillsBoth() {
