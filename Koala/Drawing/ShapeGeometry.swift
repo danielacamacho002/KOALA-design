@@ -1484,9 +1484,12 @@ nonisolated enum ShapeGeometry: Sendable {
         var midPoint: CGPoint
         var value: CGFloat
         var kind: Kind
-        // The point on the shape this dimension references. Leader lines are drawn
-        // from here to the (possibly dragged-away) label position.
+        // The point on the shape this dimension references. Linear dimensions also
+        // carry the measured edge in `start`/`end`; radial dimensions leave those nil
+        // and draw a single leader from `anchor`.
         var anchor: CGPoint
+        var start: CGPoint? = nil
+        var end: CGPoint? = nil
 
         enum Kind {
             case segmentLength(segmentIndex: Int)
@@ -1777,7 +1780,9 @@ nonisolated enum ShapeGeometry: Sendable {
                 midPoint: placement.midPoint,
                 value: length,
                 kind: entry.kind,
-                anchor: placement.anchor
+                anchor: placement.anchor,
+                start: entry.start,
+                end: entry.end
             )
         }
     }
@@ -1844,7 +1849,9 @@ nonisolated enum ShapeGeometry: Sendable {
                     midPoint: placement.midPoint,
                     value: length,
                     kind: .segmentLength(segmentIndex: index),
-                    anchor: placement.anchor
+                    anchor: placement.anchor,
+                    start: start,
+                    end: end
                 )
             }
         }

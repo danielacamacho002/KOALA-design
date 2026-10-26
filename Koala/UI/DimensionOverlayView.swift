@@ -76,8 +76,10 @@ struct DimensionOverlayView: View {
     private struct TextDimension: Identifiable {
         let id: String
         let text: String
-        let midPoint: CGPoint
-        let anchor: CGPoint
+        let start: CGPoint
+        let end: CGPoint
+        /// A point on the outward side of the edge, used only to pick a side.
+        let outward: CGPoint
     }
 
     private func textDimensions(for element: TextElement) -> [TextDimension] {
@@ -130,24 +132,34 @@ struct DimensionOverlayView: View {
         return TextDimension(
             id: id,
             text: text,
-            midPoint: CGPoint(
+            start: start,
+            end: end,
+            outward: CGPoint(
                 x: mid.x + normal.x * Self.textLabelStandoff,
                 y: mid.y + normal.y * Self.textLabelStandoff
-            ),
-            anchor: mid
+            )
         )
     }
 
     private func textDimensionLabel(_ dimension: TextDimension) -> some View {
-        Text(dimension.text)
-            .dimensionLabelAppearance()
-            .position(
-                DimensionLabelStyle.outsideLabelCenter(
-                    preferred: document.viewport.documentToView(dimension.midPoint),
-                    from: document.viewport.documentToView(dimension.anchor),
-                    halfSize: DimensionLabelStyle.textOnlyHalfSize
-                )
-            )
+        let start = document.viewport.documentToView(dimension.start)
+        let end = document.viewport.documentToView(dimension.end)
+        let mid = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+        let placement = DimensionLabelStyle.linearPlacement(
+            midpoint: mid,
+            preferred: document.viewport.documentToView(dimension.outward),
+            perpendicularHalf: DimensionLabelStyle.textOnlyHalfSize.height
+        )
+        return PlacedLinearDimension(
+            start: start,
+            end: end,
+            placement: placement,
+            textGap: DimensionLabelStyle.textOnlyHalfSize.width + 4,
+            minimumOffset: DimensionLabelStyle.edgeClearance + DimensionLabelStyle.textOnlyHalfSize.height
+        ) {
+            Text(dimension.text)
+                .dimensionLabelAppearance()
+        }
     }
 
     private func measurementLabel(_ documentValue: CGFloat) -> String {
@@ -195,6 +207,13 @@ private struct DraggableDimensionLabel: View {
             let docPoint = CGPoint(x: dimension.anchor.x + offset.x, y: dimension.anchor.y + offset.y)
             return document.viewport.documentToView(docPoint)
         }
+        if dimension.start != nil {
+            return DimensionLabelStyle.linearPlacement(
+                midpoint: anchorView,
+                preferred: document.viewport.documentToView(dimension.midPoint),
+                perpendicularHalf: halfSize.height
+            )
+        }
         return DimensionLabelStyle.outsideLabelCenter(
             preferred: document.viewport.documentToView(dimension.midPoint),
             from: anchorView,
@@ -218,6 +237,39 @@ private struct DraggableDimensionLabel: View {
     }
 
     var body: some View {
+        Group {
+            if let start = dimension.start, let end = dimension.end {
+                PlacedLinearDimension(
+                    start: document.viewport.documentToView(start),
+                    end: document.viewport.documentToView(end),
+                    placement: labelPoint,
+                    textGap: halfSize.width + 4,
+                    minimumOffset: halfSize.height + DimensionLabelStyle.edgeClearance
+                ) {
+                    measuredLabel
+                }
+            } else {
+                radialBody
+            }
+        }
+        .transaction { $0.disablesAnimations = true }
+    }
+
+    private var measuredLabel: some View {
+        labelCluster
+            .fixedSize()
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: DimensionClusterSizeKey.self, value: geo.size)
+                }
+            )
+            .onPreferenceChange(DimensionClusterSizeKey.self) { size in
+                guard !isDragging, size.width > 1, size.height > 1, clusterSize != size else { return }
+                clusterSize = size
+            }
+    }
+
+    private var radialBody: some View {
         let anchorPoint = document.viewport.documentToView(dimension.anchor)
         let point = labelPoint
         let leaderPoint = DimensionLabelStyle.leaderEnd(
@@ -227,25 +279,13 @@ private struct DraggableDimensionLabel: View {
         )
         let leaderLength = hypot(leaderPoint.x - anchorPoint.x, leaderPoint.y - anchorPoint.y)
 
-        ZStack {
+        return ZStack {
             if leaderLength > 4 {
                 leader(from: anchorPoint, to: leaderPoint)
             }
-
-            labelCluster
-                .fixedSize()
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(key: DimensionClusterSizeKey.self, value: geo.size)
-                    }
-                )
-                .onPreferenceChange(DimensionClusterSizeKey.self) { size in
-                    guard !isDragging, size.width > 1, size.height > 1, clusterSize != size else { return }
-                    clusterSize = size
-                }
+            measuredLabel
                 .position(point)
         }
-        .transaction { $0.disablesAnimations = true }
     }
 
     /// Keep the lock on the outside of the shape so the value sits closer to the edge
@@ -359,7 +399,7 @@ private struct DraggableDimensionLabel: View {
                     x: dragOrigin.x + value.translation.width,
                     y: dragOrigin.y + value.translation.height
                 )
-                let docPoint = document.viewport.viewToDocument(endPoint)
+                let docPoint = document.viewport.viewToDocument(resolvedDragPoint(endPoint))
                 let offset = CGPoint(
                     x: docPoint.x - dimension.anchor.x,
                     y: docPoint.y - dimension.anchor.y
@@ -406,6 +446,19 @@ private struct DraggableDimensionLabel: View {
     private var editTextValue: String {
         let display = document.settings.units.fromDocumentUnits(dimension.value)
         return DimensionFormat.edit(Double(display))
+    }
+
+    /// Drops the along-edge part of a drag so the value stays centered on the dimension line.
+    private func resolvedDragPoint(_ point: CGPoint) -> CGPoint {
+        guard let start = dimension.start, let end = dimension.end,
+              let layout = LinearDimensionLayout.layout(
+                start: document.viewport.documentToView(start),
+                end: document.viewport.documentToView(end),
+                placement: point,
+                textGap: halfSize.width + 4,
+                minimumOffset: halfSize.height + DimensionLabelStyle.edgeClearance
+              ) else { return point }
+        return layout.textCenter
     }
 
     private func leader(from start: CGPoint, to end: CGPoint) -> some View {
@@ -497,10 +550,84 @@ private struct DraggableDimensionLabel: View {
     }
 }
 
+private struct DimensionTextGapKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        let next = nextValue()
+        if next > 0 { value = next }
+    }
+}
+
 private struct DimensionClusterSizeKey: PreferenceKey {
     static var defaultValue: CGSize = .zero
 
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
         value = nextValue()
+    }
+}
+
+/// Draws a linear dimension for an edge already converted into view space.
+struct PlacedLinearDimension<Label: View>: View {
+    var start: CGPoint
+    var end: CGPoint
+    var placement: CGPoint
+    var textGap: CGFloat
+    var minimumOffset: CGFloat
+    @ViewBuilder var label: () -> Label
+
+    @State private var measuredGap: CGFloat?
+
+    var body: some View {
+        let layout = LinearDimensionLayout.layout(
+            start: start,
+            end: end,
+            placement: placement,
+            textGap: measuredGap ?? textGap,
+            minimumOffset: minimumOffset
+        )
+        ZStack {
+            if let layout {
+                dimensionStroke(layout)
+                label()
+                    .fixedSize()
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: DimensionTextGapKey.self,
+                                value: geo.size.width / 2 + 4
+                            )
+                        }
+                    }
+                    .onPreferenceChange(DimensionTextGapKey.self) { gap in
+                        guard gap > 1, measuredGap != gap else { return }
+                        measuredGap = gap
+                    }
+                    .rotationEffect(.radians(layout.textAngle))
+                    .position(layout.textCenter)
+            } else {
+                label()
+                    .position(placement)
+            }
+        }
+    }
+
+    private func dimensionStroke(_ layout: LinearDimensionLayout) -> some View {
+        Path { path in
+            for segment in layout.extensions + layout.shafts {
+                path.move(to: segment.start)
+                path.addLine(to: segment.end)
+            }
+            for arrow in layout.arrows {
+                path.move(to: arrow.upper)
+                path.addLine(to: arrow.tip)
+                path.addLine(to: arrow.lower)
+            }
+        }
+        .stroke(
+            Color.accentColor.opacity(0.9),
+            style: StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round)
+        )
+        .allowsHitTesting(false)
     }
 }

@@ -378,4 +378,33 @@ struct ShapeGeometryTests {
         let line = VectorStroke(layerID: layerID, points: [CGPoint(x: 0, y: 0), CGPoint(x: 5, y: 0)])
         #expect(ShapeGeometry.applyEdgeLength(.top, newValue: 3, to: line) == nil)
     }
+
+    /// Linear dimensions have to know both ends of the edge so the overlay can
+    /// draw extension lines instead of a single leader from the midpoint.
+    @Test func linearDimensionsRecordBothEndpoints() throws {
+        let line = VectorStroke(layerID: layerID, points: [CGPoint(x: 0, y: 0), CGPoint(x: 40, y: 0)])
+        let dimension = try #require(ShapeGeometry.semanticDimensions(for: line).first)
+        expectClose(try #require(dimension.start), .zero)
+        expectClose(try #require(dimension.end), CGPoint(x: 40, y: 0))
+
+        let rectangle = VectorStroke(
+            layerID: layerID,
+            points: ShapeGeometry.rectangleFromCorners(.zero, CGPoint(x: 10, y: 4)),
+            isClosed: true,
+            shapeType: .rectangle
+        )
+        let top = try #require(ShapeGeometry.semanticDimensions(for: rectangle).first { $0.id == "width-top" })
+        expectClose(try #require(top.start), .zero)
+        expectClose(try #require(top.end), CGPoint(x: 10, y: 0))
+
+        let circle = VectorStroke(
+            layerID: layerID,
+            points: ShapeGeometry.circleCardinalPoints(center: .zero, radius: 6),
+            isClosed: true,
+            shapeType: .circle
+        )
+        let diameter = try #require(ShapeGeometry.semanticDimensions(for: circle).first)
+        #expect(diameter.start == nil)
+        #expect(diameter.end == nil)
+    }
 }

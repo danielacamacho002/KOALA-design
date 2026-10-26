@@ -17,15 +17,40 @@ struct LiveDimensionOverlay: View {
     var body: some View {
         let labels = liveLabels
         ForEach(labels, id: \.id) { label in
+            if let start = label.start, let end = label.end {
+                linearLabel(label, start: start, end: end)
+            } else {
+                Text(label.text)
+                    .dimensionLabelAppearance()
+                    .position(
+                        DimensionLabelStyle.outsideLabelCenter(
+                            preferred: document.viewport.documentToView(label.point),
+                            from: document.viewport.documentToView(label.anchor),
+                            halfSize: DimensionLabelStyle.textOnlyHalfSize
+                        )
+                    )
+            }
+        }
+    }
+
+    private func linearLabel(_ label: LiveLabel, start: CGPoint, end: CGPoint) -> some View {
+        let startView = document.viewport.documentToView(start)
+        let endView = document.viewport.documentToView(end)
+        let mid = CGPoint(x: (startView.x + endView.x) / 2, y: (startView.y + endView.y) / 2)
+        let placement = DimensionLabelStyle.linearPlacement(
+            midpoint: mid,
+            preferred: document.viewport.documentToView(label.point),
+            perpendicularHalf: DimensionLabelStyle.textOnlyHalfSize.height
+        )
+        return PlacedLinearDimension(
+            start: startView,
+            end: endView,
+            placement: placement,
+            textGap: DimensionLabelStyle.textOnlyHalfSize.width + 4,
+            minimumOffset: DimensionLabelStyle.edgeClearance + DimensionLabelStyle.textOnlyHalfSize.height
+        ) {
             Text(label.text)
                 .dimensionLabelAppearance()
-                .position(
-                    DimensionLabelStyle.outsideLabelCenter(
-                        preferred: document.viewport.documentToView(label.point),
-                        from: document.viewport.documentToView(label.anchor),
-                        halfSize: DimensionLabelStyle.textOnlyHalfSize
-                    )
-                )
         }
     }
 
@@ -34,6 +59,8 @@ struct LiveDimensionOverlay: View {
         var text: String
         var point: CGPoint
         var anchor: CGPoint
+        var start: CGPoint? = nil
+        var end: CGPoint? = nil
     }
 
     private var liveLabels: [LiveLabel] {
@@ -55,7 +82,9 @@ struct LiveDimensionOverlay: View {
                 id: "length",
                 text: format(length, units: units),
                 point: CGPoint(x: mid.x + normal.x * standoff, y: mid.y + normal.y * standoff),
-                anchor: mid
+                anchor: mid,
+                start: start,
+                end: end
             )]
         case .circle:
             switch circleVariant {
@@ -88,6 +117,9 @@ struct LiveDimensionOverlay: View {
             case .center:
                 let halfW = abs(end.x - start.x)
                 let halfH = abs(end.y - start.y)
+                let topStart = CGPoint(x: start.x - halfW, y: start.y - halfH)
+                let topEnd = CGPoint(x: start.x + halfW, y: start.y - halfH)
+                let rightEnd = CGPoint(x: start.x + halfW, y: start.y + halfH)
                 let top = CGPoint(x: start.x, y: start.y - halfH)
                 let right = CGPoint(x: start.x + halfW, y: start.y)
                 return [
@@ -95,13 +127,17 @@ struct LiveDimensionOverlay: View {
                         id: "w",
                         text: format(halfW * 2, units: units),
                         point: CGPoint(x: top.x, y: top.y - standoff),
-                        anchor: top
+                        anchor: top,
+                        start: topStart,
+                        end: topEnd
                     ),
                     LiveLabel(
                         id: "h",
                         text: format(halfH * 2, units: units),
                         point: CGPoint(x: right.x + standoff, y: right.y),
-                        anchor: right
+                        anchor: right,
+                        start: topEnd,
+                        end: rightEnd
                     )
                 ]
             default:
