@@ -177,7 +177,7 @@ final class PrintLayoutCanvasUIView: UIView {
         label.foregroundColor = UIColor.secondaryLabel.cgColor
         label.alignmentMode = .right
         label.truncationMode = .none
-        label.contentsScale = UIScreen.main.scale
+        label.contentsScale = DisplayZoomCompensation.layerContentsScale
         label.frame = pageNumberFrame(in: sheetViewFrame)
         return label
     }
