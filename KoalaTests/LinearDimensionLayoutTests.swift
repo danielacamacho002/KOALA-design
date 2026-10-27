@@ -71,4 +71,24 @@ struct LinearDimensionLayoutTests {
         #expect(layout.arrows[0].upper.x < layout.arrows[0].tip.x)
         #expect(layout.arrows[1].upper.x > layout.arrows[1].tip.x)
     }
+
+    /// A quarter-circle's length dimension sits outside the arc, centered on the sweep.
+    @Test func arcLengthDimensionSitsOutsideTheMidpoint() throws {
+        let layout = try #require(ArcDimensionLayout.layout(
+            center: .zero,
+            radius: 50,
+            startAngle: 0,
+            sweep: CGFloat.pi / 2,
+            placement: CGPoint(x: 80 * cos(CGFloat.pi / 4), y: 80 * sin(CGFloat.pi / 4)),
+            textGap: 12,
+            minimumOffset: 16
+        ))
+        let expected = 80 * cos(CGFloat.pi / 4)
+        expectClose(layout.textCenter, CGPoint(x: expected, y: expected), tolerance: 0.2)
+        #expect(layout.extensions.count == 2)
+        #expect(layout.arrows.count == 2)
+        #expect(layout.arcRuns.count == 2)
+        #expect(layout.extensions[0].end.x > layout.extensions[0].start.x)
+        #expect(layout.extensions[1].end.y > layout.extensions[1].start.y)
+    }
 }

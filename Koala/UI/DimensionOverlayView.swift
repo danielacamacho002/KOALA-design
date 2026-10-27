@@ -238,7 +238,19 @@ private struct DraggableDimensionLabel: View {
 
     var body: some View {
         Group {
-            if let start = dimension.start, let end = dimension.end {
+            if let arc = arcDimension {
+                PlacedArcDimension(
+                    center: arc.center,
+                    radius: arc.radius,
+                    startAngle: arc.startAngle,
+                    sweep: arc.sweep,
+                    placement: labelPoint,
+                    textGap: halfSize.width + 4,
+                    minimumOffset: halfSize.height + DimensionLabelStyle.edgeClearance
+                ) {
+                    measuredLabel
+                }
+            } else if !measuresArc, let start = dimension.start, let end = dimension.end {
                 PlacedLinearDimension(
                     start: document.viewport.documentToView(start),
                     end: document.viewport.documentToView(end),
@@ -344,7 +356,7 @@ private struct DraggableDimensionLabel: View {
     private var valueLabel: some View {
         let locked = isEdgePinned
         return Text(labelText)
-            .dimensionLabelAppearance(locked: locked)
+            .dimensionLabelAppearance()
             .contentShape(Rectangle())
             .gesture(dragOrTapGesture(locked: locked))
     }
@@ -360,15 +372,8 @@ private struct DraggableDimensionLabel: View {
         } label: {
             Image(systemName: locked ? "lock.fill" : "lock.open")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(locked ? Color.accentColor : Color.secondary)
+                .foregroundStyle(Color.accentColor)
                 .frame(width: 26, height: 26)
-                .background(Color(.systemBackground), in: Circle())
-                .overlay(
-                    Circle().stroke(
-                        locked ? Color.accentColor : Color.secondary.opacity(0.35),
-                        lineWidth: locked ? 1.5 : 1
-                    )
-                )
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(locked ? "Unlock" : "Lock") \(lockTargetName)")
@@ -448,8 +453,45 @@ private struct DraggableDimensionLabel: View {
         return DimensionFormat.edit(Double(display))
     }
 
+    private var measuresArc: Bool {
+        switch dimension.kind {
+        case .arcLength, .filletArc:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Arc length, in view space, when this label measures an arc or a filleted corner.
+    private var arcDimension: (center: CGPoint, radius: CGFloat, startAngle: CGFloat, sweep: CGFloat)? {
+        guard measuresArc,
+              let center = dimension.arcCenter,
+              let sweep = dimension.arcSweep,
+              let start = dimension.start else { return nil }
+        let radius = hypot(start.x - center.x, start.y - center.y)
+        guard radius > 0.5 else { return nil }
+        return (
+            document.viewport.documentToView(center),
+            document.viewport.documentToView(distance: radius),
+            atan2(start.y - center.y, start.x - center.x),
+            sweep
+        )
+    }
+
     /// Drops the along-edge part of a drag so the value stays centered on the dimension line.
     private func resolvedDragPoint(_ point: CGPoint) -> CGPoint {
+        if let arc = arcDimension,
+           let layout = ArcDimensionLayout.layout(
+            center: arc.center,
+            radius: arc.radius,
+            startAngle: arc.startAngle,
+            sweep: arc.sweep,
+            placement: point,
+            textGap: halfSize.width + 4,
+            minimumOffset: halfSize.height + DimensionLabelStyle.edgeClearance
+           ) {
+            return layout.textCenter
+        }
         guard let start = dimension.start, let end = dimension.end,
               let layout = LinearDimensionLayout.layout(
                 start: document.viewport.documentToView(start),
@@ -537,8 +579,8 @@ private struct DraggableDimensionLabel: View {
         let formattedValue = DimensionFormat.display(Double(realWorldValue))
         let prefix: String
         switch dimension.kind {
-        case .circleDiameter:
-            prefix = "d "
+        case .circleDiameter, .arcLength, .filletArc:
+            prefix = "⌀ "
         case .ellipseRX:
             prefix = "rx "
         case .ellipseRY:
@@ -617,6 +659,82 @@ struct PlacedLinearDimension<Label: View>: View {
             for segment in layout.extensions + layout.shafts {
                 path.move(to: segment.start)
                 path.addLine(to: segment.end)
+            }
+            for arrow in layout.arrows {
+                path.move(to: arrow.upper)
+                path.addLine(to: arrow.tip)
+                path.addLine(to: arrow.lower)
+            }
+        }
+        .stroke(
+            Color.accentColor.opacity(0.9),
+            style: StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round)
+        )
+        .allowsHitTesting(false)
+    }
+}
+
+/// Draws an arc-length dimension: extension lines at both ends and a concentric arc.
+struct PlacedArcDimension<Label: View>: View {
+    var center: CGPoint
+    var radius: CGFloat
+    var startAngle: CGFloat
+    var sweep: CGFloat
+    var placement: CGPoint
+    var textGap: CGFloat
+    var minimumOffset: CGFloat
+    @ViewBuilder var label: () -> Label
+
+    @State private var measuredGap: CGFloat?
+
+    var body: some View {
+        let layout = ArcDimensionLayout.layout(
+            center: center,
+            radius: radius,
+            startAngle: startAngle,
+            sweep: sweep,
+            placement: placement,
+            textGap: measuredGap ?? textGap,
+            minimumOffset: minimumOffset
+        )
+        ZStack {
+            if let layout {
+                dimensionStroke(layout)
+                label()
+                    .fixedSize()
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: DimensionTextGapKey.self,
+                                value: geo.size.width / 2 + 4
+                            )
+                        }
+                    }
+                    .onPreferenceChange(DimensionTextGapKey.self) { gap in
+                        guard gap > 1, measuredGap != gap else { return }
+                        measuredGap = gap
+                    }
+                    .rotationEffect(.radians(layout.textAngle))
+                    .position(layout.textCenter)
+            } else {
+                label()
+                    .position(placement)
+            }
+        }
+    }
+
+    private func dimensionStroke(_ layout: ArcDimensionLayout) -> some View {
+        Path { path in
+            for segment in layout.extensions {
+                path.move(to: segment.start)
+                path.addLine(to: segment.end)
+            }
+            for run in layout.arcRuns {
+                guard let first = run.first else { continue }
+                path.move(to: first)
+                for point in run.dropFirst() {
+                    path.addLine(to: point)
+                }
             }
             for arrow in layout.arrows {
                 path.move(to: arrow.upper)
