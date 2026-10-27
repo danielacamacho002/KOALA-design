@@ -259,13 +259,6 @@ struct SettingsView: View {
 
 }
 
-enum SettingsSelection {
-    /// System blue used for selected setting controls.
-    static let blue = Color.accentColor
-    /// Translucent wash so a selected bar segment reads as a highlight.
-    static let highlight = blue.opacity(0.55)
-}
-
 private extension View {
     func settingsInset() -> some View {
         padding(.horizontal, 16)
@@ -295,14 +288,13 @@ struct SettingsOptionBar<Option: Hashable>: View {
                         .font(.body)
                         .lineLimit(1)
                         .minimumScaleFactor(0.65)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(selection == option ? SelectionHighlight.font : Color.white)
                         .frame(maxWidth: .infinity)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 8)
                         .background {
                             if selection == option {
-                                SettingsSelection.highlight
-                                    .shadow(color: SettingsSelection.blue.opacity(0.95), radius: 8)
+                                SelectionHighlight.background
                             }
                         }
                 }
@@ -341,7 +333,7 @@ private struct SettingsCheckboxToggleStyle: ToggleStyle {
             configuration.label
             Spacer(minLength: 12)
             SettingsSquare(
-                fill: configuration.isOn ? SettingsSelection.blue : Color.clear,
+                fill: configuration.isOn ? SelectionHighlight.icon : Color.clear,
                 isSelected: configuration.isOn,
                 size: 12
             )

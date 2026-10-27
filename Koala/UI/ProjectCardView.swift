@@ -45,14 +45,15 @@ struct ProjectCardView: View {
 
             Text(record.name)
                 .font(.subheadline.weight(.medium))
-                .foregroundStyle(.white)
+                .foregroundStyle(isSelected ? SelectionHighlight.font : Color.white)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .center)
 
             Text(record.dimensionsLabel)
                 .font(.caption2.monospacedDigit())
-                .foregroundStyle(.white)
+                .foregroundStyle(isSelected ? SelectionHighlight.font : Color.white)
         }
+        .background(isSelected ? SelectionHighlight.background : Color.clear)
     }
 
     private var listRow: some View {
@@ -72,20 +73,21 @@ struct ProjectCardView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(record.name)
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(isSelected ? SelectionHighlight.font : Color.white)
                     .lineLimit(1)
                 Text(record.dimensionsLabel)
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.white)
+                    .foregroundStyle(isSelected ? SelectionHighlight.font : Color.white)
             }
 
             Spacer()
 
             Text(record.modifiedAt, style: .date)
                 .font(.caption2)
-                .foregroundStyle(.white)
+                .foregroundStyle(isSelected ? SelectionHighlight.font : Color.white)
         }
         .padding(.vertical, 4)
+        .background(isSelected ? SelectionHighlight.background : Color.clear)
     }
 
     @ViewBuilder
@@ -136,7 +138,7 @@ struct ProjectCardView: View {
     private var selectionBadge: some View {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
             .font(.title3)
-            .foregroundStyle(isSelected ? Color.accentColor : Color.white)
+            .foregroundStyle(isSelected ? SelectionHighlight.icon : Color.white)
             .symbolRenderingMode(.hierarchical)
     }
 }
