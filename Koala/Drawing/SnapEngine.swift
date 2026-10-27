@@ -103,6 +103,25 @@ func snapDrawingAngle(
     return AngleSnapResult(point: point, isLocked: false)
 }
 
+/// Axis of a segment that is already horizontal or vertical, such as a line
+/// the angle assist has pinned. `nil` for diagonals and for segments shorter
+/// than `minimumLength` (document units).
+enum DrawingAxis: Equatable, Sendable {
+    case horizontal
+    case vertical
+}
+
+func drawingAxis(from start: CGPoint, to end: CGPoint, minimumLength: CGFloat = 0.001) -> DrawingAxis? {
+    let dx = end.x - start.x
+    let dy = end.y - start.y
+    let length = hypot(dx, dy)
+    guard length >= minimumLength else { return nil }
+    let slack = max(1e-3, length * 1e-4)
+    if abs(dy) <= slack { return .horizontal }
+    if abs(dx) <= slack { return .vertical }
+    return nil
+}
+
 /// When the stroke is already almost H/V, keep object snap on that axis so a
 /// short horizontal cannot jump onto a nearby vertical's endpoint. Free
 /// (off-axis) strokes still snap to any nearby corner so intentional
