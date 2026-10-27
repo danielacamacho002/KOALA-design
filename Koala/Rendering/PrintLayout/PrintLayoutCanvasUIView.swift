@@ -182,9 +182,16 @@ final class PrintLayoutCanvasUIView: UIView {
         return label
     }
 
+    /// Content stacks by document-layer index so a front layer stays in front of
+    /// strokes and text on layers behind it.
+    private func layerZPositions() -> [UUID: CGFloat] {
+        Dictionary(uniqueKeysWithValues: document.layers.enumerated().map { ($1.id, CGFloat($0 + 1)) })
+    }
+
     private func reloadStrokes() {
         let printStrokes = document.printLayoutStrokes()
         let visibleIDs = Set(printStrokes.map(\.id))
+        let zPositions = layerZPositions()
         for (id, layer) in strokeLayers where !visibleIDs.contains(id) {
             layer.removeFromSuperlayer()
             strokeLayers.removeValue(forKey: id)
@@ -218,6 +225,7 @@ final class PrintLayoutCanvasUIView: UIView {
                 artworkLayer.addSublayer(layer)
                 strokeLayers[stroke.id] = layer
             }
+            strokeLayers[stroke.id]?.zPosition = zPositions[stroke.layerID] ?? 1
         }
     }
 
@@ -226,6 +234,7 @@ final class PrintLayoutCanvasUIView: UIView {
     /// print transform (which includes the global artwork `contentOffset`).
     private func reloadTextElements() {
         let visibleIDs = Set(document.visibleTextElements().map(\.id))
+        let zPositions = layerZPositions()
         for (id, layer) in textLayers where !visibleIDs.contains(id) {
             layer.removeFromSuperlayer()
             textLayers.removeValue(forKey: id)
@@ -263,6 +272,7 @@ final class PrintLayoutCanvasUIView: UIView {
                 artworkLayer.addSublayer(layer)
                 textLayers[element.id] = layer
             }
+            textLayers[element.id]?.zPosition = zPositions[element.layerID] ?? 1
         }
     }
 

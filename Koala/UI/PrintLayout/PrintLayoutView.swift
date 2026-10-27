@@ -29,6 +29,7 @@ struct PrintLayoutView: View {
     )
     @State private var onboardingOverlayFrame: CGRect = .zero
     @State private var printAxisLockEnabled = false
+    @State private var showLayersPanel = false
 
     /// Drives the move/rotate panel. The Cut tool leaves its fresh pieces selected,
     /// but the overlay handles are only live for Select, so the panel stays hidden
@@ -69,6 +70,7 @@ struct PrintLayoutView: View {
                     onSelectTap: {
                         showPaperPanel = false
                         showMarginPanel = false
+                        showLayersPanel = false
                     }
                 )
                 .ignoresSafeArea()
@@ -83,6 +85,7 @@ struct PrintLayoutView: View {
                 .frame(width: 1, height: 1)
                 .allowsHitTesting(false)
             }
+            .coordinateSpace(name: CanvasOverlayCoordinateSpace.name)
             .overlay(alignment: .topLeading) {
                 if showPaperPanel {
                     PrintPaperPanelView(
@@ -113,6 +116,17 @@ struct PrintLayoutView: View {
                     )
                     .transition(.identity)
                 }
+            }
+            .overlay(alignment: .topTrailing) {
+                LayersPanelView(
+                    document: document,
+                    isExpanded: $showLayersPanel,
+                    onChanged: onChanged,
+                    overlayOrigin: CGPoint(
+                        x: geometry.safeAreaInsets.leading,
+                        y: geometry.safeAreaInsets.top
+                    )
+                )
             }
             .onChange(of: document.printSelectedStrokeID) { _, _ in printRotateMode = false }
             .onChange(of: document.printSelectedTextID) { _, _ in printRotateMode = false }
@@ -202,6 +216,7 @@ struct PrintLayoutView: View {
     private func handleCanvasTap(at documentPoint: CGPoint) {
         if showPaperPanel { showPaperPanel = false }
         if showMarginPanel { showMarginPanel = false }
+        showLayersPanel = false
         switch document.printLayout.activeTool {
         case .select:
             break
