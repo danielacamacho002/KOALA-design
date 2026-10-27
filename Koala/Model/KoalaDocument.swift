@@ -2068,14 +2068,18 @@ final class KoalaDocument {
         return true
     }
 
-    /// True when any stroke or text element is hidden from the canvas.
+    /// True when any stroke, text element, or reference image is hidden from the canvas.
     var hasHiddenElements: Bool {
-        strokes.contains { $0.isHiddenFromCanvas } || textElements.contains { $0.isHidden }
+        strokes.contains { $0.isHiddenFromCanvas }
+            || textElements.contains { $0.isHidden }
+            || referenceImages.contains { $0.isHiddenFromCanvas }
     }
 
     /// True when every currently selected element is hidden.
     var selectedElementsAreHidden: Bool {
-        guard !selectionIsEmpty else { return false }
+        if selectionIsEmpty {
+            return selectedReferenceImage?.isHiddenFromCanvas == true
+        }
         for id in selectedStrokeIDs {
             guard let stroke = stroke(with: id), stroke.isHiddenFromCanvas else { return false }
         }
@@ -2086,13 +2090,14 @@ final class KoalaDocument {
     }
 
     var canToggleElementVisibility: Bool {
-        !selectionIsEmpty || hasHiddenElements
+        !selectionIsEmpty || isReferenceImageSelected || hasHiddenElements
     }
 
     /// Eye when the selection is visible; crossed-out eye when it is hidden
     /// (or when nothing is selected but hidden objects remain).
     var visibilityToolbarImage: String {
-        if selectedElementsAreHidden || (selectionIsEmpty && hasHiddenElements) {
+        let revealHidden = selectionIsEmpty && !isReferenceImageSelected && hasHiddenElements
+        if selectedElementsAreHidden || revealHidden {
             return "eye.slash"
         }
         return "eye"
@@ -2102,7 +2107,7 @@ final class KoalaDocument {
         if selectedElementsAreHidden {
             return "Show selection"
         }
-        if selectionIsEmpty && hasHiddenElements {
+        if selectionIsEmpty && !isReferenceImageSelected && hasHiddenElements {
             return "Show hidden objects"
         }
         return "Hide selection"
@@ -2110,7 +2115,7 @@ final class KoalaDocument {
 
     /// Hides or shows the current selection. With nothing selected, reveals every hidden object.
     func toggleSelectedElementsHidden() {
-        if selectionIsEmpty {
+        if selectionIsEmpty && !isReferenceImageSelected {
             unhideAllElements()
             return
         }
@@ -2125,7 +2130,8 @@ final class KoalaDocument {
     /// Selection is kept so the toolbar eye can toggle the same objects back on.
     func hideSelectedElements() {
         expandSelectionToGroupsIfNeeded()
-        guard !selectionIsEmpty else { return }
+        let imageID = selectionIsEmpty ? selectedReferenceImageID : nil
+        guard !selectionIsEmpty || imageID != nil else { return }
         pushUndo()
         let strokeIDs = selectedStrokeIDs
         let textIDs = selectedTextIDs
@@ -2135,13 +2141,17 @@ final class KoalaDocument {
         for index in textElements.indices where textIDs.contains(textElements[index].id) {
             textElements[index].isHidden = true
         }
+        if let imageID, let index = referenceImages.firstIndex(where: { $0.id == imageID }) {
+            referenceImages[index].isHidden = true
+        }
         geometryRevision += 1
     }
 
-    /// Reveals the currently selected hidden strokes and text elements.
+    /// Reveals the currently selected hidden strokes, text, and reference image.
     func unhideSelectedElements() {
         expandSelectionToGroupsIfNeeded()
-        guard !selectionIsEmpty else { return }
+        let imageID = selectionIsEmpty ? selectedReferenceImageID : nil
+        guard !selectionIsEmpty || imageID != nil else { return }
         pushUndo()
         let strokeIDs = selectedStrokeIDs
         let textIDs = selectedTextIDs
@@ -2151,10 +2161,13 @@ final class KoalaDocument {
         for index in textElements.indices where textIDs.contains(textElements[index].id) {
             textElements[index].isHidden = false
         }
+        if let imageID, let index = referenceImages.firstIndex(where: { $0.id == imageID }) {
+            referenceImages[index].isHidden = false
+        }
         geometryRevision += 1
     }
 
-    /// Reveals every hidden stroke and text element in one undoable step.
+    /// Reveals every hidden stroke, text element, and reference image in one undoable step.
     func unhideAllElements() {
         guard hasHiddenElements else { return }
         pushUndo()
@@ -2163,6 +2176,9 @@ final class KoalaDocument {
         }
         for index in textElements.indices where textElements[index].isHidden {
             textElements[index].isHidden = false
+        }
+        for index in referenceImages.indices where referenceImages[index].isHiddenFromCanvas {
+            referenceImages[index].isHidden = false
         }
         geometryRevision += 1
     }

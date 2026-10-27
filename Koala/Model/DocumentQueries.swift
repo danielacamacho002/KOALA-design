@@ -47,7 +47,7 @@ nonisolated enum DocumentQueries: Sendable {
         let visibleLayerIDs = Set(layers.filter(\.isVisible).map(\.id))
         return images
             .enumerated()
-            .filter { visibleLayerIDs.contains($0.element.layerID) }
+            .filter { visibleLayerIDs.contains($0.element.layerID) && !$0.element.isHiddenFromCanvas }
             .sorted { lhs, rhs in
                 let l = order[lhs.element.layerID] ?? 0
                 let r = order[rhs.element.layerID] ?? 0
