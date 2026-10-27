@@ -1,6 +1,6 @@
 # KOALA
 
-KOALA is an iOS vector drawing app focused on precise shape creation and editing.
+KOALA is an iPad vector drawing app focused on precise shape creation and editing.
 
 ## Features
 
@@ -21,7 +21,7 @@ KOALA is an iOS vector drawing app focused on precise shape creation and editing
 
 1. Open `Koala.xcodeproj` in Xcode.
 2. Select the `Koala` scheme.
-3. Build and run on an iOS simulator or device.
+3. Build and run on an iPad simulator or device.
 
 ## Tests
 
