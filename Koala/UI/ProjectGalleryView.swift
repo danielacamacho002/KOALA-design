@@ -227,6 +227,7 @@ struct ProjectGalleryView: View {
         } label: {
             ProjectCardView(
                 record: project,
+                thumbnailRevision: library.thumbnailRevision,
                 isSelected: selectedIDs.contains(project.id),
                 isSelectionMode: isSelectionMode,
                 compact: viewMode == .list

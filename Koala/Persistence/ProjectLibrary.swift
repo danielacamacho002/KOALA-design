@@ -9,9 +9,13 @@ import Observation
 @Observable
 final class ProjectLibrary {
     private(set) var projects: [ProjectRecord] = []
+    /// Bumps after saved gallery PNGs are rewritten so cards reload them.
+    private(set) var thumbnailRevision = 0
 
     private let fileManager = FileManager.default
     private let indexFileName = "projects-index.json"
+    /// Bump when gallery PNGs need to be rewritten (canvas color, fit).
+    private static let thumbnailFormat = "canvas-fit-1"
 
     var projectsDirectory: URL {
         let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -33,6 +37,7 @@ final class ProjectLibrary {
 
     func refresh() async {
         await scanFilesystem()
+        await rebuildThumbnailsIfFormatChanged()
     }
 
     @discardableResult
@@ -279,6 +284,34 @@ final class ProjectLibrary {
             canvasWidth: snapshot.settings.canvasWidth,
             canvasHeight: snapshot.settings.canvasHeight
         )
+    }
+
+    private var thumbnailFormatURL: URL {
+        thumbnailsDirectory.appendingPathComponent("format.txt")
+    }
+
+    /// Rewrites gallery PNGs once when the renderer changes, so existing
+    /// projects pick up the canvas-colored, fully fitted preview.
+    private func rebuildThumbnailsIfFormatChanged() async {
+        ensureDirectories()
+        let current = (try? String(contentsOf: thumbnailFormatURL, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard current != Self.thumbnailFormat else { return }
+
+        var allWrote = true
+        for record in projects {
+            do {
+                let snapshot = try await PersistenceWorker.shared.readSnapshot(from: record.fileURL)
+                try await writeThumbnail(for: record, snapshot: snapshot)
+            } catch {
+                allWrote = false
+            }
+        }
+        guard allWrote else { return }
+
+        ProjectThumbnailCache.removeAll()
+        try? Self.thumbnailFormat.write(to: thumbnailFormatURL, atomically: true, encoding: .utf8)
+        thumbnailRevision += 1
     }
 
     private func thumbnailURL(for id: UUID) -> URL {

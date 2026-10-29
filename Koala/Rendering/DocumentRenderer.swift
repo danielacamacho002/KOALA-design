@@ -15,6 +15,19 @@ enum DocumentRenderer {
         /// preview overlay; PDF transparency survives in Illustrator and turns
         /// a black recolor grey.
         var opaqueFills: Bool = false
+        /// Export paints a white page. Gallery thumbnails leave this off so the
+        /// card can show the canvas color behind the artwork.
+        var fillsBackground: Bool = true
+        /// Extra inset inside `padding` when fitting content.
+        var fitMargin: CGFloat = 48
+        /// The on-canvas fit refuses to zoom out past 2, which crops a
+        /// page-sized drawing down to its center in a small thumbnail.
+        var fitMinScale: CGFloat = 2
+        /// Gallery thumbnails frame the artwork itself. Export keeps the
+        /// editor fit, including its zoom-out floor.
+        var tightFit: Bool = false
+        /// View-space stroke floor. Zero keeps export widths exact.
+        var minimumStrokeWidth: CGFloat = 0
     }
 
     static func renderImage(document: KoalaDocument, options: Options = Options()) -> UIImage? {
@@ -35,7 +48,14 @@ enum DocumentRenderer {
     }
 
     nonisolated static func renderImage(snapshot: DocumentSnapshot, options: Options = Options()) -> UIImage? {
-        let renderer = UIGraphicsImageRenderer(size: options.size)
+        let renderer: UIGraphicsImageRenderer
+        if options.fillsBackground {
+            renderer = UIGraphicsImageRenderer(size: options.size)
+        } else {
+            let format = UIGraphicsImageRendererFormat()
+            format.opaque = false
+            renderer = UIGraphicsImageRenderer(size: options.size, format: format)
+        }
         return renderer.image { ctx in
             draw(
                 snapshot: snapshot,
@@ -52,31 +72,30 @@ enum DocumentRenderer {
         bounds: CGRect,
         options: Options = Options()
     ) {
-        context.setFillColor(UIColor.white.cgColor)
-        context.fill(bounds)
+        if options.fillsBackground {
+            context.setFillColor(UIColor.white.cgColor)
+            context.fill(bounds)
+        }
 
         var viewport = ViewportTransform()
         let points = allPoints(in: snapshot)
+        let chrome = ViewportTransform.ChromeInsets(
+            left: options.padding,
+            right: options.padding,
+            top: options.padding,
+            bottom: options.padding
+        )
         if points.isEmpty {
-            viewport.centerOrigin(
-                in: bounds.size,
-                chrome: ViewportTransform.ChromeInsets(
-                    left: options.padding,
-                    right: options.padding,
-                    top: options.padding,
-                    bottom: options.padding
-                )
-            )
+            viewport.centerOrigin(in: bounds.size, chrome: chrome)
+        } else if options.tightFit {
+            viewport = tightViewport(for: points, in: bounds, padding: options.padding, minScale: options.fitMinScale)
         } else {
             viewport.fitToPoints(
                 points,
                 in: bounds.size,
-                chrome: ViewportTransform.ChromeInsets(
-                    left: options.padding,
-                    right: options.padding,
-                    top: options.padding,
-                    bottom: options.padding
-                )
+                margin: options.fitMargin,
+                chrome: chrome,
+                minScale: options.fitMinScale
             )
         }
 
@@ -101,7 +120,10 @@ enum DocumentRenderer {
             }
             context.addPath(StrokeRenderer.outlinePath(for: stroke, viewport: viewport).cgPath)
             context.setStrokeColor(strokeColor(for: stroke))
-            context.setLineWidth(viewport.documentToView(distance: stroke.strokeWidth))
+            context.setLineWidth(max(
+                options.minimumStrokeWidth,
+                viewport.documentToView(distance: stroke.strokeWidth)
+            ))
             context.setLineCap(.round)
             context.setLineJoin(.round)
             if stroke.isConstruction {
@@ -124,7 +146,10 @@ enum DocumentRenderer {
             context.addPath(viewPath)
             if element.isOutline {
                 context.setStrokeColor(element.strokeCGColor)
-                context.setLineWidth(viewport.documentToView(distance: element.strokeWidth))
+                context.setLineWidth(max(
+                    options.minimumStrokeWidth,
+                    viewport.documentToView(distance: element.strokeWidth)
+                ))
                 context.setLineCap(.round)
                 context.setLineJoin(.round)
                 context.strokePath()
@@ -147,6 +172,36 @@ enum DocumentRenderer {
         let strokePad = snapshot.visibleStrokes().map(\.strokeWidth).max() ?? 0
         let textPad = snapshot.visibleTextElements().map { $0.isOutline ? $0.strokeWidth : 0 }.max() ?? 0
         return rect.insetBy(dx: -(20 + max(strokePad, textPad) / 2), dy: -(20 + max(strokePad, textPad) / 2))
+    }
+
+    /// Frames artwork in the image with a small margin and no zoom-out floor.
+    private nonisolated static func tightViewport(
+        for points: [CGPoint],
+        in bounds: CGRect,
+        padding: CGFloat,
+        minScale: CGFloat
+    ) -> ViewportTransform {
+        var rect = CGRect.null
+        for point in points {
+            rect = rect.union(CGRect(origin: point, size: .zero))
+        }
+        if rect.isNull || (rect.width < 1 && rect.height < 1) {
+            let center = rect.isNull ? .zero : CGPoint(x: rect.midX, y: rect.midY)
+            rect = CGRect(x: center.x - 10, y: center.y - 10, width: 20, height: 20)
+        }
+        let pad = max(rect.width, rect.height, 1) * 0.1
+        rect = rect.insetBy(dx: -pad, dy: -pad)
+
+        let availableWidth = max(1, bounds.width - padding * 2)
+        let availableHeight = max(1, bounds.height - padding * 2)
+        let scale = min(availableWidth / rect.width, availableHeight / rect.height)
+        var viewport = ViewportTransform()
+        viewport.scale = min(ViewportTransform.maxScale, max(minScale, scale))
+        viewport.translation = CGPoint(
+            x: bounds.midX - rect.midX * viewport.scale,
+            y: bounds.midY - rect.midY * viewport.scale
+        )
+        return viewport
     }
 
     private nonisolated static func allPoints(in snapshot: DocumentSnapshot) -> [CGPoint] {
