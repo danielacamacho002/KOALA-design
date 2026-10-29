@@ -14,6 +14,9 @@ nonisolated struct ReferenceImage: Identifiable, Codable, Equatable, Sendable {
     var rotation: CGFloat = 0
     /// Opacity of this image, multiplied by its layer opacity when drawn. `1` is fully opaque.
     var opacity: CGFloat = 1
+    /// When `true`, omitted from canvas, hit-testing, and export.
+    /// Optional so older documents without this key still decode.
+    var isHidden: Bool? = nil
 
     var center: CGPoint {
         CGPoint(x: frame.midX, y: frame.midY)
@@ -37,6 +40,9 @@ nonisolated struct ReferenceImage: Identifiable, Codable, Equatable, Sendable {
         return frame.contains(Self.rotate(point, around: center, by: -rotation))
     }
 
+    /// True when this image should be omitted from canvas, hit-testing, and export.
+    var isHiddenFromCanvas: Bool { isHidden == true }
+
     func boundingBox() -> CGRect {
         guard rotation != 0 else { return frame }
         var rect = CGRect.null
@@ -57,7 +63,7 @@ nonisolated struct ReferenceImage: Identifiable, Codable, Equatable, Sendable {
         )
     }
 
-    /// Undo snapshots keep id, layer, frame, rotation, and opacity without copying raster bytes.
+    /// Undo snapshots keep id, layer, frame, rotation, opacity, and hidden state without copying raster bytes.
     func omittingPayload() -> ReferenceImage {
         var copy = self
         copy.data = Data()
@@ -65,7 +71,7 @@ nonisolated struct ReferenceImage: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, layerID, data, frame, rotation, opacity
+        case id, layerID, data, frame, rotation, opacity, isHidden
     }
 
     init(
@@ -74,7 +80,8 @@ nonisolated struct ReferenceImage: Identifiable, Codable, Equatable, Sendable {
         data: Data,
         frame: CGRect,
         rotation: CGFloat = 0,
-        opacity: CGFloat = 1
+        opacity: CGFloat = 1,
+        isHidden: Bool? = nil
     ) {
         self.id = id
         self.layerID = layerID
@@ -82,6 +89,7 @@ nonisolated struct ReferenceImage: Identifiable, Codable, Equatable, Sendable {
         self.frame = frame
         self.rotation = rotation
         self.opacity = opacity
+        self.isHidden = isHidden
     }
 
     init(from decoder: Decoder) throws {
@@ -92,6 +100,7 @@ nonisolated struct ReferenceImage: Identifiable, Codable, Equatable, Sendable {
         frame = try container.decode(CGRect.self, forKey: .frame)
         rotation = try container.decodeIfPresent(CGFloat.self, forKey: .rotation) ?? 0
         opacity = try container.decodeIfPresent(CGFloat.self, forKey: .opacity) ?? 1
+        isHidden = try container.decodeIfPresent(Bool.self, forKey: .isHidden)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -102,5 +111,6 @@ nonisolated struct ReferenceImage: Identifiable, Codable, Equatable, Sendable {
         try container.encode(frame, forKey: .frame)
         try container.encode(rotation, forKey: .rotation)
         try container.encode(opacity, forKey: .opacity)
+        try container.encodeIfPresent(isHidden, forKey: .isHidden)
     }
 }

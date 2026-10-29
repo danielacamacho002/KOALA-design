@@ -41,7 +41,7 @@ final class LayerThumbnailCache {
     ) -> UIImage? {
         let strokes = document.strokes(for: layerID).filter { !$0.isHiddenFromCanvas }
         let texts = document.textElements.filter { $0.layerID == layerID && !$0.isHidden }
-        let images = document.referenceImages(for: layerID)
+        let images = document.referenceImages(for: layerID).filter { !$0.isHiddenFromCanvas }
 
         if let cached = entries[layerID],
            cached.size == size,
