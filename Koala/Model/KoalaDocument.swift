@@ -437,11 +437,12 @@ final class KoalaDocument {
     }
 
     /// Replaces the layer stack with a reordered copy of the same layers (index 0 = backmost).
-    func reorderLayers(_ newOrder: [Layer]) {
+    /// A drag records undo on the first step only, so the whole reorder is one undo.
+    func reorderLayers(_ newOrder: [Layer], recordUndo: Bool = true) {
         guard newOrder.map(\.id) != layers.map(\.id),
               Set(newOrder.map(\.id)) == Set(layers.map(\.id)),
               newOrder.count == layers.count else { return }
-        pushUndo()
+        if recordUndo { pushUndo() }
         layers = newOrder
         normalizeLayerGrouping()
         geometryRevision += 1
