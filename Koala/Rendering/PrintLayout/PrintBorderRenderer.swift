@@ -54,7 +54,7 @@ enum PrintBorderRenderer {
         layer.fillColor = UIColor.clear.cgColor
         layer.lineWidth = 1.5
         layer.lineDashPattern = [6, 4]
-        layer.contentsScale = UIScreen.main.scale
+        layer.contentsScale = DisplayZoomCompensation.layerContentsScale
         return layer
     }
 
@@ -75,7 +75,7 @@ enum PrintBorderRenderer {
         layer.fillColor = UIColor.clear.cgColor
         layer.lineWidth = 1
         layer.lineDashPattern = style == .dashed ? [6, 4] : nil
-        layer.contentsScale = UIScreen.main.scale
+        layer.contentsScale = DisplayZoomCompensation.layerContentsScale
         return layer
     }
 
@@ -99,7 +99,7 @@ enum PrintBorderRenderer {
         layer.fillColor = UIColor.systemRed.withAlphaComponent(0.08).cgColor
         layer.fillRule = .evenOdd
         layer.path = nonPrintablePath(settings: settings, viewport: viewport)
-        layer.contentsScale = UIScreen.main.scale
+        layer.contentsScale = DisplayZoomCompensation.layerContentsScale
         return layer
     }
 

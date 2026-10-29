@@ -15,6 +15,8 @@ struct LayersPanelView: View {
     @Binding var isExpanded: Bool
     /// Called after any mutation so the owner can mark the document dirty.
     var onChanged: () -> Void
+    /// Top-left of this chrome overlay, in canvas-view coordinates.
+    var overlayOrigin: CGPoint
     var isTourHighlighted: Bool = false
 
     @State private var renamingLayerID: UUID?
@@ -25,8 +27,11 @@ struct LayersPanelView: View {
     @State private var selectedLayerIDs: Set<UUID> = []
     /// Local slider value so programmatic sync does not rewrite the document.
     @State private var opacitySlider: Double = 1
+    /// Finger-drag of a row grip. Undo is recorded once for the whole drag.
+    @State private var reorderDrag: LayerReorderDrag?
+    @Environment(\.colorScheme) private var colorScheme
 
-    private let panelWidth: CGFloat = 248
+    private let panelWidth: CGFloat = 280
     private let rowHeight: CGFloat = 44
     private let maxListHeight: CGFloat = 308
 
@@ -49,6 +54,7 @@ struct LayersPanelView: View {
             if !expanded {
                 commitRenameIfNeeded()
                 selectedLayerIDs = []
+                reorderDrag = nil
             }
         }
     }
@@ -56,17 +62,25 @@ struct LayersPanelView: View {
     // MARK: - Collapsed toggle
 
     private var toggleButton: some View {
-        StudioIconButton(
-            systemImage: "square.3.layers.3d",
-            isActive: isExpanded,
-            size: 34
-        ) {
-            isExpanded.toggle()
+        let sheet = CanvasIconContrast.sheetRect(
+            viewport: document.viewport,
+            canvasSize: document.settings.canvasSize,
+            overlayOrigin: overlayOrigin
+        )
+        return CanvasContrastTint(canvasRect: sheet) { overCanvas in
+            StudioIconButton(
+                systemImage: "square.3.layers.3d",
+                isActive: isExpanded,
+                size: 34,
+                inactiveColor: CanvasIconContrast.iconColor(isOverCanvas: overCanvas)
+            ) {
+                isExpanded.toggle()
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 3)
+            .background(Rectangle().fill(CanvasIconContrast.washColor(isOverCanvas: overCanvas)))
+            .accessibilityLabel(isExpanded ? "Hide layers" : "Show layers")
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 3)
-        .background(Rectangle().fill(Color.primary.opacity(0.05)))
-        .accessibilityLabel(isExpanded ? "Hide layers" : "Show layers")
     }
 
     // MARK: - Expanded card
@@ -153,15 +167,21 @@ struct LayersPanelView: View {
         HStack(spacing: 8) {
             Text("\(validSelection.count) selected")
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(Color.toolPanelSecondaryLabel)
+                .foregroundStyle(SelectionHighlight.font)
 
             Spacer()
 
             Button {
                 groupSelected()
             } label: {
-                Label("Group", systemImage: "folder.badge.plus")
-                    .font(.caption2.weight(.semibold))
+                Label {
+                    Text("Group")
+                        .foregroundStyle(SelectionHighlight.font)
+                } icon: {
+                    Image(systemName: "folder.badge.plus")
+                        .foregroundStyle(SelectionHighlight.icon)
+                }
+                .font(.caption2.weight(.semibold))
             }
             .buttonStyle(.plain)
             .disabled(validSelection.isEmpty)
@@ -170,8 +190,14 @@ struct LayersPanelView: View {
             Button {
                 mergeSelected()
             } label: {
-                Label("Merge", systemImage: "arrow.triangle.merge")
-                    .font(.caption2.weight(.semibold))
+                Label {
+                    Text("Merge")
+                        .foregroundStyle(SelectionHighlight.font)
+                } icon: {
+                    Image(systemName: "arrow.triangle.merge")
+                        .foregroundStyle(SelectionHighlight.icon)
+                }
+                .font(.caption2.weight(.semibold))
             }
             .buttonStyle(.plain)
             .disabled(validSelection.count < 2)
@@ -182,32 +208,77 @@ struct LayersPanelView: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Color.toolPanelSecondaryLabel)
+                    .foregroundStyle(SelectionHighlight.icon)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Clear selection")
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 4)
-        .background(Rectangle().fill(Color.accentColor.opacity(0.08)))
+        .background(Rectangle().fill(SelectionHighlight.background))
     }
 
     private var layerList: some View {
         List {
             ForEach(displayRows) { row in
-                rowView(row)
-                    .frame(height: rowHeight - 12)
-                    .listRowInsets(EdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 2))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(rowBackground(row))
+                HStack(spacing: 2) {
+                    rowView(row)
+                    reorderGrip(for: row)
+                }
+                .frame(height: rowHeight - 12)
+                .listRowInsets(EdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 0))
+                .listRowSeparator(.hidden)
+                .listRowBackground(rowBackground(row))
             }
-            .onMove(perform: moveRows)
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .environment(\.editMode, .constant(.active))
+        .contentMargins(.horizontal, 0, for: .scrollContent)
         .environment(\.defaultMinListRowHeight, rowHeight)
         .frame(height: min(CGFloat(displayRows.count) * rowHeight, maxListHeight))
+    }
+
+    /// Same dark gray as the filled opacity line. Drawn here because the system
+    /// list grip stays light gray and does not take a tint.
+    private var reorderGripColor: Color {
+        let style: UIUserInterfaceStyle = colorScheme == .dark ? .dark : .light
+        return Color(uiColor: LayerOpacityBar.gripUIColor(
+            compatibleWith: UITraitCollection(userInterfaceStyle: style)
+        ))
+    }
+
+    private func reorderGrip(for row: PanelRow) -> some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(reorderGripColor)
+            .frame(width: 22, height: rowHeight - 12, alignment: .trailing)
+            .contentShape(Rectangle())
+            .highPriorityGesture(reorderGesture(for: row))
+            .accessibilityLabel("Move layer")
+    }
+
+    private func reorderGesture(for row: PanelRow) -> some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .global)
+            .onChanged { value in
+                let rows = displayRows
+                guard let current = rows.firstIndex(where: { $0.id == row.id }) else { return }
+                if reorderDrag?.rowID != row.id {
+                    reorderDrag = LayerReorderDrag(rowID: row.id, startIndex: current, didRecordUndo: false)
+                }
+                guard let drag = reorderDrag else { return }
+                let delta = Int((value.translation.height / rowHeight).rounded())
+                let target = min(max(drag.startIndex + delta, 0), rows.count - 1)
+                guard target != current else { return }
+                moveRows(
+                    from: IndexSet(integer: current),
+                    to: target > current ? target + 1 : target,
+                    recordUndo: !drag.didRecordUndo
+                )
+                reorderDrag?.didRecordUndo = true
+            }
+            .onEnded { _ in
+                reorderDrag = nil
+            }
     }
 
     // MARK: - Display model
@@ -253,11 +324,9 @@ struct LayersPanelView: View {
             Rectangle()
                 .fill(Color.white.opacity(0.06))
                 .padding(.vertical, 2)
-        case .layer(let layer, _):
+        case .layer:
             Rectangle()
-                .fill(layer.id == document.activeLayerID
-                    ? Color.accentColor.opacity(0.16)
-                    : Color.clear)
+                .fill(Color.clear)
                 .padding(.vertical, 2)
         }
     }
@@ -405,7 +474,7 @@ struct LayersPanelView: View {
     @ViewBuilder
     private func layerRow(_ layer: Layer, indented: Bool) -> some View {
         HStack(spacing: 6) {
-            selectionToggle(isOn: selectedLayerIDs.contains(layer.id), isMixed: false) {
+            selectionToggle(isOn: layerDotIsOn(layer), isMixed: false) {
                 toggleSelection(layer.id)
             }
 
@@ -425,6 +494,7 @@ struct LayersPanelView: View {
             } else {
                 Text(layer.name)
                     .font(.caption.weight(layer.id == document.activeLayerID ? .semibold : .regular))
+                    .foregroundStyle(Color.white)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -530,9 +600,9 @@ struct LayersPanelView: View {
 
     private func selectionToggle(isOn: Bool, isMixed: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: isOn ? "checkmark.circle.fill" : (isMixed ? "minus.circle.fill" : "circle"))
+            Image(systemName: isOn ? "circle.fill" : (isMixed ? "circle.lefthalf.filled" : "circle"))
                 .font(.caption)
-                .foregroundStyle(isOn || isMixed ? Color.accentColor : Color.white.opacity(0.35))
+                .foregroundStyle(isOn || isMixed ? SelectionHighlight.icon : Color.white.opacity(0.35))
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
@@ -541,6 +611,11 @@ struct LayersPanelView: View {
     }
 
     // MARK: - Selection helpers
+
+    /// The left dot is the only selected state: the active layer, or any layer picked for group/merge.
+    private func layerDotIsOn(_ layer: Layer) -> Bool {
+        layer.id == document.activeLayerID || selectedLayerIDs.contains(layer.id)
+    }
 
     private var validSelection: Set<UUID> {
         selectedLayerIDs.intersection(Set(document.layers.map(\.id)))
@@ -589,11 +664,11 @@ struct LayersPanelView: View {
     }
 
     private func membersAllSelected(_ members: [Layer]) -> Bool {
-        !members.isEmpty && members.allSatisfy { selectedLayerIDs.contains($0.id) }
+        !members.isEmpty && members.allSatisfy { layerDotIsOn($0) }
     }
 
     private func membersSomeSelected(_ members: [Layer]) -> Bool {
-        members.contains { selectedLayerIDs.contains($0.id) } && !membersAllSelected(members)
+        members.contains { layerDotIsOn($0) } && !membersAllSelected(members)
     }
 
     private func toggleFolderSelection(_ members: [Layer]) {
@@ -693,7 +768,7 @@ struct LayersPanelView: View {
     /// document's back-to-front `layers` array from the reordered rows; folder
     /// membership is preserved (only explicit actions change it) and normalized
     /// back to contiguous runs by the document.
-    private func moveRows(from source: IndexSet, to destination: Int) {
+    private func moveRows(from source: IndexSet, to destination: Int, recordUndo: Bool = true) {
         var rows = displayRows
         rows.move(fromOffsets: source, toOffset: destination)
         var frontToBack: [Layer] = []
@@ -709,14 +784,44 @@ struct LayersPanelView: View {
                 }
             }
         }
-        document.reorderLayers(Array(frontToBack.reversed()))
+        document.reorderLayers(Array(frontToBack.reversed()), recordUndo: recordUndo)
         onChanged()
     }
+}
+
+/// In-progress grip drag. `startIndex` stays put so later movement is measured
+/// from where the row began, not from where it has already jumped.
+private struct LayerReorderDrag {
+    var rowID: String
+    var startIndex: Int
+    var didRecordUndo: Bool
 }
 
 /// Sharp opacity slider. The track and handle reuse the layer thumbnail boxes:
 /// white rectangle, hairline stroke, with ink filling in from the left.
 private struct LayerOpacityBar: View {
+    /// Ink painted over the track. At 100% this is the dark gray line in the panel.
+    static let inkOpacity: CGFloat = 0.78
+    static let lineColor = Color.primary.opacity(inkOpacity)
+
+    /// Opaque color of that line, so a grip on the dark panel matches it instead of
+    /// blending a translucent black into the panel and staying light.
+    static func gripUIColor(compatibleWith traits: UITraitCollection) -> UIColor {
+        let track = UIColor.systemBackground.resolvedColor(with: traits)
+        let ink = UIColor.label.resolvedColor(with: traits).withAlphaComponent(inkOpacity)
+        var trackRed: CGFloat = 0, trackGreen: CGFloat = 0, trackBlue: CGFloat = 0, trackAlpha: CGFloat = 0
+        var inkRed: CGFloat = 0, inkGreen: CGFloat = 0, inkBlue: CGFloat = 0, inkAlpha: CGFloat = 0
+        track.getRed(&trackRed, green: &trackGreen, blue: &trackBlue, alpha: &trackAlpha)
+        ink.getRed(&inkRed, green: &inkGreen, blue: &inkBlue, alpha: &inkAlpha)
+        let alpha = inkAlpha
+        return UIColor(
+            red: inkRed * alpha + trackRed * (1 - alpha),
+            green: inkGreen * alpha + trackGreen * (1 - alpha),
+            blue: inkBlue * alpha + trackBlue * (1 - alpha),
+            alpha: 1
+        )
+    }
+
     @Binding var value: Double
     var onEditingChanged: (Bool) -> Void
 
@@ -740,7 +845,7 @@ private struct LayerOpacityBar: View {
                     .frame(width: width, height: slotHeight)
                     .overlay(alignment: .leading) {
                         Rectangle()
-                            .fill(Color.primary.opacity(0.78))
+                            .fill(Self.lineColor)
                             .frame(width: max(0, origin), height: slotHeight)
                     }
                     .clipped()

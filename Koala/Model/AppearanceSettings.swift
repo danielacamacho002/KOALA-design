@@ -23,6 +23,13 @@ enum AppearanceSettings {
     static let pasteboardHex = "3A3A3A"
 }
 
+/// Shared colors for every selected row, segment, chip, and active tool.
+enum SelectionHighlight {
+    static let background = Color(hex: "66653D")
+    static let icon = Color(hex: "BBD159")
+    static let font = Color(hex: "E2F395")
+}
+
 extension Color {
     /// Creates a color from a hex string (`RRGGBB` or `RRGGBBAA`, `#` optional).
     init(hex: String) {

@@ -249,6 +249,100 @@ struct ReferenceImageTransformTests {
         #expect(document.elementHit(near: CGPoint(x: 4, y: 4), threshold: 4) == .none)
     }
 
+    @Test func hideSelectedImageOmitsItUntilShown() {
+        let document = documentWithImage(frame: CGRect(x: 0, y: 0, width: 100, height: 50))
+        let id = document.referenceImages[0].id
+        document.selectReferenceImage(id: id)
+
+        #expect(document.canToggleElementVisibility)
+        #expect(document.visibilityToolbarImage == "eye")
+        #expect(document.visibilityToolbarAccessibilityLabel == "Hide selection")
+
+        document.toggleSelectedElementsHidden()
+
+        #expect(document.referenceImages[0].isHiddenFromCanvas)
+        #expect(document.selectedReferenceImageID == id)
+        #expect(document.visibleReferenceImages().isEmpty)
+        #expect(document.elementHit(near: CGPoint(x: 40, y: 20), threshold: 4) == .none)
+        #expect(document.visibilityToolbarImage == "eye.slash")
+        #expect(document.visibilityToolbarAccessibilityLabel == "Show selection")
+
+        document.toggleSelectedElementsHidden()
+
+        #expect(document.referenceImages[0].isHiddenFromCanvas == false)
+        #expect(document.visibleReferenceImages().map(\.id) == [id])
+        #expect(document.elementHit(near: CGPoint(x: 40, y: 20), threshold: 4) == .referenceImage(id))
+    }
+
+    @Test func hiddenFrontImageYieldsToImageBehindIt() {
+        let document = documentWithImage(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        let backID = document.referenceImages[0].id
+        document.referenceImages.append(
+            ReferenceImage(
+                layerID: document.activeLayerID,
+                data: Data([0x02]),
+                frame: CGRect(x: 0, y: 0, width: 40, height: 40)
+            )
+        )
+        let frontID = document.referenceImages[1].id
+        document.selectReferenceImage(id: frontID)
+        document.hideSelectedElements()
+
+        #expect(document.visibleReferenceImages().map(\.id) == [backID])
+        #expect(document.elementHit(near: CGPoint(x: 10, y: 10), threshold: 4) == .referenceImage(backID))
+        #expect(document.selectedReferenceImageID == frontID)
+    }
+
+    @Test func undoRestoresAHiddenImage() {
+        let document = documentWithImage(frame: CGRect(x: 0, y: 0, width: 40, height: 20))
+        let id = document.referenceImages[0].id
+        document.selectReferenceImage(id: id)
+        document.hideSelectedElements()
+
+        document.undo()
+
+        #expect(document.referenceImages[0].isHiddenFromCanvas == false)
+        #expect(document.visibleReferenceImages().map(\.id) == [id])
+        #expect(document.referenceImages[0].data == Data([0xFF]))
+    }
+
+    @Test func showHiddenObjectsRevealsImageWhenNothingIsSelected() {
+        let document = documentWithImage(frame: CGRect(x: 0, y: 0, width: 40, height: 20))
+        document.selectReferenceImage()
+        document.hideSelectedElements()
+        document.clearElementSelection()
+
+        #expect(document.selectedReferenceImageID == nil)
+        #expect(document.canToggleElementVisibility)
+        #expect(document.visibilityToolbarAccessibilityLabel == "Show hidden objects")
+
+        document.toggleSelectedElementsHidden()
+
+        #expect(document.referenceImages[0].isHiddenFromCanvas == false)
+        #expect(document.visibleReferenceImages().count == 1)
+    }
+
+    @Test func imageHiddenFlagRoundTripsAndOlderFilesStayVisible() throws {
+        var image = ReferenceImage(
+            data: Data([0x01]),
+            frame: CGRect(x: 1, y: 2, width: 3, height: 4),
+            isHidden: true
+        )
+        let encoded = try JSONEncoder().encode(image)
+        let decoded = try JSONDecoder().decode(ReferenceImage.self, from: encoded)
+        #expect(decoded.isHiddenFromCanvas)
+        #expect(decoded.data == image.data)
+
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "isHidden")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+        let legacy = try JSONDecoder().decode(ReferenceImage.self, from: stripped)
+        #expect(legacy.isHidden == nil)
+        #expect(legacy.isHiddenFromCanvas == false)
+        image.isHidden = nil
+        #expect(legacy.frame == image.frame)
+    }
+
     @Test func imageOnFrontLayerBlocksTapThroughToActiveLayer() {
         let document = documentWithImage(frame: CGRect(x: 0, y: 0, width: 50, height: 50))
         let backID = document.referenceImages[0].id

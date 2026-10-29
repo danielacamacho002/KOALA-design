@@ -113,9 +113,9 @@ struct ToolPanelIconButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(prominent ? Color.black : Color.toolPanelButtonForeground)
+                .foregroundStyle(prominent ? SelectionHighlight.icon : Color.toolPanelButtonForeground)
                 .frame(width: 26, height: 26)
-                .background(prominent ? Color.accentColor : Color.toolPanelButtonFill)
+                .background(prominent ? SelectionHighlight.background : Color.toolPanelButtonFill)
                 .overlay {
                     if !prominent {
                         Rectangle().stroke(Color.toolPanelButtonStroke, lineWidth: 1)
@@ -183,11 +183,11 @@ struct ToolPanelSegmentBar: View {
                         .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
-                        .foregroundStyle(isSelected ? Color.black : Color.toolPanelButtonForeground)
+                        .foregroundStyle(isSelected ? SelectionHighlight.font : Color.toolPanelButtonForeground)
                         .padding(.horizontal, 2)
                         .frame(maxWidth: .infinity)
                         .frame(height: 22)
-                        .background(isSelected ? Color.accentColor : Color.clear)
+                        .background(isSelected ? SelectionHighlight.background : Color.clear)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -286,16 +286,16 @@ struct ToolPanelMenuButton: View {
                 Text(title)
                     .font(.system(size: 11))
                     .lineLimit(1)
-                    .foregroundStyle(isExpanded ? Color.black : Color.toolPanelButtonForeground)
+                    .foregroundStyle(isExpanded ? SelectionHighlight.font : Color.toolPanelButtonForeground)
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(isExpanded ? Color.black : Color.toolPanelSecondaryLabel)
+                    .foregroundStyle(isExpanded ? SelectionHighlight.icon : Color.toolPanelSecondaryLabel)
             }
             .padding(.horizontal, 8)
             .frame(maxWidth: .infinity)
             .frame(height: 28)
-            .background(isExpanded ? Color.accentColor : Color.toolPanelButtonFill)
+            .background(isExpanded ? SelectionHighlight.background : Color.toolPanelButtonFill)
             .overlay {
                 if !isExpanded {
                     Rectangle().stroke(Color.toolPanelButtonStroke, lineWidth: 1)
@@ -340,10 +340,10 @@ struct ToolPanelJoinedActions: View {
                                 .font(.system(size: 11, weight: button.prominent ? .semibold : .regular))
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.7)
-                                .foregroundStyle(button.prominent ? Color.black : Color.toolPanelButtonForeground)
+                                .foregroundStyle(button.prominent ? SelectionHighlight.font : Color.toolPanelButtonForeground)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 26)
-                                .background(button.prominent ? Color.accentColor : Color.clear)
+                                .background(button.prominent ? SelectionHighlight.background : Color.clear)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -380,11 +380,11 @@ struct ToolPanelLabelButton: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 11, weight: prominent ? .semibold : .regular))
-                .foregroundStyle(prominent ? Color.black : Color.toolPanelButtonForeground)
+                .foregroundStyle(prominent ? SelectionHighlight.font : Color.toolPanelButtonForeground)
                 .frame(maxWidth: fullWidth ? .infinity : nil, alignment: alignment)
                 .padding(.horizontal, 8)
                 .frame(height: 26)
-                .background(fill ?? (prominent ? Color.accentColor : Color.toolPanelButtonFill))
+                .background(fill ?? (prominent ? SelectionHighlight.background : Color.toolPanelButtonFill))
                 .overlay {
                     if bordered && fill == nil && !prominent {
                         Rectangle().stroke(Color.toolPanelButtonStroke, lineWidth: 1)

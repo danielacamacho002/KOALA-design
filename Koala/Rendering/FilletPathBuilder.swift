@@ -367,6 +367,23 @@ nonisolated enum FilletPathBuilder: Sendable {
         return path
     }
 
+    /// Largest radius this corner will actually draw. A larger request is trimmed to the
+    /// same edge limit the arc uses, so the stored value cannot outgrow the fillet on screen.
+    static func maximumFilletRadius(prev: CGPoint, corner: CGPoint, next: CGPoint) -> CGFloat? {
+        cornerFilletBasis(prev: prev, corner: corner, next: next)?.maxRadius
+    }
+
+    static func maximumFilletRadius(for stroke: VectorStroke, cornerIndex: Int) -> CGFloat? {
+        guard let neighbors = filletNeighbors(for: stroke, cornerIndex: cornerIndex) else { return nil }
+        return maximumFilletRadius(prev: neighbors.prev, corner: neighbors.corner, next: neighbors.next)
+    }
+
+    /// `requested` limited to the radius the corner can draw. Zero when the corner cannot fillet.
+    static func clampedFilletRadius(for stroke: VectorStroke, cornerIndex: Int, requested: CGFloat) -> CGFloat {
+        guard let cap = maximumFilletRadius(for: stroke, cornerIndex: cornerIndex) else { return 0 }
+        return min(max(0, requested), cap)
+    }
+
     private struct FilletArc {
         var start: CGPoint
         var center: CGPoint
@@ -406,38 +423,29 @@ nonisolated enum FilletPathBuilder: Sendable {
         return arcs
     }
 
+    private struct CornerFilletBasis {
+        var u1: CGPoint
+        var u2: CGPoint
+        var angle: CGFloat
+        var tanHalf: CGFloat
+        var maxRadius: CGFloat
+    }
+
     private static func filletArc(prev: CGPoint, corner: CGPoint, next: CGPoint, radius: CGFloat) -> FilletArc? {
-        let v1 = CGPoint(x: prev.x - corner.x, y: prev.y - corner.y)
-        let v2 = CGPoint(x: next.x - corner.x, y: next.y - corner.y)
-        let len1 = hypot(v1.x, v1.y)
-        let len2 = hypot(v2.x, v2.y)
-        guard len1 > 0.001, len2 > 0.001 else { return nil }
-
-        let u1 = CGPoint(x: v1.x / len1, y: v1.y / len1)
-        let u2 = CGPoint(x: v2.x / len2, y: v2.y / len2)
-
-        let dot = max(-1, min(1, u1.x * u2.x + u1.y * u2.y))
-        let angle = acos(dot)
-        guard angle > 0.01, angle < .pi - 0.01 else { return nil }
-
-        let tanHalf = tan(angle / 2)
-        guard tanHalf > 0.001 else { return nil }
-
-        var trim = radius / tanHalf
-        let maxTrim = min(len1, len2) * 0.45
-        trim = min(trim, maxTrim)
-        let effectiveRadius = trim * tanHalf
+        guard let basis = cornerFilletBasis(prev: prev, corner: corner, next: next) else { return nil }
+        let effectiveRadius = min(max(0, radius), basis.maxRadius)
         guard effectiveRadius > 0.1 else { return nil }
 
-        let start = CGPoint(x: corner.x + u1.x * trim, y: corner.y + u1.y * trim)
-        let end = CGPoint(x: corner.x + u2.x * trim, y: corner.y + u2.y * trim)
+        let trim = effectiveRadius / basis.tanHalf
+        let start = CGPoint(x: corner.x + basis.u1.x * trim, y: corner.y + basis.u1.y * trim)
+        let end = CGPoint(x: corner.x + basis.u2.x * trim, y: corner.y + basis.u2.y * trim)
 
-        let bisector = CGPoint(x: u1.x + u2.x, y: u1.y + u2.y)
+        let bisector = CGPoint(x: basis.u1.x + basis.u2.x, y: basis.u1.y + basis.u2.y)
         let bisLen = hypot(bisector.x, bisector.y)
         guard bisLen > 0.001 else { return nil }
 
         let interior = CGPoint(x: bisector.x / bisLen, y: bisector.y / bisLen)
-        let centerDist = effectiveRadius / sin(angle / 2)
+        let centerDist = effectiveRadius / sin(basis.angle / 2)
         let center = CGPoint(
             x: corner.x + interior.x * centerDist,
             y: corner.y + interior.y * centerDist
@@ -458,6 +466,52 @@ nonisolated enum FilletPathBuilder: Sendable {
             sweep: sweep,
             clockwise: sweep < 0
         )
+    }
+
+    /// Shared corner math for drawing a fillet and for the radius cap. The trim is 45% of the
+    /// shorter adjacent edge, which is as far as the arc is allowed to eat into that edge.
+    private static func cornerFilletBasis(prev: CGPoint, corner: CGPoint, next: CGPoint) -> CornerFilletBasis? {
+        let v1 = CGPoint(x: prev.x - corner.x, y: prev.y - corner.y)
+        let v2 = CGPoint(x: next.x - corner.x, y: next.y - corner.y)
+        let len1 = hypot(v1.x, v1.y)
+        let len2 = hypot(v2.x, v2.y)
+        guard len1 > 0.001, len2 > 0.001 else { return nil }
+
+        let u1 = CGPoint(x: v1.x / len1, y: v1.y / len1)
+        let u2 = CGPoint(x: v2.x / len2, y: v2.y / len2)
+
+        let dot = max(-1, min(1, u1.x * u2.x + u1.y * u2.y))
+        let angle = acos(dot)
+        guard angle > 0.01, angle < .pi - 0.01 else { return nil }
+
+        let tanHalf = tan(angle / 2)
+        guard tanHalf > 0.001 else { return nil }
+
+        let maxRadius = min(len1, len2) * 0.45 * tanHalf
+        guard maxRadius > 0.1 else { return nil }
+
+        return CornerFilletBasis(u1: u1, u2: u2, angle: angle, tanHalf: tanHalf, maxRadius: maxRadius)
+    }
+
+    private static func filletNeighbors(
+        for stroke: VectorStroke,
+        cornerIndex: Int
+    ) -> (prev: CGPoint, corner: CGPoint, next: CGPoint)? {
+        let normalized = normalizedClosedPath(points: stroke.points, closed: stroke.isClosed)
+        let points = normalized.points
+        let count = points.count
+        guard count >= 3, cornerIndex >= 0, cornerIndex < count else { return nil }
+        let prevIndex: Int
+        let nextIndex: Int
+        if normalized.closed {
+            prevIndex = (cornerIndex - 1 + count) % count
+            nextIndex = (cornerIndex + 1) % count
+        } else {
+            guard cornerIndex > 0, cornerIndex < count - 1 else { return nil }
+            prevIndex = cornerIndex - 1
+            nextIndex = cornerIndex + 1
+        }
+        return (points[prevIndex], points[cornerIndex], points[nextIndex])
     }
 
     private static func axisAlignedRect(from points: [CGPoint]) -> CGRect? {

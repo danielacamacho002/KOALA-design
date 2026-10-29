@@ -437,11 +437,12 @@ final class KoalaDocument {
     }
 
     /// Replaces the layer stack with a reordered copy of the same layers (index 0 = backmost).
-    func reorderLayers(_ newOrder: [Layer]) {
+    /// A drag records undo on the first step only, so the whole reorder is one undo.
+    func reorderLayers(_ newOrder: [Layer], recordUndo: Bool = true) {
         guard newOrder.map(\.id) != layers.map(\.id),
               Set(newOrder.map(\.id)) == Set(layers.map(\.id)),
               newOrder.count == layers.count else { return }
-        pushUndo()
+        if recordUndo { pushUndo() }
         layers = newOrder
         normalizeLayerGrouping()
         geometryRevision += 1
@@ -1409,19 +1410,35 @@ final class KoalaDocument {
         let r = max(0, radius ?? settings.defaultCornerRadius)
         var updated = strokes[index]
         var overrides = updated.cornerRadiiByIndex ?? [:]
+        var appliedByCorner: [Int: CGFloat] = [:]
         for cornerIndex in requestedCorners {
-            overrides[cornerIndex] = r
+            let applied = FilletPathBuilder.clampedFilletRadius(
+                for: updated,
+                cornerIndex: cornerIndex,
+                requested: r
+            )
+            overrides[cornerIndex] = applied
+            appliedByCorner[cornerIndex] = applied
         }
         overrides = overrides.filter { validCornerIndices.contains($0.key) }
 
         // If every valid corner receives the same value, store it as the global base radius.
+        // The value is the drawn radius, not the raw request, so a drag past the corner's
+        // maximum does not leave a larger number than the arc on screen.
+        let epsilon: CGFloat = 0.0001
         if requestedCorners == validCornerIndices {
-            updated.cornerRadius = r
+            let appliedValues = requestedCorners.compactMap { appliedByCorner[$0] }
+            if let first = appliedValues.first,
+               appliedValues.count == requestedCorners.count,
+               appliedValues.allSatisfy({ abs($0 - first) <= epsilon }) {
+                updated.cornerRadius = first
+            } else {
+                updated.cornerRadius = 0
+            }
         }
 
         // Keep only overrides that differ from the global radius. Zero is kept only when needed
         // to override a positive global radius on an individual corner.
-        let epsilon: CGFloat = 0.0001
         let pruned = overrides.filter { _, value in
             let clamped = max(0, value)
             if clamped <= epsilon {
@@ -2068,14 +2085,18 @@ final class KoalaDocument {
         return true
     }
 
-    /// True when any stroke or text element is hidden from the canvas.
+    /// True when any stroke, text element, or reference image is hidden from the canvas.
     var hasHiddenElements: Bool {
-        strokes.contains { $0.isHiddenFromCanvas } || textElements.contains { $0.isHidden }
+        strokes.contains { $0.isHiddenFromCanvas }
+            || textElements.contains { $0.isHidden }
+            || referenceImages.contains { $0.isHiddenFromCanvas }
     }
 
     /// True when every currently selected element is hidden.
     var selectedElementsAreHidden: Bool {
-        guard !selectionIsEmpty else { return false }
+        if selectionIsEmpty {
+            return selectedReferenceImage?.isHiddenFromCanvas == true
+        }
         for id in selectedStrokeIDs {
             guard let stroke = stroke(with: id), stroke.isHiddenFromCanvas else { return false }
         }
@@ -2086,13 +2107,14 @@ final class KoalaDocument {
     }
 
     var canToggleElementVisibility: Bool {
-        !selectionIsEmpty || hasHiddenElements
+        !selectionIsEmpty || isReferenceImageSelected || hasHiddenElements
     }
 
     /// Eye when the selection is visible; crossed-out eye when it is hidden
     /// (or when nothing is selected but hidden objects remain).
     var visibilityToolbarImage: String {
-        if selectedElementsAreHidden || (selectionIsEmpty && hasHiddenElements) {
+        let revealHidden = selectionIsEmpty && !isReferenceImageSelected && hasHiddenElements
+        if selectedElementsAreHidden || revealHidden {
             return "eye.slash"
         }
         return "eye"
@@ -2102,7 +2124,7 @@ final class KoalaDocument {
         if selectedElementsAreHidden {
             return "Show selection"
         }
-        if selectionIsEmpty && hasHiddenElements {
+        if selectionIsEmpty && !isReferenceImageSelected && hasHiddenElements {
             return "Show hidden objects"
         }
         return "Hide selection"
@@ -2110,7 +2132,7 @@ final class KoalaDocument {
 
     /// Hides or shows the current selection. With nothing selected, reveals every hidden object.
     func toggleSelectedElementsHidden() {
-        if selectionIsEmpty {
+        if selectionIsEmpty && !isReferenceImageSelected {
             unhideAllElements()
             return
         }
@@ -2125,7 +2147,8 @@ final class KoalaDocument {
     /// Selection is kept so the toolbar eye can toggle the same objects back on.
     func hideSelectedElements() {
         expandSelectionToGroupsIfNeeded()
-        guard !selectionIsEmpty else { return }
+        let imageID = selectionIsEmpty ? selectedReferenceImageID : nil
+        guard !selectionIsEmpty || imageID != nil else { return }
         pushUndo()
         let strokeIDs = selectedStrokeIDs
         let textIDs = selectedTextIDs
@@ -2135,13 +2158,17 @@ final class KoalaDocument {
         for index in textElements.indices where textIDs.contains(textElements[index].id) {
             textElements[index].isHidden = true
         }
+        if let imageID, let index = referenceImages.firstIndex(where: { $0.id == imageID }) {
+            referenceImages[index].isHidden = true
+        }
         geometryRevision += 1
     }
 
-    /// Reveals the currently selected hidden strokes and text elements.
+    /// Reveals the currently selected hidden strokes, text, and reference image.
     func unhideSelectedElements() {
         expandSelectionToGroupsIfNeeded()
-        guard !selectionIsEmpty else { return }
+        let imageID = selectionIsEmpty ? selectedReferenceImageID : nil
+        guard !selectionIsEmpty || imageID != nil else { return }
         pushUndo()
         let strokeIDs = selectedStrokeIDs
         let textIDs = selectedTextIDs
@@ -2151,10 +2178,13 @@ final class KoalaDocument {
         for index in textElements.indices where textIDs.contains(textElements[index].id) {
             textElements[index].isHidden = false
         }
+        if let imageID, let index = referenceImages.firstIndex(where: { $0.id == imageID }) {
+            referenceImages[index].isHidden = false
+        }
         geometryRevision += 1
     }
 
-    /// Reveals every hidden stroke and text element in one undoable step.
+    /// Reveals every hidden stroke, text element, and reference image in one undoable step.
     func unhideAllElements() {
         guard hasHiddenElements else { return }
         pushUndo()
@@ -2163,6 +2193,9 @@ final class KoalaDocument {
         }
         for index in textElements.indices where textElements[index].isHidden {
             textElements[index].isHidden = false
+        }
+        for index in referenceImages.indices where referenceImages[index].isHiddenFromCanvas {
+            referenceImages[index].isHidden = false
         }
         geometryRevision += 1
     }

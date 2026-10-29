@@ -54,12 +54,12 @@ struct StudioIconButton: View {
         Button(action: action) {
             ZStack(alignment: .bottomTrailing) {
                 icon
-                    .foregroundStyle(isActive ? Color.accentColor : inactiveColor)
+                    .foregroundStyle(isActive ? SelectionHighlight.icon : inactiveColor)
                     .frame(width: size, height: size)
                     .background {
                         if isActive {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.accentColor.opacity(0.16))
+                                .fill(SelectionHighlight.background)
                                 .frame(width: size - 2, height: size - 2)
                         }
                     }
@@ -67,7 +67,7 @@ struct StudioIconButton: View {
                 if showsSubmenu {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 6, weight: .bold))
-                        .foregroundStyle(isActive ? Color.accentColor : inactiveColor.opacity(0.62))
+                        .foregroundStyle(isActive ? SelectionHighlight.icon : inactiveColor.opacity(0.62))
                         .offset(x: -3, y: -3)
                 }
             }
@@ -88,10 +88,10 @@ struct StudioTextChip: View {
                 .font(.caption.weight(isActive ? .semibold : .regular))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .foregroundStyle(isActive ? Color.accentColor : Color.primary.opacity(0.85))
+                .foregroundStyle(isActive ? SelectionHighlight.font : Color.primary.opacity(0.85))
                 .background(
                     Capsule()
-                        .fill(isActive ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.06))
+                        .fill(isActive ? SelectionHighlight.background : Color.primary.opacity(0.06))
                 )
         }
         .buttonStyle(.plain)

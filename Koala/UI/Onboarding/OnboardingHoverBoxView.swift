@@ -94,9 +94,29 @@ struct OnboardingTourOverlay: View {
               let window = Self.keyWindow
         else { return 0 }
 
-        let windowOnScreen = window.convert(window.bounds, to: window.screen.coordinateSpace)
         let overlayCenter = CGPoint(x: overlayFrame.midX, y: overlayFrame.midY)
-        let screenFrame = windowOnScreen.contains(overlayCenter) ? windowOnScreen : window.bounds
+        // A compensated window's bounds are already Default points, which is
+        // the space SwiftUI global frames use. convert(_:to:) includes the
+        // window transform, so those screen coordinates are the More Space size.
+        if window is DisplayZoomWindow {
+            return window.bounds.midX - overlayCenter.x
+        }
+
+        let factor = DisplayZoomCompensation.liveFactor
+        let windowOnScreen = window.convert(window.bounds, to: window.screen.coordinateSpace)
+        let layoutOnScreen = CGRect(
+            x: windowOnScreen.origin.x / factor,
+            y: windowOnScreen.origin.y / factor,
+            width: windowOnScreen.width / factor,
+            height: windowOnScreen.height / factor
+        )
+        let layoutBounds = CGRect(
+            x: window.bounds.origin.x / factor,
+            y: window.bounds.origin.y / factor,
+            width: window.bounds.width / factor,
+            height: window.bounds.height / factor
+        )
+        let screenFrame = layoutOnScreen.contains(overlayCenter) ? layoutOnScreen : layoutBounds
         return screenFrame.midX - overlayCenter.x
     }
 

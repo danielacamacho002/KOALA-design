@@ -153,10 +153,11 @@ final class ViewportNavigationSession: NSObject, UIGestureRecognizerDelegate {
             cancelCompetingRecognizers()
             handle?.cancelViewportAnimation()
             pinchStartScale = document.viewport.scale
-            pinchAnchor = gesture.location(in: view)
+            pinchAnchor = anchorInCanvas(from: gesture, host: view)
         case .changed:
-            applyViewport(in: view) { viewport in
-                viewport.zoom(to: pinchStartScale * gesture.scale, anchorViewPoint: pinchAnchor)
+            let anchor = pinchAnchor
+            applyViewport(in: view, preserving: anchor) { viewport in
+                viewport.zoom(to: pinchStartScale * gesture.scale, anchorViewPoint: anchor)
             }
         default:
             break
@@ -186,18 +187,52 @@ final class ViewportNavigationSession: NSObject, UIGestureRecognizerDelegate {
         onTwoFingerTap?()
     }
 
-    private func applyViewport(in view: UIView, mutate: (inout ViewportTransform) -> Void) {
+    private func applyViewport(
+        in view: UIView,
+        preserving anchorViewPoint: CGPoint? = nil,
+        mutate: (inout ViewportTransform) -> Void
+    ) {
         guard let document else { return }
         var viewport = document.viewport
         mutate(&viewport)
         viewport.clampToCanvasSize(
             in: view.bounds.size,
-            canvasSize: document.settings.canvasSize
+            canvasSize: zoomExtent(for: document, in: view),
+            preserving: anchorViewPoint
         )
         guard viewport != document.viewport else { return }
         document.viewport = viewport
         handle?.noteViewportGestureUpdate()
         handle?.refreshViewport()
+    }
+
+    /// Design zoom is limited by the artboard. Print zoom is limited by the page grid,
+    /// so pinching out stops once the sheets fit, the same way design mode stops on the canvas.
+    private func zoomExtent(for document: KoalaDocument, in host: UIView) -> CGSize {
+        guard Self.containsPrintCanvas(host) else { return document.settings.canvasSize }
+        let grid = PrintPageGridEngine.gridBounds(for: document.printLayout)
+        guard grid.width > 0, grid.height > 0 else { return document.settings.canvasSize }
+        return grid.size
+    }
+
+    private static func containsPrintCanvas(_ view: UIView) -> Bool {
+        if view is PrintLayoutCanvasUIView { return true }
+        return view.subviews.contains(where: containsPrintCanvas)
+    }
+
+    /// Viewport translation is in canvas coordinates. The recognizer sits on an ancestor,
+    /// so the pinch point has to be converted or zoom-out orbits the wrong corner.
+    private func anchorInCanvas(from gesture: UIGestureRecognizer, host: UIView) -> CGPoint {
+        guard let canvas = Self.canvasView(in: host) else { return gesture.location(in: host) }
+        return gesture.location(in: canvas)
+    }
+
+    private static func canvasView(in view: UIView) -> UIView? {
+        if view is DrawingCanvasUIView || view is PrintLayoutCanvasUIView { return view }
+        for subview in view.subviews {
+            if let canvas = canvasView(in: subview) { return canvas }
+        }
+        return nil
     }
 
     /// SwiftUI overlay drags are 1-finger pans that do not fail when a second

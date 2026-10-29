@@ -88,6 +88,9 @@ struct CanvasOverlayView: View {
     @State private var snapSession = SnapInteractionSession()
     @State private var snapHaptics = SnapHaptics()
     @State private var activeSnap: SnapCandidate?
+    /// One-axis row/column lock for the current move. Independent of object snap.
+    @State private var alignmentSession = AxisAlignmentSession()
+    @State private var alignmentGuides: [AxisAlignmentGuide] = []
 
     // Marquee + group transform (move tool)
     @State private var marqueeStart: CGPoint?
@@ -119,6 +122,9 @@ struct CanvasOverlayView: View {
     private let anchorHandleSize = CanvasOverlayGeometry.anchorMarkSize
     private let coordinateSpaceName = "editor"
     private let filletDragThreshold: CGFloat = 6
+    /// Screen points of pencil travel that take a large corner from sharp to its maximum fillet.
+    /// Smaller corners keep the old one-to-one drag so they do not get harder to control.
+    private let filletFullRangeScreenTravel: CGFloat = 120
     private let rotateHandleOffset: CGFloat = 36
     /// Invisible finger/Pencil target around each anchor handle so small squares are easy to hit.
     private let anchorTouchTargetSize = CanvasOverlayGeometry.curveAnchorHitExtent
@@ -282,6 +288,7 @@ struct CanvasOverlayView: View {
             if let activeSnap {
                 snapMarker(activeSnap)
             }
+            alignmentGuideOverlay
         }
     }
 
@@ -650,10 +657,17 @@ struct CanvasOverlayView: View {
             rawPoint: rawPoint,
             strokeID: strokeID
         )
+        let placed: CGPoint
+        if activeSnap != nil {
+            clearAlignment()
+            placed = snapped
+        } else {
+            placed = nodeAlignedPoint(strokeID: strokeID, index: index, rawPoint: rawPoint)
+        }
         let moved = ShapeGeometry.applyingMovedAnchor(
             stroke,
             at: index,
-            to: separatedCurveAnchor(stroke, index: index, proposed: snapped)
+            to: separatedCurveAnchor(stroke, index: index, proposed: placed)
         )
         document.updateStroke(moved, recordUndo: false)
         onChanged()
@@ -705,6 +719,8 @@ struct CanvasOverlayView: View {
                     size: canvasSize
                 )
             }
+
+            alignmentGuideOverlay
         }
     }
 
@@ -824,7 +840,7 @@ struct CanvasOverlayView: View {
                                 rawDelta: raw,
                                 viewTranslation: value.translation
                             )
-                            applyGroupMove(delta: locked)
+                            applyGroupMove(delta: locked, alignmentPoints: groupAlignmentPoints())
                         }
                     )
                 },
@@ -900,11 +916,18 @@ struct CanvasOverlayView: View {
         snapHaptics.prepare()
     }
 
-    private func applyGroupMove(delta rawDelta: CGPoint) {
+    private func groupAlignmentPoints() -> [CGPoint] {
+        groupMoveStrokeOrigins.keys.sorted { $0.uuidString < $1.uuidString }.flatMap { id in
+            groupMoveStrokeOrigins[id].map { AxisAlignmentPoints.points(on: $0) } ?? []
+        }
+    }
+
+    private func applyGroupMove(delta rawDelta: CGPoint, alignmentPoints: [CGPoint]) {
         // Snap the whole group when any member's anchor/center lands on other geometry.
         var delta = translationSnappedDelta(
             origins: groupMoveSnapOrigins,
             centerOrigins: groupMoveSnapCenters,
+            alignmentPoints: alignmentPoints,
             rawDelta: rawDelta,
             excluding: Set(groupMoveStrokeOrigins.keys)
         )
@@ -1556,8 +1579,10 @@ struct CanvasOverlayView: View {
         anchorIndex: Int?,
         cursorViewPoint: CGPoint
     ) -> CGPoint {
-        guard !document.enabledSnapKinds.isEmpty, moveSnapSupported(stroke, anchorIndex: anchorIndex) else {
-            clearMoveSnap()
+        // Radius handles move radially. A row/column stick would fight that.
+        if !moveSnapSupported(stroke, anchorIndex: anchorIndex) {
+            activeSnap = nil
+            clearAlignment()
             return rawDelta
         }
 
@@ -1567,31 +1592,95 @@ struct CanvasOverlayView: View {
             let center = ShapeGeometry.shapeCenter(for: stroke)
             var origins = moveDragOriginPoints
             if let center { origins.append(center) }
+            let alignmentPoints = moveDragOriginStroke.map {
+                AxisAlignmentPoints.points(on: $0)
+            } ?? origins
             return translationSnappedDelta(
                 origins: origins,
                 centerOrigins: center.map { [$0] } ?? [],
+                alignmentPoints: alignmentPoints,
                 rawDelta: rawDelta,
                 excluding: [strokeID]
             )
         }
 
-        let raw: CGPoint
-        if let anchorIndex, moveDragOriginPoints.indices.contains(anchorIndex) {
-            let origin = moveDragOriginPoints[anchorIndex]
-            raw = CGPoint(x: origin.x + rawDelta.x, y: origin.y + rawDelta.y)
-        } else if let first = document.selectedAnchorIndices.sorted().first,
-                  moveDragOriginPoints.indices.contains(first) {
-            let origin = moveDragOriginPoints[first]
-            raw = CGPoint(x: origin.x + rawDelta.x, y: origin.y + rawDelta.y)
+        if !document.enabledSnapKinds.isEmpty {
+            let raw = anchorSnapReference(anchorIndex: anchorIndex, rawDelta: rawDelta, cursorViewPoint: cursorViewPoint)
+            let snapped = resolveMoveSnap(
+                reference: raw,
+                excluding: strokeID
+            )
+            if activeSnap != nil {
+                clearAlignment()
+                return CGPoint(x: rawDelta.x + (snapped.x - raw.x), y: rawDelta.y + (snapped.y - raw.y))
+            }
         } else {
-            raw = document.viewport.viewToDocument(cursorViewPoint)
+            activeSnap = nil
         }
 
-        let snapped = resolveMoveSnap(
-            reference: raw,
-            excluding: strokeID
+        guard let draggedIndex = anchorIndex else { return rawDelta }
+        let spec = anchorAlignmentSpec(draggedIndex: draggedIndex)
+        let correction = alignmentCorrection(
+            movingPoints: spec.moving,
+            rawDelta: rawDelta,
+            excluding: [strokeID],
+            additionalTargets: spec.stationary
         )
-        return CGPoint(x: rawDelta.x + (snapped.x - raw.x), y: rawDelta.y + (snapped.y - raw.y))
+        return CGPoint(x: rawDelta.x + correction.x, y: rawDelta.y + correction.y)
+    }
+
+    /// The anchor being dragged, in document space, before object snap.
+    private func anchorSnapReference(
+        anchorIndex: Int?,
+        rawDelta: CGPoint,
+        cursorViewPoint: CGPoint
+    ) -> CGPoint {
+        if let anchorIndex, moveDragOriginPoints.indices.contains(anchorIndex) {
+            let origin = moveDragOriginPoints[anchorIndex]
+            return CGPoint(x: origin.x + rawDelta.x, y: origin.y + rawDelta.y)
+        }
+        if let first = document.selectedAnchorIndices.sorted().first,
+           moveDragOriginPoints.indices.contains(first) {
+            let origin = moveDragOriginPoints[first]
+            return CGPoint(x: origin.x + rawDelta.x, y: origin.y + rawDelta.y)
+        }
+        return document.viewport.viewToDocument(cursorViewPoint)
+    }
+
+    /// Moving anchors, plus the anchors on this shape that stay put so a dragged
+    /// corner can line up with its siblings.
+    private func anchorAlignmentSpec(draggedIndex: Int) -> (moving: [CGPoint], stationary: [CGPoint]) {
+        let selected = document.selectedAnchorIndices
+        let indices = selected.isEmpty ? [draggedIndex] : selected.sorted()
+        let moving = indices.compactMap { index -> CGPoint? in
+            moveDragOriginPoints.indices.contains(index) ? moveDragOriginPoints[index] : nil
+        }
+        let handleCount = moveDragOriginPoints.count
+        if !moving.isEmpty, Set(indices).count >= handleCount {
+            let all = moveDragOriginStroke.map { AxisAlignmentPoints.points(on: $0) } ?? moving
+            return (all, [])
+        }
+        let stationary = moveDragOriginPoints.enumerated().compactMap { index, point -> CGPoint? in
+            indices.contains(index) ? nil : point
+        }
+        return (moving, stationary)
+    }
+
+    /// Places one edited anchor on a shared row or column without joining it to the target.
+    private func nodeAlignedPoint(strokeID: UUID, index: Int, rawPoint: CGPoint) -> CGPoint {
+        guard nodeDragOriginPoints.indices.contains(index) else { return rawPoint }
+        let origin = nodeDragOriginPoints[index]
+        let rawDelta = CGPoint(x: rawPoint.x - origin.x, y: rawPoint.y - origin.y)
+        let stationary = nodeDragOriginPoints.enumerated().compactMap { offset, point -> CGPoint? in
+            offset == index ? nil : point
+        }
+        let correction = alignmentCorrection(
+            movingPoints: [origin],
+            rawDelta: rawDelta,
+            excluding: [strokeID],
+            additionalTargets: stationary
+        )
+        return CGPoint(x: rawPoint.x + correction.x, y: rawPoint.y + correction.y)
     }
 
     /// Radius handles on circles/ellipses move radially rather than translating, so absolute
@@ -1636,33 +1725,126 @@ struct CanvasOverlayView: View {
     private func translationSnappedDelta(
         origins: [CGPoint],
         centerOrigins: [CGPoint] = [],
+        alignmentPoints: [CGPoint] = [],
         rawDelta: CGPoint,
-        excluding excludedStrokeIDs: Set<UUID>
+        excluding excludedStrokeIDs: Set<UUID>,
+        additionalTargets: [CGPoint] = []
     ) -> CGPoint {
-        guard !document.enabledSnapKinds.isEmpty, !(origins.isEmpty && centerOrigins.isEmpty) else {
-            activeSnap = nil
-            return rawDelta
+        let scale = max(document.viewport.scale, 0.0001)
+        if !document.enabledSnapKinds.isEmpty, !(origins.isEmpty && centerOrigins.isEmpty) {
+            let update = snapSession.updateTranslation(
+                origins: origins,
+                centerOrigins: centerOrigins,
+                rawDelta: rawDelta,
+                engine: snapEngine,
+                strokes: document.interactiveStrokes(),
+                enabledKinds: document.enabledSnapKinds,
+                snapRadius: SnapTuning.snapRadiusPoints / scale,
+                breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
+                excludedStrokeIDs: excludedStrokeIDs
+            )
+            if update.candidate != nil {
+                activeSnap = update.candidate
+                if update.didLock { snapHaptics.play() }
+                clearAlignment()
+                return CGPoint(x: rawDelta.x + update.correction.x, y: rawDelta.y + update.correction.y)
+            }
+        }
+        activeSnap = nil
+        let moving = alignmentPoints.isEmpty ? origins : alignmentPoints
+        let correction = alignmentCorrection(
+            movingPoints: moving,
+            rawDelta: rawDelta,
+            excluding: excludedStrokeIDs,
+            additionalTargets: additionalTargets
+        )
+        return CGPoint(x: rawDelta.x + correction.x, y: rawDelta.y + correction.y)
+    }
+
+    /// Sticks the move to a shared row or column and records the dashed guide.
+    /// Returns the correction to add to `rawDelta`. Object snap still wins when
+    /// a point is close enough to land on another point.
+    private func alignmentCorrection(
+        movingPoints: [CGPoint],
+        rawDelta: CGPoint,
+        excluding: Set<UUID>,
+        additionalTargets: [CGPoint] = []
+    ) -> CGPoint {
+        guard !movingPoints.isEmpty else {
+            clearAlignment()
+            return .zero
+        }
+        let proposed = movingPoints.map { CGPoint(x: $0.x + rawDelta.x, y: $0.y + rawDelta.y) }
+        var targets = additionalTargets
+        for stroke in document.interactiveStrokes() where !excluding.contains(stroke.id) {
+            targets.append(contentsOf: AxisAlignmentPoints.points(on: stroke))
         }
         let scale = max(document.viewport.scale, 0.0001)
-        let update = snapSession.updateTranslation(
-            origins: origins,
-            centerOrigins: centerOrigins,
-            rawDelta: rawDelta,
-            engine: snapEngine,
-            strokes: document.interactiveStrokes(),
-            enabledKinds: document.enabledSnapKinds,
-            snapRadius: SnapTuning.snapRadiusPoints / scale,
-            breakawayRadius: SnapTuning.breakawayRadiusPoints / scale,
-            excludedStrokeIDs: excludedStrokeIDs
+        let joinPoints: CGFloat = document.enabledSnapKinds.isEmpty ? 2 : SnapTuning.snapRadiusPoints
+        let update = alignmentSession.update(
+            proposed: proposed,
+            targets: targets,
+            tolerance: SnapTuning.alignmentTolerancePoints / scale,
+            breakaway: SnapTuning.alignmentBreakawayPoints / scale,
+            joinGap: joinPoints / scale,
+            allowed: allowedAlignmentAxes
         )
-        activeSnap = update.candidate
+        alignmentGuides = update.guides
         if update.didLock { snapHaptics.play() }
-        return CGPoint(x: rawDelta.x + update.correction.x, y: rawDelta.y + update.correction.y)
+        return update.correction
+    }
+
+    /// Drag-axis lock already zeros one component. Alignment may stick only the axis still free.
+    private var allowedAlignmentAxes: Set<AxisAlignment> {
+        switch moveTranslationAxis {
+        case .free:
+            return [.horizontal, .vertical]
+        case .horizontal:
+            return [.vertical]
+        case .vertical:
+            return [.horizontal]
+        }
+    }
+
+    private func clearAlignment() {
+        alignmentSession.reset()
+        alignmentGuides = []
+    }
+
+    @ViewBuilder
+    private var alignmentGuideOverlay: some View {
+        ForEach(Array(alignmentGuides.enumerated()), id: \.offset) { _, guide in
+            alignmentGuidePath(guide)
+                .stroke(
+                    Color.pink.opacity(0.9),
+                    style: StrokeStyle(lineWidth: 1.25, lineCap: .round, dash: [6, 4])
+                )
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func alignmentGuidePath(_ guide: AxisAlignmentGuide) -> Path {
+        let moving = document.viewport.documentToView(guide.moving)
+        let stationary = document.viewport.documentToView(guide.stationary)
+        let pad: CGFloat = 14
+        var path = Path()
+        switch guide.axis {
+        case .horizontal:
+            let y = (moving.y + stationary.y) / 2
+            path.move(to: CGPoint(x: min(moving.x, stationary.x) - pad, y: y))
+            path.addLine(to: CGPoint(x: max(moving.x, stationary.x) + pad, y: y))
+        case .vertical:
+            let x = (moving.x + stationary.x) / 2
+            path.move(to: CGPoint(x: x, y: min(moving.y, stationary.y) - pad))
+            path.addLine(to: CGPoint(x: x, y: max(moving.y, stationary.y) + pad))
+        }
+        return path
     }
 
     private func clearMoveSnap() {
         snapSession.reset()
         activeSnap = nil
+        clearAlignment()
     }
 
     // MARK: - Copy selection
@@ -1797,9 +1979,12 @@ struct CanvasOverlayView: View {
                       filletDragCornerIndex == cornerIndex else { return }
 
                 let docPoint = document.viewport.viewToDocument(value.location)
-                let radius = hypot(
-                    docPoint.x - filletDragCornerPoint.x,
-                    docPoint.y - filletDragCornerPoint.y
+                let radius = filletDragRadius(
+                    at: value.location,
+                    documentPoint: docPoint,
+                    strokeID: strokeID,
+                    cornerIndex: cornerIndex,
+                    cornerPoint: filletDragCornerPoint
                 )
                 document.applyFilletToSelected(
                     radius: radius,
@@ -1821,6 +2006,33 @@ struct CanvasOverlayView: View {
                 }
                 resetFilletDragState()
             }
+    }
+
+    /// Distance from the corner used to be the radius, so a big corner meant a long drag
+    /// before the arc maxed out. Large fillets now cover that whole range in a short stroke.
+    private func filletDragRadius(
+        at viewPoint: CGPoint,
+        documentPoint: CGPoint,
+        strokeID: UUID,
+        cornerIndex: Int,
+        cornerPoint: CGPoint
+    ) -> CGFloat {
+        let documentDistance = hypot(
+            documentPoint.x - cornerPoint.x,
+            documentPoint.y - cornerPoint.y
+        )
+        guard let stroke = document.stroke(with: strokeID),
+              let cap = FilletPathBuilder.maximumFilletRadius(for: stroke, cornerIndex: cornerIndex),
+              cap > 0.1 else {
+            return documentDistance
+        }
+
+        let viewCorner = document.viewport.documentToView(cornerPoint)
+        let screenDistance = hypot(viewPoint.x - viewCorner.x, viewPoint.y - viewCorner.y)
+        let oneToOneTravel = cap * max(document.viewport.scale, 0.001)
+        let screenTravel = min(oneToOneTravel, filletFullRangeScreenTravel)
+        guard screenTravel > 0.001 else { return 0 }
+        return min(cap, screenDistance / screenTravel * cap)
     }
 
     private func resetFilletDragState() {
@@ -1958,9 +2170,13 @@ struct CanvasOverlayView: View {
                     rawDelta: rawDelta,
                     viewTranslation: value.translation
                 )
+                let alignmentPoints = centerDragOriginStroke.map {
+                    AxisAlignmentPoints.points(on: $0)
+                } ?? centerDragSnapOrigins
                 var delta = translationSnappedDelta(
                     origins: centerDragSnapOrigins,
                     centerOrigins: centerDragSnapCenter.map { [$0] } ?? [],
+                    alignmentPoints: alignmentPoints,
                     rawDelta: locked,
                     excluding: [strokeID]
                 )

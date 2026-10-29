@@ -32,7 +32,7 @@ struct ColorPaletteView: View {
                         .overlay {
                             Circle()
                                 .strokeBorder(
-                                    selectedColor == color ? Color.accentColor : Color.clear,
+                                    selectedColor == color ? SelectionHighlight.icon : Color.clear,
                                     lineWidth: 3
                                 )
                         }

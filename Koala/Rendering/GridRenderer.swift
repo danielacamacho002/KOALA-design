@@ -158,20 +158,20 @@ enum GridRenderer {
     static func lineColor(rank: Int) -> UIColor {
         switch rank {
         case 0:
-            return UIColor.label.withAlphaComponent(0.32)
+            return UIColor.label.withAlphaComponent(0.16)
         case 1:
-            return UIColor.label.withAlphaComponent(0.20)
+            return UIColor.label.withAlphaComponent(0.10)
         case 2:
-            return UIColor.separator.withAlphaComponent(0.18)
+            return UIColor.separator.withAlphaComponent(0.10)
         case 3:
-            return UIColor.separator.withAlphaComponent(0.12)
+            return UIColor.separator.withAlphaComponent(0.06)
         default:
-            return UIColor.separator.withAlphaComponent(0.08)
+            return UIColor.separator.withAlphaComponent(0.04)
         }
     }
 
-    static var axisXColor: UIColor { UIColor.systemRed.withAlphaComponent(0.35) }
-    static var axisYColor: UIColor { UIColor.systemBlue.withAlphaComponent(0.35) }
+    static var axisXColor: UIColor { UIColor.systemRed.withAlphaComponent(0.22) }
+    static var axisYColor: UIColor { UIColor.systemBlue.withAlphaComponent(0.22) }
 
     private static func makeRankPaths(
         coverage: CGRect,

@@ -120,7 +120,7 @@ struct FontPickerView: View {
                 } label: {
                     Image(systemName: "eyedropper")
                         .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(Color(hex: "BBD159"))
                         .frame(width: 24, height: 32)
                         .contentShape(Rectangle())
                 }
@@ -207,18 +207,18 @@ struct FontPickerView: View {
                 Text(name)
                     .font(previewFont)
                     .lineLimit(1)
-                    .foregroundStyle(selected ? Color.black : Color.toolPanelButtonForeground)
+                    .foregroundStyle(selected ? SelectionHighlight.font : Color.toolPanelButtonForeground)
                 Spacer(minLength: 8)
                 if selected {
                     Image(systemName: "checkmark")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.black)
+                        .foregroundStyle(SelectionHighlight.icon)
                 }
             }
             .padding(.horizontal, 8)
             .frame(height: 32)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? Color.accentColor : Color.clear)
+            .background(selected ? SelectionHighlight.background : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
