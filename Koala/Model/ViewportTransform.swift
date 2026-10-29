@@ -41,12 +41,33 @@ nonisolated struct ViewportTransform: Codable, Equatable, Sendable {
     /// Constrains the zoom level to the supported range. Panning is intentionally left free so the
     /// canvas can be dragged anywhere on (or off) screen, behaving identically when zoomed in or
     /// out; the two-finger gesture is what naturally limits how far it travels.
-    mutating func clampToCanvasSize(in viewSize: CGSize, canvasSize: CGSize) {
+    ///
+    /// When `anchorViewPoint` is set and the scale actually changes, translation is rebuilt so
+    /// that same view point stays over the same document point. Raising the scale alone would
+    /// slide content toward the bottom-right wherever the document point is far from the origin
+    /// (the print page grid).
+    mutating func clampToCanvasSize(
+        in viewSize: CGSize,
+        canvasSize: CGSize,
+        preserving anchorViewPoint: CGPoint? = nil
+    ) {
         guard canvasSize.width > 0, canvasSize.height > 0,
               viewSize.width > 0, viewSize.height > 0 else { return }
 
         let minAllowedScale = Self.minimumScaleToFitCanvas(in: viewSize, canvasSize: canvasSize)
-        scale = min(Self.maxScale, max(scale, minAllowedScale))
+        let clamped = min(Self.maxScale, max(scale, minAllowedScale))
+        guard clamped != scale else { return }
+
+        if let anchorViewPoint {
+            let docAtAnchor = viewToDocument(anchorViewPoint)
+            scale = clamped
+            translation = CGPoint(
+                x: anchorViewPoint.x - docAtAnchor.x * scale,
+                y: anchorViewPoint.y - docAtAnchor.y * scale
+            )
+        } else {
+            scale = clamped
+        }
     }
 
     /// Shifts translation so the same document point stays at the view center after a resize.
