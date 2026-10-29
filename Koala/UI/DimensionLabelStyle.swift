@@ -15,10 +15,6 @@ enum DimensionLabelStyle {
     /// Fallback half-size for plain measurement text (live draw / text dims).
     static let textOnlyHalfSize = CGSize(width: 52, height: 12)
 
-    static func foregroundColor(locked: Bool) -> Color {
-        locked ? Color.secondary : Color.accentColor
-    }
-
     /// Unit outward direction from `anchor` toward `preferred`, falling back to up.
     static func outwardUnit(preferred: CGPoint, from anchor: CGPoint) -> CGPoint {
         let dx = preferred.x - anchor.x
@@ -71,6 +67,21 @@ enum DimensionLabelStyle {
         )
     }
 
+    /// Center of a linear dimension label, offset from an edge along `preferred`.
+    /// Distance is the clearance plus the label's half-height perpendicular to the edge.
+    static func linearPlacement(
+        midpoint: CGPoint,
+        preferred: CGPoint,
+        perpendicularHalf: CGFloat
+    ) -> CGPoint {
+        let n = outwardUnit(preferred: preferred, from: midpoint)
+        let distance = edgeClearance + perpendicularHalf
+        return CGPoint(
+            x: midpoint.x + n.x * distance,
+            y: midpoint.y + n.y * distance
+        )
+    }
+
     /// Distance from a box center to its boundary along a unit direction.
     private static func aabbDistance(halfSize: CGSize, along direction: CGPoint) -> CGFloat {
         let tx = abs(direction.x) > 0.001
@@ -83,11 +94,297 @@ enum DimensionLabelStyle {
     }
 }
 
+/// CAD linear dimension in view space: extension lines from both endpoints,
+/// a parallel dimension line with arrowheads, and a gap for the measurement.
+struct LinearDimensionLayout: Equatable {
+    struct Segment: Equatable {
+        var start: CGPoint
+        var end: CGPoint
+    }
+
+    struct Arrow: Equatable {
+        var tip: CGPoint
+        var upper: CGPoint
+        var lower: CGPoint
+    }
+
+    var extensions: [Segment]
+    var shafts: [Segment]
+    var arrows: [Arrow]
+    /// Center of the measurement, on the dimension line.
+    var textCenter: CGPoint
+    /// Rotation that keeps the measurement upright along the dimension line.
+    var textAngle: CGFloat
+
+    static func layout(
+        start: CGPoint,
+        end: CGPoint,
+        placement: CGPoint,
+        textGap: CGFloat,
+        minimumOffset: CGFloat,
+        gap: CGFloat = 3,
+        overshoot: CGFloat = 5,
+        arrowLength: CGFloat = 8,
+        arrowHalfWidth: CGFloat = 3.1
+    ) -> LinearDimensionLayout? {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let length = hypot(dx, dy)
+        guard length > 0.5 else { return nil }
+
+        let along = CGPoint(x: dx / length, y: dy / length)
+        let ccw = CGPoint(x: -along.y, y: along.x)
+        let mid = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+        let toPlacement = CGPoint(x: placement.x - mid.x, y: placement.y - mid.y)
+        let signed = toPlacement.x * ccw.x + toPlacement.y * ccw.y
+
+        let normal: CGPoint
+        let offset: CGFloat
+        if abs(signed) < 0.5 {
+            normal = ccw
+            offset = minimumOffset
+        } else if signed > 0 {
+            normal = ccw
+            offset = max(signed, minimumOffset)
+        } else {
+            normal = CGPoint(x: -ccw.x, y: -ccw.y)
+            offset = max(-signed, minimumOffset)
+        }
+
+        let dimStart = offsetPoint(start, by: normal, offset)
+        let dimEnd = offsetPoint(end, by: normal, offset)
+        let center = CGPoint(x: (dimStart.x + dimEnd.x) / 2, y: (dimStart.y + dimEnd.y) / 2)
+
+        let resolvedGap = min(gap, offset * 0.45)
+        let extensions = [
+            Segment(
+                start: offsetPoint(start, by: normal, resolvedGap),
+                end: offsetPoint(dimStart, by: normal, overshoot)
+            ),
+            Segment(
+                start: offsetPoint(end, by: normal, resolvedGap),
+                end: offsetPoint(dimEnd, by: normal, overshoot)
+            )
+        ]
+
+        let inward = along
+        let outward = CGPoint(x: -along.x, y: -along.y)
+        let gapStart = offsetPoint(center, by: inward, -textGap)
+        let gapEnd = offsetPoint(center, by: inward, textGap)
+        let arrowsOutside = length < textGap * 2 + arrowLength * 2 + 8
+
+        let arrows: [Arrow]
+        let shafts: [Segment]
+        if arrowsOutside {
+            arrows = [
+                arrow(tip: dimStart, pointing: inward, length: arrowLength, halfWidth: arrowHalfWidth),
+                arrow(tip: dimEnd, pointing: outward, length: arrowLength, halfWidth: arrowHalfWidth)
+            ]
+            shafts = [
+                shaft(from: dimStart, to: gapStart, along: inward),
+                shaft(from: gapEnd, to: dimEnd, along: inward)
+            ].compactMap { $0 }
+        } else {
+            arrows = [
+                arrow(tip: dimStart, pointing: outward, length: arrowLength, halfWidth: arrowHalfWidth),
+                arrow(tip: dimEnd, pointing: inward, length: arrowLength, halfWidth: arrowHalfWidth)
+            ]
+            shafts = [
+                shaft(from: offsetPoint(dimStart, by: inward, arrowLength), to: gapStart, along: inward),
+                shaft(from: gapEnd, to: offsetPoint(dimEnd, by: inward, -arrowLength), along: inward)
+            ].compactMap { $0 }
+        }
+
+        var radians = atan2(along.y, along.x)
+        if radians > .pi / 2 {
+            radians -= .pi
+        } else if radians < -.pi / 2 {
+            radians += .pi
+        }
+
+        return LinearDimensionLayout(
+            extensions: extensions,
+            shafts: shafts,
+            arrows: arrows,
+            textCenter: center,
+            textAngle: radians
+        )
+    }
+
+    private static func offsetPoint(_ point: CGPoint, by direction: CGPoint, _ distance: CGFloat) -> CGPoint {
+        CGPoint(x: point.x + direction.x * distance, y: point.y + direction.y * distance)
+    }
+
+    private static func arrow(
+        tip: CGPoint,
+        pointing: CGPoint,
+        length: CGFloat,
+        halfWidth: CGFloat
+    ) -> Arrow {
+        let back = offsetPoint(tip, by: pointing, -length)
+        let perp = CGPoint(x: -pointing.y, y: pointing.x)
+        return Arrow(
+            tip: tip,
+            upper: offsetPoint(back, by: perp, halfWidth),
+            lower: offsetPoint(back, by: perp, -halfWidth)
+        )
+    }
+
+    private static func shaft(from: CGPoint, to: CGPoint, along: CGPoint) -> Segment? {
+        let vx = to.x - from.x
+        let vy = to.y - from.y
+        guard vx * along.x + vy * along.y > 1 else { return nil }
+        return Segment(start: from, end: to)
+    }
+}
+
+/// Arc-length dimension: radial extension lines, a concentric arc, and arrowheads.
+struct ArcDimensionLayout: Equatable {
+    struct Segment: Equatable {
+        var start: CGPoint
+        var end: CGPoint
+    }
+
+    struct Arrow: Equatable {
+        var tip: CGPoint
+        var upper: CGPoint
+        var lower: CGPoint
+    }
+
+    var extensions: [Segment]
+    /// One or two runs of the dimension arc, split around the measurement text.
+    var arcRuns: [[CGPoint]]
+    var arrows: [Arrow]
+    var textCenter: CGPoint
+    var textAngle: CGFloat
+
+    static func layout(
+        center: CGPoint,
+        radius: CGFloat,
+        startAngle: CGFloat,
+        sweep: CGFloat,
+        placement: CGPoint,
+        textGap: CGFloat,
+        minimumOffset: CGFloat,
+        gap: CGFloat = 3,
+        overshoot: CGFloat = 5,
+        arrowLength: CGFloat = 8,
+        arrowHalfWidth: CGFloat = 3.1
+    ) -> ArcDimensionLayout? {
+        guard radius > 0.5, abs(sweep) > 0.02 else { return nil }
+
+        let placeRadius = hypot(placement.x - center.x, placement.y - center.y)
+        let outside = placeRadius + 0.5 >= radius
+        let dimRadius: CGFloat
+        if outside {
+            dimRadius = radius + max(placeRadius - radius, minimumOffset)
+        } else {
+            dimRadius = max(12, min(placeRadius, radius - minimumOffset))
+        }
+        guard dimRadius > 1 else { return nil }
+
+        let endAngle = startAngle + sweep
+        let midAngle = startAngle + sweep / 2
+        let radialSign: CGFloat = dimRadius >= radius ? 1 : -1
+        let resolvedGap = min(gap, abs(dimRadius - radius) * 0.45)
+        let innerRadius = max(1, radius + radialSign * resolvedGap)
+        let outerRadius = max(1, dimRadius + radialSign * overshoot)
+
+        let extensions = [
+            Segment(
+                start: point(center, startAngle, innerRadius),
+                end: point(center, startAngle, outerRadius)
+            ),
+            Segment(
+                start: point(center, endAngle, innerRadius),
+                end: point(center, endAngle, outerRadius)
+            )
+        ]
+
+        let sweepSign: CGFloat = sweep >= 0 ? 1 : -1
+        let arrowAngle = (arrowLength / dimRadius) * sweepSign
+        let gapAngle = (textGap / dimRadius) * sweepSign
+        let arcLength = abs(sweep) * dimRadius
+        let arrowsOutside = arcLength < textGap * 2 + arrowLength * 2 + 8
+
+        let startPointing = tangent(at: startAngle, along: arrowsOutside ? sweep : -sweep)
+        let endPointing = tangent(at: endAngle, along: arrowsOutside ? -sweep : sweep)
+        let arrows = [
+            arrow(tip: point(center, startAngle, dimRadius), pointing: startPointing, length: arrowLength, halfWidth: arrowHalfWidth),
+            arrow(tip: point(center, endAngle, dimRadius), pointing: endPointing, length: arrowLength, halfWidth: arrowHalfWidth)
+        ]
+
+        let lead = arrowsOutside ? 0 : arrowAngle
+        let runs = [
+            arcRun(center: center, radius: dimRadius, from: startAngle + lead, to: midAngle - gapAngle, sweepDirection: sweep),
+            arcRun(center: center, radius: dimRadius, from: midAngle + gapAngle, to: endAngle - lead, sweepDirection: sweep)
+        ].compactMap { $0 }
+
+        let tangentMid = tangent(at: midAngle, along: sweep)
+        var radians = atan2(tangentMid.y, tangentMid.x)
+        if radians > .pi / 2 {
+            radians -= .pi
+        } else if radians < -.pi / 2 {
+            radians += .pi
+        }
+
+        return ArcDimensionLayout(
+            extensions: extensions,
+            arcRuns: runs,
+            arrows: arrows,
+            textCenter: point(center, midAngle, dimRadius),
+            textAngle: radians
+        )
+    }
+
+    private static func point(_ center: CGPoint, _ angle: CGFloat, _ radius: CGFloat) -> CGPoint {
+        CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+    }
+
+    /// Unit tangent. `along` positive walks counterclockwise.
+    private static func tangent(at angle: CGFloat, along sweep: CGFloat) -> CGPoint {
+        let sign: CGFloat = sweep >= 0 ? 1 : -1
+        return CGPoint(x: -sin(angle) * sign, y: cos(angle) * sign)
+    }
+
+    private static func arrow(
+        tip: CGPoint,
+        pointing: CGPoint,
+        length: CGFloat,
+        halfWidth: CGFloat
+    ) -> Arrow {
+        let back = CGPoint(x: tip.x - pointing.x * length, y: tip.y - pointing.y * length)
+        let perp = CGPoint(x: -pointing.y, y: pointing.x)
+        return Arrow(
+            tip: tip,
+            upper: CGPoint(x: back.x + perp.x * halfWidth, y: back.y + perp.y * halfWidth),
+            lower: CGPoint(x: back.x - perp.x * halfWidth, y: back.y - perp.y * halfWidth)
+        )
+    }
+
+    /// Samples the dimension arc only when `from` still leads `to` along the sweep.
+    private static func arcRun(
+        center: CGPoint,
+        radius: CGFloat,
+        from start: CGFloat,
+        to end: CGFloat,
+        sweepDirection: CGFloat
+    ) -> [CGPoint]? {
+        let sweep = end - start
+        guard sweep * sweepDirection > 0, abs(sweep) * radius > 1 else { return nil }
+        let count = max(2, Int(ceil(abs(sweep) * radius / 6)))
+        return (0...count).map { index in
+            let t = CGFloat(index) / CGFloat(count)
+            return point(center, start + sweep * t, radius)
+        }
+    }
+}
+
 extension View {
     /// Plain floating dimension text, similar to Shapr3D — no pill chrome.
-    func dimensionLabelAppearance(locked: Bool = false) -> some View {
+    func dimensionLabelAppearance() -> some View {
         font(DimensionLabelStyle.font)
-            .foregroundStyle(DimensionLabelStyle.foregroundColor(locked: locked))
+            .foregroundStyle(Color.accentColor)
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
     }

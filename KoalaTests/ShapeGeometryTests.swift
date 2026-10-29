@@ -378,4 +378,82 @@ struct ShapeGeometryTests {
         let line = VectorStroke(layerID: layerID, points: [CGPoint(x: 0, y: 0), CGPoint(x: 5, y: 0)])
         #expect(ShapeGeometry.applyEdgeLength(.top, newValue: 3, to: line) == nil)
     }
+
+    /// Linear dimensions have to know both ends of the edge so the overlay can
+    /// draw extension lines instead of a single leader from the midpoint.
+    @Test func linearDimensionsRecordBothEndpoints() throws {
+        let line = VectorStroke(layerID: layerID, points: [CGPoint(x: 0, y: 0), CGPoint(x: 40, y: 0)])
+        let dimension = try #require(ShapeGeometry.semanticDimensions(for: line).first)
+        expectClose(try #require(dimension.start), .zero)
+        expectClose(try #require(dimension.end), CGPoint(x: 40, y: 0))
+
+        let rectangle = VectorStroke(
+            layerID: layerID,
+            points: ShapeGeometry.rectangleFromCorners(.zero, CGPoint(x: 10, y: 4)),
+            isClosed: true,
+            shapeType: .rectangle
+        )
+        let top = try #require(ShapeGeometry.semanticDimensions(for: rectangle).first { $0.id == "width-top" })
+        expectClose(try #require(top.start), .zero)
+        expectClose(try #require(top.end), CGPoint(x: 10, y: 0))
+
+        let circle = VectorStroke(
+            layerID: layerID,
+            points: ShapeGeometry.circleCardinalPoints(center: .zero, radius: 6),
+            isClosed: true,
+            shapeType: .circle
+        )
+        let diameter = try #require(ShapeGeometry.semanticDimensions(for: circle).first)
+        #expect(diameter.start == nil)
+        #expect(diameter.end == nil)
+    }
+
+    /// An arc is read like a circle: the diameter of the circle it lies on.
+    /// Editing that number changes the radius and keeps the sweep.
+    @Test func arcDimensionMeasuresTheDiameter() throws {
+        let radius: CGFloat = 10
+        let points = ShapeGeometry.arcPoints(
+            center: .zero,
+            start: CGPoint(x: radius, y: 0),
+            end: CGPoint(x: 0, y: radius),
+            sweep: .pi / 2
+        )
+        let stroke = VectorStroke(layerID: layerID, points: points, shapeType: .arc)
+        #expect(ShapeGeometry.showsDimensionsAutomatically(stroke))
+
+        let dimensions = ShapeGeometry.semanticDimensions(for: stroke)
+        #expect(dimensions.count == 1)
+        let dimension = try #require(dimensions.first)
+        #expect(dimension.id == "arc-diameter")
+        #expect(abs(dimension.value - radius * 2) < 0.05)
+
+        let larger = try #require(ShapeGeometry.applyDimension(dimension, newValue: 30, to: stroke))
+        let arc = try #require(ShapeGeometry.arcGeometry(for: larger))
+        #expect(abs(arc.radius - 15) < 0.05)
+        #expect(abs(abs(arc.sweep) - .pi / 2) < 0.08)
+        #expect(larger.shapeType == .arc)
+    }
+
+    /// A filleted corner is read as the diameter of that round, alongside the
+    /// straight edges of the box.
+    @Test func filletedCornerReportsItsDiameter() throws {
+        var rectangle = VectorStroke(
+            layerID: layerID,
+            points: ShapeGeometry.rectangleFromCorners(.zero, CGPoint(x: 100, y: 80)),
+            isClosed: true,
+            cornerRadiiByIndex: [0: 20],
+            shapeType: .rectangle
+        )
+        let dimensions = ShapeGeometry.semanticDimensions(for: rectangle)
+        let arc = try #require(dimensions.first { $0.id == "fillet-arc-0" })
+        #expect(abs(arc.value - 40) < 0.05)
+        #expect(dimensions.contains { $0.id == "width-top" })
+
+        let edited = try #require(ShapeGeometry.applyDimension(arc, newValue: 60, to: rectangle))
+        let radius = edited.cornerRadiiByIndex?[0] ?? 0
+        #expect(abs(radius - 30) < 0.05)
+        rectangle = edited
+        let again = try #require(ShapeGeometry.semanticDimensions(for: rectangle).first { $0.id == "fillet-arc-0" })
+        #expect(abs(again.value - 60) < 0.05)
+    }
 }

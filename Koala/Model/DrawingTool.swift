@@ -56,7 +56,7 @@ nonisolated enum ToolCategory: String, CaseIterable, Codable, Sendable {
         case .type: return "textformat"
         case .move: return "arrow.up.and.down.and.arrow.left.and.right"
         case .scale: return "arrow.up.left.and.arrow.down.right"
-        case .dimensions: return "ruler"
+        case .dimensions: return "lines.measurement.horizontal"
         case .trim: return "scissors"
         case .fillet: return "point.topleft.down.to.point.bottomright.curvepath"
         case .addAnchor: return "plus.circle"

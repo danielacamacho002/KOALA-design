@@ -220,9 +220,7 @@ nonisolated enum FilletPathBuilder: Sendable {
     }
 
     private static func sampleArc(_ arc: FilletArc) -> [CGPoint] {
-        var sweep = arc.endAngle - arc.startAngle
-        while sweep <= -.pi { sweep += 2 * .pi }
-        while sweep > .pi { sweep -= 2 * .pi }
+        let sweep = arc.sweep
 
         // Bake each fillet into exactly 3 anchors: arc start, centered midpoint, and arc end.
         let segments = 2
@@ -392,7 +390,37 @@ nonisolated enum FilletPathBuilder: Sendable {
         var radius: CGFloat
         var startAngle: CGFloat
         var endAngle: CGFloat
+        var sweep: CGFloat
         var clockwise: Bool
+    }
+
+    /// Live fillet arcs on a stroke, one per rounded corner. The sweep is the signed
+    /// turn of the arc, in (−π, π].
+    static func resolvedArcs(
+        for stroke: VectorStroke
+    ) -> [(cornerIndex: Int, start: CGPoint, end: CGPoint, center: CGPoint, radius: CGFloat, sweep: CGFloat)] {
+        guard stroke.hasAnyCornerFillets else { return [] }
+        let normalized = normalizedClosedPath(points: stroke.points, closed: stroke.isClosed)
+        let points = normalized.points
+        let count = points.count
+        guard count >= 3 else { return [] }
+
+        let radii = stroke.resolvedFilletCornerRadii()
+        let indices: [Int] = normalized.closed ? Array(0..<count) : Array(1..<(count - 1))
+        var arcs: [(cornerIndex: Int, start: CGPoint, end: CGPoint, center: CGPoint, radius: CGFloat, sweep: CGFloat)] = []
+        for cornerIndex in indices {
+            let radius = radii[cornerIndex] ?? 0
+            guard radius > 0 else { continue }
+            let prev = points[(cornerIndex - 1 + count) % count]
+            let next = points[(cornerIndex + 1) % count]
+            guard let arc = filletArc(prev: prev, corner: points[cornerIndex], next: next, radius: radius) else { continue }
+            let end = CGPoint(
+                x: arc.center.x + cos(arc.startAngle + arc.sweep) * arc.radius,
+                y: arc.center.y + sin(arc.startAngle + arc.sweep) * arc.radius
+            )
+            arcs.append((cornerIndex, arc.start, end, arc.center, arc.radius, arc.sweep))
+        }
+        return arcs
     }
 
     private struct CornerFilletBasis {
@@ -425,10 +453,9 @@ nonisolated enum FilletPathBuilder: Sendable {
 
         let startAngle = atan2(start.y - center.y, start.x - center.x)
         let endAngle = atan2(end.y - center.y, end.x - center.x)
-        var delta = endAngle - startAngle
-        while delta <= -.pi { delta += 2 * .pi }
-        while delta > .pi { delta -= 2 * .pi }
-        let clockwise = delta < 0
+        var sweep = endAngle - startAngle
+        while sweep <= -.pi { sweep += 2 * .pi }
+        while sweep > .pi { sweep -= 2 * .pi }
 
         return FilletArc(
             start: start,
@@ -436,7 +463,8 @@ nonisolated enum FilletPathBuilder: Sendable {
             radius: effectiveRadius,
             startAngle: startAngle,
             endAngle: endAngle,
-            clockwise: clockwise
+            sweep: sweep,
+            clockwise: sweep < 0
         )
     }
 

@@ -61,6 +61,19 @@ struct SideToolPaletteView: View {
             .accessibilityLabel(category.label)
             .onboardingAnchor(.tool(category))
             .onboardingHighlight(isHighlighted)
+        } else if category == .dimensions {
+            StudioIconButton(
+                isActive: isToolHighlighted(category),
+                size: iconSize,
+                inactiveColor: .white,
+                action: { selectTool(category) }
+            ) {
+                DimensionsToolIcon()
+                    .frame(width: 23, height: 17)
+            }
+            .accessibilityLabel(category.label)
+            .onboardingAnchor(.tool(category))
+            .onboardingHighlight(isHighlighted)
         } else {
             StudioIconButton(
                 systemImage: category.systemImage,
@@ -377,6 +390,48 @@ struct CurveToolIcon: View {
                 )),
                 with: .foreground
             )
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// A compact CAD linear dimension: short extension lines and open arrowheads.
+struct DimensionsToolIcon: View {
+    var body: some View {
+        Canvas { context, size in
+            let unit = min(size.width, size.height) / 17
+            func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: x * unit, y: y * unit)
+            }
+
+            let stroke = StrokeStyle(lineWidth: 1.5 * unit, lineCap: .round, lineJoin: .round)
+            let dimY: CGFloat = 6.7
+            let leftTip: CGFloat = 1.1
+            let rightTip = size.width / unit - 1.1
+            let head: CGFloat = 3.05
+            let headHalf: CGFloat = 2.0
+
+            var mark = Path()
+            mark.move(to: pt(leftTip + head - 0.15, dimY))
+            mark.addLine(to: pt(rightTip - head + 0.15, dimY))
+
+            mark.move(to: pt(leftTip + head, dimY - headHalf))
+            mark.addLine(to: pt(leftTip, dimY))
+            mark.addLine(to: pt(leftTip + head, dimY + headHalf))
+
+            mark.move(to: pt(rightTip - head, dimY - headHalf))
+            mark.addLine(to: pt(rightTip, dimY))
+            mark.addLine(to: pt(rightTip - head, dimY + headHalf))
+
+            // Legs sit just below the tips so they stay separate from the arrowheads.
+            let extTop = dimY + 2.0
+            let extBottom: CGFloat = 12.35
+            mark.move(to: pt(leftTip, extTop))
+            mark.addLine(to: pt(leftTip, extBottom))
+            mark.move(to: pt(rightTip, extTop))
+            mark.addLine(to: pt(rightTip, extBottom))
+
+            context.stroke(mark, with: .foreground, style: stroke)
         }
         .accessibilityHidden(true)
     }

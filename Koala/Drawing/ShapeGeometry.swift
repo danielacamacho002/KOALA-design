@@ -1484,12 +1484,20 @@ nonisolated enum ShapeGeometry: Sendable {
         var midPoint: CGPoint
         var value: CGFloat
         var kind: Kind
-        // The point on the shape this dimension references. Leader lines are drawn
-        // from here to the (possibly dragged-away) label position.
+        // The point on the shape this dimension references. Linear dimensions also
+        // carry the measured edge in `start`/`end`; radial dimensions leave those nil
+        // and draw a single leader from `anchor`.
         var anchor: CGPoint
+        var start: CGPoint? = nil
+        var end: CGPoint? = nil
+        /// Circle the arc-length dimension follows. Nil for straight and radial dimensions.
+        var arcCenter: CGPoint? = nil
+        var arcSweep: CGFloat? = nil
 
         enum Kind {
             case segmentLength(segmentIndex: Int)
+            case arcLength
+            case filletArc(cornerIndex: Int)
             case circleDiameter
             case ellipseRX
             case ellipseRY
@@ -1516,11 +1524,11 @@ nonisolated enum ShapeGeometry: Sendable {
         case right = "height-right"
     }
 
-    /// Circles, ellipses, rectangles, and 4-point quads show every dimension on select.
-    /// Multi-segment polylines and arcs reveal one edge at a time.
+    /// Circles, ellipses, arcs, rectangles, and 4-point quads show every dimension on select.
+    /// Multi-segment polylines reveal one edge at a time.
     static func showsDimensionsAutomatically(_ stroke: VectorStroke) -> Bool {
         switch stroke.shapeType {
-        case .circle, .ellipse, .rectangle:
+        case .circle, .ellipse, .arc, .rectangle:
             return true
         default:
             return isEditableQuad(stroke)
@@ -1777,9 +1785,82 @@ nonisolated enum ShapeGeometry: Sendable {
                 midPoint: placement.midPoint,
                 value: length,
                 kind: entry.kind,
-                anchor: placement.anchor
+                anchor: placement.anchor,
+                start: entry.start,
+                end: entry.end
             )
         }
+    }
+
+    /// Circle through an arc stroke, plus the signed sweep that walks its anchors.
+    static func arcGeometry(for stroke: VectorStroke) -> (center: CGPoint, radius: CGFloat, start: CGPoint, end: CGPoint, sweep: CGFloat)? {
+        guard stroke.shapeType == .arc,
+              let start = stroke.points.first,
+              let end = stroke.points.last,
+              let circle = arcCircle(for: stroke),
+              let sweep = signedCircularSweep(of: stroke.points, around: circle.center, closed: false),
+              abs(sweep) > 0.0001 else { return nil }
+        return (circle.center, circle.radius, start, end, sweep)
+    }
+
+    /// One measurement for the whole arc: the diameter of the circle it lies on,
+    /// same as a full circle. The label sits outside the midpoint.
+    private static func arcLengthDimension(for stroke: VectorStroke) -> [SemanticDimension] {
+        guard let arc = arcGeometry(for: stroke) else { return [] }
+        guard let dimension = curvedDimension(
+            id: "arc-diameter",
+            kind: .arcLength,
+            center: arc.center,
+            radius: arc.radius,
+            start: arc.start,
+            sweep: arc.sweep
+        ) else { return [] }
+        return [dimension]
+    }
+
+    /// Diameter of each live fillet. A rounded rectangle still reports its straight
+    /// edges; each filleted corner adds the diameter of that round.
+    private static func filletArcDimensions(for stroke: VectorStroke) -> [SemanticDimension] {
+        FilletPathBuilder.resolvedArcs(for: stroke).compactMap { arc in
+            curvedDimension(
+                id: "fillet-arc-\(arc.cornerIndex)",
+                kind: .filletArc(cornerIndex: arc.cornerIndex),
+                center: arc.center,
+                radius: arc.radius,
+                start: arc.start,
+                sweep: arc.sweep
+            )
+        }
+    }
+
+    private static func curvedDimension(
+        id: String,
+        kind: SemanticDimension.Kind,
+        center: CGPoint,
+        radius: CGFloat,
+        start: CGPoint,
+        sweep: CGFloat
+    ) -> SemanticDimension? {
+        let diameter = radius * 2
+        guard diameter > 0.001, abs(sweep) > 0.0001 else { return nil }
+        let startAngle = atan2(start.y - center.y, start.x - center.x)
+        let midAngle = startAngle + sweep / 2
+        let mid = CGPoint(
+            x: center.x + cos(midAngle) * radius,
+            y: center.y + sin(midAngle) * radius
+        )
+        let outward = CGPoint(
+            x: center.x + cos(midAngle) * (radius + labelStandoff),
+            y: center.y + sin(midAngle) * (radius + labelStandoff)
+        )
+        return SemanticDimension(
+            id: id,
+            label: String(format: "%.3f", diameter),
+            midPoint: outward,
+            value: diameter,
+            kind: kind,
+            anchor: mid
+        )
     }
 
     static func semanticDimensions(for stroke: VectorStroke) -> [SemanticDimension] {
@@ -1819,10 +1900,12 @@ nonisolated enum ShapeGeometry: Sendable {
                 )
             ]
         case .rectangle:
-            return quadDimensions(for: stroke)
+            return quadDimensions(for: stroke) + filletArcDimensions(for: stroke)
+        case .arc:
+            return arcLengthDimension(for: stroke)
         default:
             if isEditableQuad(stroke) {
-                return quadDimensions(for: stroke)
+                return quadDimensions(for: stroke) + filletArcDimensions(for: stroke)
             }
             let points = stroke.points
             guard points.count >= 2 else { return [] }
@@ -1844,9 +1927,11 @@ nonisolated enum ShapeGeometry: Sendable {
                     midPoint: placement.midPoint,
                     value: length,
                     kind: .segmentLength(segmentIndex: index),
-                    anchor: placement.anchor
+                    anchor: placement.anchor,
+                    start: start,
+                    end: end
                 )
-            }
+            } + filletArcDimensions(for: stroke)
         }
     }
 
@@ -1867,6 +1952,31 @@ nonisolated enum ShapeGeometry: Sendable {
             // Quad edges are routed through applyQuadEdge/applyEdgeLength, which know
             // which specific edge is being edited.
             return nil
+        case .arcLength:
+            guard let arc = arcGeometry(for: stroke) else { return nil }
+            let radius = max(0.001, newValue / 2)
+            let startAngle = atan2(arc.start.y - arc.center.y, arc.start.x - arc.center.x)
+            let start = CGPoint(
+                x: arc.center.x + cos(startAngle) * radius,
+                y: arc.center.y + sin(startAngle) * radius
+            )
+            let end = CGPoint(
+                x: arc.center.x + cos(startAngle + arc.sweep) * radius,
+                y: arc.center.y + sin(startAngle + arc.sweep) * radius
+            )
+            updated.points = defaultCircularAnchors(
+                center: arc.center,
+                radius: radius,
+                start: start,
+                end: end,
+                sweep: arc.sweep,
+                closed: false
+            )
+            updated.shapeType = .arc
+        case .filletArc(let cornerIndex):
+            var radii = stroke.cornerRadiiByIndex ?? [:]
+            radii[cornerIndex] = max(0.1, newValue / 2)
+            updated.cornerRadiiByIndex = radii
         case .segmentLength(let segmentIndex):
             let points = stroke.points
             guard points.count >= 2 else { return nil }
