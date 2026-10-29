@@ -1409,19 +1409,35 @@ final class KoalaDocument {
         let r = max(0, radius ?? settings.defaultCornerRadius)
         var updated = strokes[index]
         var overrides = updated.cornerRadiiByIndex ?? [:]
+        var appliedByCorner: [Int: CGFloat] = [:]
         for cornerIndex in requestedCorners {
-            overrides[cornerIndex] = r
+            let applied = FilletPathBuilder.clampedFilletRadius(
+                for: updated,
+                cornerIndex: cornerIndex,
+                requested: r
+            )
+            overrides[cornerIndex] = applied
+            appliedByCorner[cornerIndex] = applied
         }
         overrides = overrides.filter { validCornerIndices.contains($0.key) }
 
         // If every valid corner receives the same value, store it as the global base radius.
+        // The value is the drawn radius, not the raw request, so a drag past the corner's
+        // maximum does not leave a larger number than the arc on screen.
+        let epsilon: CGFloat = 0.0001
         if requestedCorners == validCornerIndices {
-            updated.cornerRadius = r
+            let appliedValues = requestedCorners.compactMap { appliedByCorner[$0] }
+            if let first = appliedValues.first,
+               appliedValues.count == requestedCorners.count,
+               appliedValues.allSatisfy({ abs($0 - first) <= epsilon }) {
+                updated.cornerRadius = first
+            } else {
+                updated.cornerRadius = 0
+            }
         }
 
         // Keep only overrides that differ from the global radius. Zero is kept only when needed
         // to override a positive global radius on an individual corner.
-        let epsilon: CGFloat = 0.0001
         let pruned = overrides.filter { _, value in
             let clamped = max(0, value)
             if clamped <= epsilon {

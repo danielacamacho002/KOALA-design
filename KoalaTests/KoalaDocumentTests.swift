@@ -360,6 +360,43 @@ struct KoalaDocumentTests {
         #expect((selected?.points.count ?? 0) < samples.count)
     }
 
+    /// The pencil can keep moving after the arc has used as much of the adjacent edges as it
+    /// is allowed to. The stored radius has to stop at that same limit, or the readout keeps
+    /// climbing after the corner has stopped changing.
+    @Test func filletRadiusClampsToTheLargestArcTheCornerCanDraw() {
+        let document = KoalaDocument()
+        let square = VectorStroke(
+            layerID: document.activeLayerID,
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 100, y: 0),
+                CGPoint(x: 100, y: 100),
+                CGPoint(x: 0, y: 100)
+            ],
+            isClosed: true,
+            shapeType: .rectangle
+        )
+        document.addStroke(square)
+        document.selectedStrokeID = square.id
+        document.selectSingleFilletCorner(at: 0)
+
+        let cap = FilletPathBuilder.maximumFilletRadius(for: square, cornerIndex: 0)
+        #expect(abs((cap ?? 0) - 45) < 0.01)
+
+        document.applyFilletToSelected(radius: 1000, cornerIndices: [0], recordUndo: false)
+        let stored = document.stroke(with: square.id)?.resolvedFilletCornerRadii()[0]
+        #expect(abs((stored ?? -1) - (cap ?? -2)) < 0.001)
+        if case .uniform(let shown) = document.selectedFilletRadiusSummary() {
+            #expect(abs(shown - (cap ?? -1)) < 0.001)
+        } else {
+            Issue.record("Expected a uniform fillet radius at the corner maximum")
+        }
+
+        document.applyFilletToSelected(radius: 10, cornerIndices: [0], recordUndo: false)
+        let smaller = document.stroke(with: square.id)?.resolvedFilletCornerRadii()[0]
+        #expect(abs((smaller ?? -1) - 10) < 0.001)
+    }
+
     @Test func copyingAnEmptySelectionLeavesTheClipboardAlone() {
         let document = KoalaDocument()
         #expect(document.copySelectedElementsToClipboard() == 0)

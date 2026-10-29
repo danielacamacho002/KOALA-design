@@ -119,6 +119,9 @@ struct CanvasOverlayView: View {
     private let anchorHandleSize = CanvasOverlayGeometry.anchorMarkSize
     private let coordinateSpaceName = "editor"
     private let filletDragThreshold: CGFloat = 6
+    /// Screen points of pencil travel that take a large corner from sharp to its maximum fillet.
+    /// Smaller corners keep the old one-to-one drag so they do not get harder to control.
+    private let filletFullRangeScreenTravel: CGFloat = 120
     private let rotateHandleOffset: CGFloat = 36
     /// Invisible finger/Pencil target around each anchor handle so small squares are easy to hit.
     private let anchorTouchTargetSize = CanvasOverlayGeometry.curveAnchorHitExtent
@@ -1797,9 +1800,12 @@ struct CanvasOverlayView: View {
                       filletDragCornerIndex == cornerIndex else { return }
 
                 let docPoint = document.viewport.viewToDocument(value.location)
-                let radius = hypot(
-                    docPoint.x - filletDragCornerPoint.x,
-                    docPoint.y - filletDragCornerPoint.y
+                let radius = filletDragRadius(
+                    at: value.location,
+                    documentPoint: docPoint,
+                    strokeID: strokeID,
+                    cornerIndex: cornerIndex,
+                    cornerPoint: filletDragCornerPoint
                 )
                 document.applyFilletToSelected(
                     radius: radius,
@@ -1821,6 +1827,33 @@ struct CanvasOverlayView: View {
                 }
                 resetFilletDragState()
             }
+    }
+
+    /// Distance from the corner used to be the radius, so a big corner meant a long drag
+    /// before the arc maxed out. Large fillets now cover that whole range in a short stroke.
+    private func filletDragRadius(
+        at viewPoint: CGPoint,
+        documentPoint: CGPoint,
+        strokeID: UUID,
+        cornerIndex: Int,
+        cornerPoint: CGPoint
+    ) -> CGFloat {
+        let documentDistance = hypot(
+            documentPoint.x - cornerPoint.x,
+            documentPoint.y - cornerPoint.y
+        )
+        guard let stroke = document.stroke(with: strokeID),
+              let cap = FilletPathBuilder.maximumFilletRadius(for: stroke, cornerIndex: cornerIndex),
+              cap > 0.1 else {
+            return documentDistance
+        }
+
+        let viewCorner = document.viewport.documentToView(cornerPoint)
+        let screenDistance = hypot(viewPoint.x - viewCorner.x, viewPoint.y - viewCorner.y)
+        let oneToOneTravel = cap * max(document.viewport.scale, 0.001)
+        let screenTravel = min(oneToOneTravel, filletFullRangeScreenTravel)
+        guard screenTravel > 0.001 else { return 0 }
+        return min(cap, screenDistance / screenTravel * cap)
     }
 
     private func resetFilletDragState() {

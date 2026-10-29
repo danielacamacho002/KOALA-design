@@ -18,6 +18,8 @@ struct FilletRadiusPanelView: View {
     private static let radiusStepPoints: CGFloat = 0.5
 
     @State private var radiusText = ""
+    /// True while the radius field is focused, so a canvas drag does not overwrite a number being typed.
+    @State private var isEditingRadius = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -32,7 +34,8 @@ struct FilletRadiusPanelView: View {
                     unitLabel: units.shortLabel,
                     onMinus: { stepRadius(by: -Self.radiusStepPoints) },
                     onPlus: { stepRadius(by: Self.radiusStepPoints) },
-                    onSubmit: { apply(finish: false) }
+                    onSubmit: { apply(finish: false) },
+                    onEditingChanged: { isEditingRadius = $0 }
                 )
             }
 
@@ -56,15 +59,24 @@ struct FilletRadiusPanelView: View {
         .onChange(of: document.selectedFilletCornerIndices) { _, _ in
             syncRadiusTextToSelection()
         }
+        .onChange(of: document.geometryRevision) { _, _ in
+            syncRadiusTextToSelection()
+        }
         .onChange(of: units) { _, _ in
             syncRadiusTextToSelection()
         }
     }
 
     /// Pre-fills the stepper with the selected corners' shared radius.
+    /// Corner drags change the radius without changing the selection, so this also runs on
+    /// every geometry update and the field shows the live measurement.
     private func syncRadiusTextToSelection() {
+        guard !isEditingRadius else { return }
         if case .uniform(let radius) = document.selectedFilletRadiusSummary() {
-            radiusText = displayString(units.fromDocumentUnits(radius))
+            let next = displayString(units.fromDocumentUnits(radius))
+            if radiusText != next {
+                radiusText = next
+            }
         }
     }
 
