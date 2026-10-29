@@ -799,4 +799,8 @@ enum SnapTuning {
     static let breakawayRadiusPoints: CGFloat = 32
     /// Pencil speed (points/second) above which a lock breaks instantly.
     static let breakawayVelocityPoints: CGFloat = 2600
+    /// How close a moving point must be to a shared row or column before it sticks.
+    static let alignmentTolerancePoints: CGFloat = 10
+    /// Pull past this to leave a row or column lock.
+    static let alignmentBreakawayPoints: CGFloat = 18
 }

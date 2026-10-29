@@ -156,6 +156,73 @@ final class SnapIndicatorRenderer {
     }
 }
 
+/// Short bar shown just off the stationary end of a line while that segment is horizontal or vertical.
+/// Hidden as soon as the stroke is committed.
+final class AxisLockGlyphRenderer {
+    private let length: CGFloat = 18
+    private let thickness: CGFloat = 4
+    private let indicatorZPosition: CGFloat = 15_000
+
+    private var glyphLayer: CAShapeLayer?
+
+    func update(axis: DrawingAxis?, viewPoint: CGPoint?, in hostLayer: CALayer) {
+        guard let axis, let viewPoint else {
+            glyphLayer?.isHidden = true
+            return
+        }
+
+        let markerLayer = ensureLayer(in: hostLayer)
+        markerLayer.isHidden = false
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        markerLayer.path = barPath(axis: axis, center: viewPoint)
+        CATransaction.commit()
+    }
+
+    func clear() {
+        glyphLayer?.isHidden = true
+    }
+
+    private func ensureLayer(in hostLayer: CALayer) -> CAShapeLayer {
+        if let glyphLayer, glyphLayer.superlayer === hostLayer {
+            return glyphLayer
+        }
+        glyphLayer?.removeFromSuperlayer()
+
+        let created = CAShapeLayer()
+        created.zPosition = indicatorZPosition
+        created.fillColor = UIColor.systemPink.withAlphaComponent(0.95).cgColor
+        created.strokeColor = UIColor.white.cgColor
+        created.lineWidth = 1.25
+        created.contentsScale = DisplayZoomCompensation.layerContentsScale
+        hostLayer.addSublayer(created)
+        glyphLayer = created
+        return created
+    }
+
+    private func barPath(axis: DrawingAxis, center: CGPoint) -> CGPath {
+        let rect: CGRect
+        switch axis {
+        case .horizontal:
+            rect = CGRect(
+                x: center.x - length / 2,
+                y: center.y - thickness / 2,
+                width: length,
+                height: thickness
+            )
+        case .vertical:
+            rect = CGRect(
+                x: center.x - thickness / 2,
+                y: center.y - length / 2,
+                width: thickness,
+                height: length
+            )
+        }
+        return UIBezierPath(roundedRect: rect, cornerRadius: thickness / 2).cgPath
+    }
+}
+
 /// Shared vertex math for the intersection "X" marker so the UIKit indicator and the SwiftUI
 /// move-tool overlay render an identical glyph.
 enum SnapMarkerGeometry {

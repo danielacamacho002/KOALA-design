@@ -122,6 +122,7 @@ final class DrawingCanvasUIView: UIView {
     private let snapSession = SnapInteractionSession()
     private let snapHaptics = SnapHaptics()
     private let snapIndicator = SnapIndicatorRenderer()
+    private let axisLockGlyph = AxisLockGlyphRenderer()
 
     /// Color of the canvas sheet itself (the area within the canvas bounds). The view's
     /// `backgroundColor` is the surrounding dark pasteboard shown when zoomed out.
@@ -733,16 +734,14 @@ final class DrawingCanvasUIView: UIView {
                 onDragDrawEnded?(start, end)
                 dragDrawStart = nil
                 dragDrawCurrent = nil
-                dragPreviewLayer?.removeFromSuperlayer()
-                dragPreviewLayer = nil
+                removeDragPreview()
                 return
             }
             dragDrawCurrent = end
             onDragDrawEnded?(start, end)
             dragDrawStart = nil
             dragDrawCurrent = nil
-            dragPreviewLayer?.removeFromSuperlayer()
-            dragPreviewLayer = nil
+            removeDragPreview()
             DispatchQueue.main.async { [weak self] in
                 self?.reloadStrokes()
             }
@@ -1190,26 +1189,24 @@ final class DrawingCanvasUIView: UIView {
 
     private func updateDragPreviewLayer() {
         guard let start = dragDrawStart, let end = dragDrawCurrent else {
-            dragPreviewLayer?.removeFromSuperlayer()
-            dragPreviewLayer = nil
+            removeDragPreview()
             return
         }
 
         if activeCategory == .line, lineVariant == .arc {
             // Sweep preview lives on the command session once center + start are parked.
             if commandControlPoints.count >= 2 {
-                dragPreviewLayer?.removeFromSuperlayer()
-                dragPreviewLayer = nil
+                removeDragPreview()
                 return
             }
+            axisLockGlyph.clear()
             updateArcRadiusPreviewLayer(center: start, start: end)
             return
         }
 
         let previewPoints = dragPreviewPoints(start: start, end: end)
         guard previewPoints.count >= 2 else {
-            dragPreviewLayer?.removeFromSuperlayer()
-            dragPreviewLayer = nil
+            removeDragPreview()
             return
         }
 
@@ -1246,6 +1243,53 @@ final class DrawingCanvasUIView: UIView {
         pathLayer.lineWidth = previewLineWidth(document.strokeWidth)
         pathLayer.lineDashPattern = isConstruction ? [10, 6] : nil
         pathLayer.opacity = Float(document.opacity(forLayerID: document.activeLayerID))
+        updateAxisLockGlyph(start: start, end: end)
+    }
+
+    /// Pink bar beside the stationary end while a straight line is horizontal or vertical.
+    /// It sits off the stroke, on the downward side, so the pencil and the line don't cover it.
+    /// Cleared with the preview, so the committed stroke has no marker.
+    private func updateAxisLockGlyph(start: CGPoint, end: CGPoint) {
+        guard activeCategory == .line, lineVariant != .arc else {
+            axisLockGlyph.clear()
+            return
+        }
+        let minimum = document.viewport.viewToDocument(distance: 12)
+        guard let axis = drawingAxis(from: start, to: end, minimumLength: minimum) else {
+            axisLockGlyph.clear()
+            return
+        }
+        axisLockGlyph.update(
+            axis: axis,
+            viewPoint: axisLockGlyphPoint(start: start, end: end),
+            in: layer
+        )
+    }
+
+    /// View point just off the start, perpendicular to the segment and toward the bottom of the screen.
+    private func axisLockGlyphPoint(start: CGPoint, end: CGPoint) -> CGPoint {
+        let startView = document.viewport.documentToView(start)
+        let endView = document.viewport.documentToView(end)
+        let dx = endView.x - startView.x
+        let dy = endView.y - startView.y
+        let length = hypot(dx, dy)
+        guard length > 1 else {
+            return CGPoint(x: startView.x, y: startView.y + 16)
+        }
+        var nx = -dy / length
+        var ny = dx / length
+        if ny < 0 {
+            nx = -nx
+            ny = -ny
+        }
+        let gap: CGFloat = 16
+        return CGPoint(x: startView.x + nx * gap, y: startView.y + ny * gap)
+    }
+
+    private func removeDragPreview() {
+        dragPreviewLayer?.removeFromSuperlayer()
+        dragPreviewLayer = nil
+        axisLockGlyph.clear()
     }
 
     /// `trimPreviewPoints` arrive already flattened by `TrimEngine`, so a plain polyline
