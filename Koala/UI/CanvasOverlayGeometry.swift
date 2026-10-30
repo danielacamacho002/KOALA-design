@@ -117,6 +117,9 @@ nonisolated enum CanvasOverlayGeometry: Sendable {
     /// thicker than this at 1× keeps that width and does not grow further.
     static let displayStrokeScreenCap: CGFloat = 12
 
+    /// Green visible outside a selected stroke, in screen points per side.
+    static let selectionHaloOutset: CGFloat = 1
+
     /// On-screen stroke width. Grows with zoom until `displayStrokeScreenCap`, then holds,
     /// so the line and the anchor on it stay a readable size instead of filling the view.
     static func displayStrokeScreenWidth(strokeWidth: CGFloat, scale: CGFloat) -> CGFloat {

@@ -136,6 +136,8 @@ struct CanvasOverlayView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
+                selectionHighlight
+
                 if commandSession.isActive {
                     commandPreviewHandles
                 } else if document.activeCategory == .move || document.activeCategory == nil {
@@ -850,9 +852,7 @@ struct CanvasOverlayView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            boxPath(viewCorners)
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
-                .allowsHitTesting(false)
+            selectionFrame(viewCorners)
 
             if document.isMoveRotateMode {
                 pivotMarker(at: center)
@@ -1859,9 +1859,7 @@ struct CanvasOverlayView: View {
                 CGPoint(x: bbox.minX, y: bbox.maxY)
             ].map { document.viewport.documentToView($0) }
 
-            boxPath(viewCorners)
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
-                .allowsHitTesting(false)
+            selectionFrame(viewCorners)
         }
     }
 
@@ -2217,10 +2215,6 @@ struct CanvasOverlayView: View {
                         .onEnded { _ in onEditText(id) }
                 )
 
-            boxPath(viewCorners)
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
-                .allowsHitTesting(false)
-
             ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
                 handleView(style: .edit)
                     .position(corner)
@@ -2266,10 +2260,6 @@ struct CanvasOverlayView: View {
                 }
             )
 
-            boxPath(viewCorners)
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
-                .allowsHitTesting(false)
-
             if document.isMoveRotateMode {
                 textRotationHandle(id: id, viewCorners: viewCorners, viewCenter: viewCenter)
             }
@@ -2283,10 +2273,6 @@ struct CanvasOverlayView: View {
         if let id = document.selectedTextID,
            let element = document.textElement(with: id) {
             let viewCorners = element.corners().map { document.viewport.documentToView($0) }
-
-            boxPath(viewCorners)
-                .stroke(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                .allowsHitTesting(false)
 
             ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
                 handleView(style: .edit)
@@ -2331,10 +2317,6 @@ struct CanvasOverlayView: View {
                 }
             )
 
-            boxPath(viewCorners)
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
-                .allowsHitTesting(false)
-
             ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
                 handleView(style: .edit)
                     .position(corner)
@@ -2352,10 +2334,6 @@ struct CanvasOverlayView: View {
         if document.isReferenceImageSelected,
            let corners = document.referenceImageCorners() {
             let viewCorners = corners.map { document.viewport.documentToView($0) }
-
-            boxPath(viewCorners)
-                .stroke(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                .allowsHitTesting(false)
 
             ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
                 handleView(style: .edit)
@@ -2472,6 +2450,36 @@ struct CanvasOverlayView: View {
                 imageRotateAccumulated = 0
                 onChanged()
             }
+    }
+
+    /// Green frame around selected text and reference images.
+    /// Selected strokes get a matching rim from the canvas instead.
+    @ViewBuilder
+    private var selectionHighlight: some View {
+        ForEach(highlightedTextIDs, id: \.self) { id in
+            if let element = document.textElement(with: id) {
+                selectionFrame(element.corners().map { document.viewport.documentToView($0) })
+            }
+        }
+        if document.isReferenceImageSelected, let corners = document.referenceImageCorners() {
+            selectionFrame(corners.map { document.viewport.documentToView($0) })
+        }
+    }
+
+    private var highlightedTextIDs: [UUID] {
+        if !document.selectedTextIDs.isEmpty {
+            return document.selectedTextIDs.sorted { $0.uuidString < $1.uuidString }
+        }
+        if let id = document.selectedTextID {
+            return [id]
+        }
+        return []
+    }
+
+    private func selectionFrame(_ corners: [CGPoint]) -> some View {
+        boxPath(corners)
+            .stroke(SelectionHighlight.icon, lineWidth: 1)
+            .allowsHitTesting(false)
     }
 
     private func boxPath(_ corners: [CGPoint]) -> Path {
