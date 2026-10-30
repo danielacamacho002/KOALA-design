@@ -7,6 +7,7 @@ import SwiftUI
 
 struct ProjectCardView: View {
     let record: ProjectRecord
+    var thumbnailRevision: Int = 0
     var isSelected: Bool = false
     var isSelectionMode: Bool = false
     var compact: Bool = false
@@ -15,7 +16,6 @@ struct ProjectCardView: View {
     @State private var thumbnailImage: UIImage?
 
     private var canvasColor: Color { Color(hex: canvasColorHex) }
-    private var panelColor: Color { Color(hex: AppearanceSettings.panelHex) }
     private var cornerRadius: CGFloat { compact ? 6 : 10 }
 
     var body: some View {
@@ -92,29 +92,26 @@ struct ProjectCardView: View {
 
     @ViewBuilder
     private var thumbnail: some View {
-        Group {
+        ZStack {
+            canvasColor
             if let thumbnailImage {
                 Image(uiImage: thumbnailImage)
                     .resizable()
-                    .scaledToFill()
-                    .background(canvasColor)
+                    .scaledToFit()
             } else {
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .fill(panelColor.opacity(0.35))
-                    .overlay {
-                        Image(systemName: "scribble.variable")
-                            .font(.title2)
-                            .foregroundStyle(.white)
-                    }
+                Image(systemName: "scribble.variable")
+                    .font(.title2)
+                    .foregroundStyle(Color.black.opacity(0.45))
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: thumbnailTaskID) {
             await loadThumbnail()
         }
     }
 
     private var thumbnailTaskID: String {
-        "\(record.thumbnailURL?.path ?? "")|\(record.modifiedAt.timeIntervalSince1970)"
+        "\(record.thumbnailURL?.path ?? "")|\(record.modifiedAt.timeIntervalSince1970)|\(thumbnailRevision)"
     }
 
     private func loadThumbnail() async {
@@ -122,16 +119,22 @@ struct ProjectCardView: View {
             thumbnailImage = nil
             return
         }
-        if let cached = ProjectThumbnailCache.image(for: url, modifiedAt: record.modifiedAt) {
+        guard let stamp = ProjectThumbnailCache.modificationStamp(of: url) else {
+            thumbnailImage = nil
+            return
+        }
+        if let cached = ProjectThumbnailCache.image(for: url) {
             thumbnailImage = cached
             return
         }
         let data = try? await PersistenceWorker.shared.readFileData(from: url)
+        guard !Task.isCancelled else { return }
+        guard ProjectThumbnailCache.modificationStamp(of: url) == stamp else { return }
         guard let data, let image = UIImage(data: data) else {
             thumbnailImage = nil
             return
         }
-        ProjectThumbnailCache.store(image, for: url, modifiedAt: record.modifiedAt)
+        ProjectThumbnailCache.store(image, for: url, stamp: stamp)
         thumbnailImage = image
     }
 
