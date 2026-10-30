@@ -83,6 +83,46 @@ struct CurveAnchorSimplifierTests {
         #expect(simplified.curveHandles == curve.curveHandles)
     }
 
+    @Test func denseSquareKeepsFourSharpCorners() {
+        var points: [CGPoint] = []
+        func add(_ start: CGPoint, _ end: CGPoint) {
+            for step in 0..<12 {
+                let t = CGFloat(step) / 12
+                points.append(CGPoint(
+                    x: start.x + (end.x - start.x) * t,
+                    y: start.y + (end.y - start.y) * t
+                ))
+            }
+        }
+        add(CGPoint(x: 0, y: 0), CGPoint(x: 200, y: 0))
+        add(CGPoint(x: 200, y: 0), CGPoint(x: 200, y: 120))
+        add(CGPoint(x: 200, y: 120), CGPoint(x: 0, y: 120))
+        add(CGPoint(x: 0, y: 120), CGPoint(x: 0, y: 0))
+        let dense = VectorStroke(
+            layerID: layerID,
+            points: points,
+            isClosed: true,
+            shapeType: .polyline
+        )
+
+        let simplified = ShapeGeometry.withSimplifiedDenseAnchors(dense)
+        let corners = [
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: 200, y: 0),
+            CGPoint(x: 200, y: 120),
+            CGPoint(x: 0, y: 120)
+        ]
+        #expect(simplified.points.count == corners.count)
+        for corner in corners {
+            #expect(simplified.points.contains { hypot($0.x - corner.x, $0.y - corner.y) < 0.05 })
+        }
+        let handles = simplified.curveHandles ?? []
+        #expect(handles.allSatisfy { handle in
+            hypot(handle.inOffset.x, handle.inOffset.y) < 0.05
+                && hypot(handle.outOffset.x, handle.outOffset.y) < 0.05
+        })
+    }
+
     @Test func sharpZigzagKeepsItsCorners() {
         var points: [CGPoint] = []
         for index in 0..<18 {

@@ -203,9 +203,32 @@ struct CanvasOverlayGeometryTests {
             minimumLength: 9
         )
         #expect(abs(handles[0].outOffset.x - 9) < 0.01)
-        #expect(abs(handles[0].inOffset.x + 9) < 0.01)
+        #expect(handles[0].inOffset == .zero)
         #expect(handles[1].inOffset == CGPoint(x: -80, y: 0))
-        #expect(abs(handles[1].outOffset.x - 9) < 0.01)
+        #expect(handles[1].outOffset == .zero)
+    }
+
+    /// A corner stored with no tangents must stay a corner. Inventing arms along
+    /// the chord, or mirroring a neighboring cubic, rounds the point.
+    @Test func aCornerWithNoTangentsStaysACorner() {
+        let handles = CanvasOverlayGeometry.tangentHandlesObservingMinimum(
+            anchors: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 100, y: 0),
+                CGPoint(x: 100, y: 80)
+            ],
+            handles: [
+                CurveHandle(inOffset: CGPoint(x: 40, y: -30), outOffset: .zero),
+                CurveHandle(),
+                CurveHandle(inOffset: .zero, outOffset: CGPoint(x: 40, y: 30))
+            ]
+        )
+        #expect(handles[1].inOffset == .zero)
+        #expect(handles[1].outOffset == .zero)
+        #expect(hypot(handles[0].inOffset.x, handles[0].inOffset.y) > 20)
+        #expect(handles[0].outOffset == .zero)
+        #expect(handles[2].inOffset == .zero)
+        #expect(hypot(handles[2].outOffset.x, handles[2].outOffset.y) > 20)
     }
 
     @Test func nearestGrabPrefersTheCloserCircle() {

@@ -263,6 +263,90 @@ enum ShapeBooleanEngine {
         return CGPoint(x: p1.x + t * dx, y: p1.y + t * dy)
     }
 
+    /// Rebuilds a Boolean outline so sharp corners stay corners.
+    ///
+    /// Edges that came from the cutter become a circular arc when they actually lie on
+    /// one circle. The arc's endpoints stay ordinary corners — they are not smoothed
+    /// into the curve, and neither are the base shape's other corners. A curved run
+    /// that is not circular (an ellipse or a free curve) returns nil so the caller can
+    /// keep its own curve fit.
+    static func cornerPreservingContour(
+        points: [CGPoint],
+        cutEdgeStarts: [Int]
+    ) -> (points: [CGPoint], smoothCornerIndices: Set<Int>)? {
+        let count = points.count
+        guard count >= 3, !cutEdgeStarts.isEmpty else { return nil }
+        guard cutEdgeStarts.allSatisfy({ $0 >= 0 && $0 < count }) else { return nil }
+        let cut = Set(cutEdgeStarts)
+        guard cut.count < count else { return nil }
+
+        // Start on a vertex whose incoming edge is not a cut, so each cut run is
+        // walked as one contiguous sequence.
+        guard let origin = (0..<count).first(where: { !cut.contains(($0 - 1 + count) % count) }) else {
+            return nil
+        }
+
+        var built: [CGPoint] = []
+        var smooth = Set<Int>()
+
+        func append(_ point: CGPoint, smoothPoint: Bool) {
+            if let last = built.last, hypot(last.x - point.x, last.y - point.y) <= 0.05 {
+                return
+            }
+            if smoothPoint {
+                smooth.insert(built.count)
+            }
+            built.append(point)
+        }
+
+        var index = origin
+        var isFirst = true
+        var steps = 0
+        while isFirst || index != origin {
+            isFirst = false
+            steps += 1
+            guard steps <= count + 1 else { return nil }
+
+            if cut.contains(index) {
+                var run = [points[index]]
+                var cursor = index
+                while cut.contains(cursor) {
+                    cursor = (cursor + 1) % count
+                    run.append(points[cursor])
+                    if cursor == origin || run.count > count + 1 { break }
+                }
+                if run.count >= 4, let arc = circularCutAnchors(run) {
+                    for (offset, point) in arc.enumerated() {
+                        let isEnd = offset == 0 || offset == arc.count - 1
+                        append(point, smoothPoint: !isEnd)
+                    }
+                } else if runLooksCurved(run) {
+                    return nil
+                } else {
+                    for point in run {
+                        append(point, smoothPoint: false)
+                    }
+                }
+                index = cursor
+            } else {
+                append(points[index], smoothPoint: false)
+                index = (index + 1) % count
+            }
+        }
+
+        if built.count > 1,
+           let first = built.first,
+           let last = built.last,
+           hypot(first.x - last.x, first.y - last.y) <= 0.05 {
+            smooth.remove(built.count - 1)
+            built.removeLast()
+        }
+
+        let cleaned = dropCollinearCorners(built, smooth: smooth)
+        guard cleaned.points.count >= 3 else { return nil }
+        return cleaned
+    }
+
     /// Drops repeated consecutive points and a duplicate closing point.
     private static func normalized(_ points: [CGPoint]) -> [CGPoint] {
         guard points.count > 1 else { return points }
@@ -279,5 +363,118 @@ enum ShapeBooleanEngine {
             result.removeLast()
         }
         return result
+    }
+
+    /// Compact anchors for a cut run that lies on one circle, or nil when it does not.
+    private static func circularCutAnchors(_ run: [CGPoint]) -> [CGPoint]? {
+        guard let first = run.first, let last = run.last, run.count >= 4 else { return nil }
+        let through = run[run.count / 2]
+        guard let circle = circumcircle(first, through, last) else { return nil }
+        let tolerance = max(1.25, circle.radius * 0.02)
+        for point in run {
+            if abs(hypot(point.x - circle.center.x, point.y - circle.center.y) - circle.radius) > tolerance {
+                return nil
+            }
+        }
+        for index in 0..<(run.count - 1) {
+            let start = run[index]
+            let end = run[index + 1]
+            let mid = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+            if abs(hypot(mid.x - circle.center.x, mid.y - circle.center.y) - circle.radius) > tolerance {
+                return nil
+            }
+        }
+        guard let sweep = ShapeGeometry.signedCircularSweep(of: run, around: circle.center, closed: false),
+              abs(sweep) > 0.05 else { return nil }
+        let anchors = ShapeGeometry.defaultCircularAnchors(
+            center: circle.center,
+            radius: circle.radius,
+            start: first,
+            end: last,
+            sweep: sweep,
+            closed: false
+        )
+        return anchors.count >= 2 ? anchors : nil
+    }
+
+    /// True when the run bows away from its chord, so it is a curve rather than a straight cut.
+    private static func runLooksCurved(_ run: [CGPoint]) -> Bool {
+        guard let first = run.first, let last = run.last, run.count >= 3 else { return false }
+        let dx = last.x - first.x
+        let dy = last.y - first.y
+        let lengthSquared = dx * dx + dy * dy
+        var worst: CGFloat = 0
+        for point in run.dropFirst().dropLast() {
+            let distance: CGFloat
+            if lengthSquared <= 1e-8 {
+                distance = hypot(point.x - first.x, point.y - first.y)
+            } else {
+                let t = max(0, min(1, ((point.x - first.x) * dx + (point.y - first.y) * dy) / lengthSquared))
+                let projection = CGPoint(x: first.x + t * dx, y: first.y + t * dy)
+                distance = hypot(point.x - projection.x, point.y - projection.y)
+            }
+            worst = max(worst, distance)
+        }
+        return worst > 2
+    }
+
+    /// Drops vertices that sit on a straight edge. Arc samples and the corners where
+    /// an arc meets a straight side are kept, so the junction is not absorbed into the curve.
+    private static func dropCollinearCorners(
+        _ points: [CGPoint],
+        smooth: Set<Int>
+    ) -> (points: [CGPoint], smoothCornerIndices: Set<Int>) {
+        let count = points.count
+        guard count >= 4 else { return (points, smooth) }
+        var keep = [Bool](repeating: true, count: count)
+        for index in 0..<count where !smooth.contains(index) {
+            let previousIndex = (index - 1 + count) % count
+            let nextIndex = (index + 1) % count
+            if smooth.contains(previousIndex) || smooth.contains(nextIndex) { continue }
+            let turn = turnAngle(points[previousIndex], points[index], points[nextIndex])
+            if turn < 8 * .pi / 180 {
+                keep[index] = false
+            }
+        }
+        var rebuilt: [CGPoint] = []
+        var rebuiltSmooth = Set<Int>()
+        for index in 0..<count where keep[index] {
+            if smooth.contains(index) {
+                rebuiltSmooth.insert(rebuilt.count)
+            }
+            rebuilt.append(points[index])
+        }
+        guard rebuilt.count >= 3 else { return (points, smooth) }
+        return (rebuilt, rebuiltSmooth)
+    }
+
+    private static func turnAngle(_ previous: CGPoint, _ current: CGPoint, _ next: CGPoint) -> CGFloat {
+        let incoming = CGPoint(x: current.x - previous.x, y: current.y - previous.y)
+        let outgoing = CGPoint(x: next.x - current.x, y: next.y - current.y)
+        let inLength = hypot(incoming.x, incoming.y)
+        let outLength = hypot(outgoing.x, outgoing.y)
+        guard inLength > 1e-6, outLength > 1e-6 else { return 0 }
+        let cross = incoming.x * outgoing.y - incoming.y * outgoing.x
+        let dot = incoming.x * outgoing.x + incoming.y * outgoing.y
+        return abs(atan2(cross, dot))
+    }
+
+    private static func circumcircle(
+        _ a: CGPoint,
+        _ b: CGPoint,
+        _ c: CGPoint
+    ) -> (center: CGPoint, radius: CGFloat)? {
+        let d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y))
+        guard abs(d) > 0.001 else { return nil }
+        let ux = ((a.x * a.x + a.y * a.y) * (b.y - c.y)
+            + (b.x * b.x + b.y * b.y) * (c.y - a.y)
+            + (c.x * c.x + c.y * c.y) * (a.y - b.y)) / d
+        let uy = ((a.x * a.x + a.y * a.y) * (c.x - b.x)
+            + (b.x * b.x + b.y * b.y) * (a.x - c.x)
+            + (c.x * c.x + c.y * c.y) * (b.x - a.x)) / d
+        let center = CGPoint(x: ux, y: uy)
+        let radius = hypot(a.x - center.x, a.y - center.y)
+        guard radius > 0.001 else { return nil }
+        return (center, radius)
     }
 }
