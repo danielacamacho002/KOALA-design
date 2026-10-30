@@ -3100,22 +3100,163 @@ final class KoalaDocument {
         geometryRevision += 1
     }
 
-    /// Interior fill tap for the Delete tool. Subtracts the shape under the tap
-    /// from the closed shape around it (base MINUS target) and removes the cutter.
-    /// A smaller shape inside a larger one is the cutter even when the larger
-    /// shape was drawn later. When the target sits fully inside the base a hole
-    /// is punched; when it crosses the base's edge the outline is reshaped into
-    /// the notch instead of leaving a seam. Returns `true` when a subtraction
-    /// was performed.
+    /// The two shapes an overlap tap would cut, before the user confirms.
+    /// `baseID` stays and receives the hole or notch. `cutterID` is deleted.
+    struct OverlapCutProposal: Equatable {
+        var baseID: UUID
+        var cutterID: UUID
+    }
+
+    /// Geometry for the overlap-cut preview. `keptContours` is the base after
+    /// subtraction. When `punchesHole` is true the first contour is the outer
+    /// outline and the rest are holes; otherwise each contour is a remaining piece.
+    struct OverlapCutPreview: Equatable {
+        var keptContours: [[CGPoint]]
+        var punchesHole: Bool
+        var cutterContour: [CGPoint]
+    }
+
+    /// Chip centers in document space. `kept` is the plus, `cut` is the minus,
+    /// and `confirm` is the check.
+    struct OverlapCutChipPoints: Equatable {
+        var kept: CGPoint
+        var cut: CGPoint
+        var confirm: CGPoint
+    }
+
+    /// Which pair an overlap tap would cut, without changing the document.
+    /// A clearly smaller shape inside a larger one is the cutter. Otherwise the
+    /// front shape is the cutter and the shape under the tap is the base.
+    func proposedOverlapCut(at documentPoint: CGPoint) -> OverlapCutProposal? {
+        guard let pair = overlapCutPair(at: documentPoint) else { return nil }
+        return OverlapCutProposal(baseID: pair.base.id, cutterID: pair.cutter.id)
+    }
+
+    /// Subtracts `cutterID` from `baseID` and deletes the cutter. Swapping the
+    /// ids cuts the other way. Returns `true` when a subtraction was performed.
+    @discardableResult
+    func applyOverlapCut(baseID: UUID, cutterID: UUID) -> Bool {
+        guard baseID != cutterID,
+              let base = stroke(with: baseID),
+              let cutter = stroke(with: cutterID),
+              base.isClosed, cutter.isClosed,
+              !base.isConstruction, !cutter.isConstruction else { return false }
+        let baseContour = ShapeGeometry.renderPoints(for: base)
+        let cutterContour = ShapeGeometry.renderPoints(for: cutter)
+        guard baseContour.count >= 3, cutterContour.count >= 3 else { return false }
+        guard let outcome = ShapeBooleanEngine.subtract(
+            baseContour: baseContour,
+            targetContour: cutterContour
+        ) else { return false }
+        guard let baseArrayIndex = strokes.firstIndex(where: { $0.id == base.id }) else { return false }
+
+        pushUndo()
+        applySubtraction(
+            outcome,
+            toBaseAt: baseArrayIndex,
+            curvedAlong: cutterUsesCurve(cutter) ? cutterContour : nil
+        )
+        strokes.removeAll { $0.id == cutter.id }
+        pruneGroups()
+        retireDesignStrokeIDs([cutter.id])
+        deselectStrokeAfterMutation(cutter.id)
+        geometryRevision += 1
+        return true
+    }
+
+    /// Interior fill tap for the Delete tool. Subtracts the proposed cutter from
+    /// the base and removes the cutter. When the cutter sits fully inside the
+    /// base a hole is punched; when it crosses the base's edge the outline is
+    /// reshaped into the notch. Returns `true` when a subtraction was performed.
     @discardableResult
     func punchOverlapHole(at documentPoint: CGPoint) -> Bool {
-        if isHitOnInactiveLayer(near: documentPoint, threshold: 0) { return false }
+        guard let proposal = proposedOverlapCut(at: documentPoint) else { return false }
+        return applyOverlapCut(baseID: proposal.baseID, cutterID: proposal.cutterID)
+    }
+
+    /// Read-only result of subtracting `cutterID` from `baseID`, for the chooser preview.
+    func overlapCutPreview(baseID: UUID, cutterID: UUID) -> OverlapCutPreview? {
+        guard baseID != cutterID,
+              let base = stroke(with: baseID),
+              let cutter = stroke(with: cutterID) else { return nil }
+        let baseContour = ShapeGeometry.renderPoints(for: base)
+        let cutterContour = ShapeGeometry.renderPoints(for: cutter)
+        guard baseContour.count >= 3, cutterContour.count >= 3 else { return nil }
+        guard let outcome = ShapeBooleanEngine.subtract(
+            baseContour: baseContour,
+            targetContour: cutterContour
+        ) else { return nil }
+
+        switch outcome {
+        case let .interiorHole(cutouts):
+            var holes: [[CGPoint]] = []
+            for cutout in base.cutoutPoints {
+                let rendered = ShapeGeometry.renderPoints(
+                    for: VectorStroke(
+                        layerID: base.layerID,
+                        points: cutout,
+                        isClosed: true,
+                        shapeType: .polyline
+                    )
+                )
+                if rendered.count >= 3 { holes.append(rendered) }
+            }
+            holes.append(contentsOf: cutouts.filter { $0.count >= 3 })
+            return OverlapCutPreview(
+                keptContours: [baseContour] + holes,
+                punchesHole: true,
+                cutterContour: cutterContour
+            )
+        case let .boundaryCut(contours):
+            let pieces = contours.map(\.points).filter { $0.count >= 3 }
+            guard !pieces.isEmpty else { return nil }
+            return OverlapCutPreview(
+                keptContours: pieces,
+                punchesHole: false,
+                cutterContour: cutterContour
+            )
+        case .baseRemoved:
+            return OverlapCutPreview(
+                keptContours: [],
+                punchesHole: false,
+                cutterContour: cutterContour
+            )
+        }
+    }
+
+    /// Plus, minus, and check centers. The signs sit on each shape's own body,
+    /// outside the overlap, unless that shape is fully inside the other — then
+    /// its sign stays at the center. `minimumGap` keeps the chips from covering
+    /// the check; pass a distance converted from view points.
+    func overlapCutChipPoints(
+        baseID: UUID,
+        cutterID: UUID,
+        tapPoint: CGPoint,
+        minimumGap: CGFloat
+    ) -> OverlapCutChipPoints? {
+        guard let base = stroke(with: baseID), let cutter = stroke(with: cutterID) else { return nil }
+        let separatedChips = separatedChipPair(
+            exclusiveChipPoint(for: base, other: cutter),
+            exclusiveChipPoint(for: cutter, other: base),
+            minimumGap: minimumGap
+        )
+        var confirm = tapPoint
+        confirm = separated(from: separatedChips.0, point: confirm, minimumGap: minimumGap)
+        confirm = separated(from: separatedChips.1, point: confirm, minimumGap: minimumGap)
+        return OverlapCutChipPoints(kept: separatedChips.0, cut: separatedChips.1, confirm: confirm)
+    }
+
+    /// The first base/cutter pair under `documentPoint` whose subtraction succeeds.
+    private func overlapCutPair(
+        at documentPoint: CGPoint
+    ) -> (base: VectorStroke, cutter: VectorStroke)? {
+        if isHitOnInactiveLayer(near: documentPoint, threshold: 0) { return nil }
         let candidates = selectableStrokes()
         let containing = candidates.enumerated().compactMap { index, stroke -> (index: Int, area: CGFloat)? in
             guard stroke.isClosed, !stroke.isConstruction, stroke.contains(documentPoint) else { return nil }
             return (index, Self.visibleHitArea(of: stroke))
         }
-        guard containing.count >= 2 else { return false }
+        guard containing.count >= 2 else { return nil }
 
         // A shape sitting inside a larger one is the cutter, even when the larger
         // shape was drawn later and its fill is in front. Otherwise the front-most
@@ -3128,53 +3269,111 @@ final class KoalaDocument {
         if smallest.area < largestArea * 0.98 {
             targetIndex = smallest.index
             let hosts = containing.filter { $0.index != smallest.index && $0.area > smallest.area }
-            guard let host = hosts.min(by: { $0.area < $1.area }) else { return false }
+            guard let host = hosts.min(by: { $0.area < $1.area }) else { return nil }
             orderedBeneath = [host.index]
         } else {
-            guard let front = containing.max(by: { $0.index < $1.index }) else { return false }
+            guard let front = containing.max(by: { $0.index < $1.index }) else { return nil }
             targetIndex = front.index
             let beneath = Array(stride(from: targetIndex - 1, through: 0, by: -1))
             orderedBeneath = beneath.filter { candidates[$0].contains(documentPoint) }
                 + beneath.filter { !candidates[$0].contains(documentPoint) }
         }
 
-        let target = candidates[targetIndex]
-        let targetContour = ShapeGeometry.renderPoints(for: target)
-        guard targetContour.count >= 3 else { return false }
+        let cutter = candidates[targetIndex]
+        let cutterContour = ShapeGeometry.renderPoints(for: cutter)
+        guard cutterContour.count >= 3 else { return nil }
 
         for index in orderedBeneath {
             let base = candidates[index]
-            guard base.id != target.id, base.isClosed, !base.isConstruction else { continue }
+            guard base.id != cutter.id, base.isClosed, !base.isConstruction else { continue }
             let baseContour = ShapeGeometry.renderPoints(for: base)
             guard baseContour.count >= 3 else { continue }
-            guard let outcome = ShapeBooleanEngine.subtract(
+            guard ShapeBooleanEngine.subtract(
                 baseContour: baseContour,
-                targetContour: targetContour
-            ) else { continue }
-            guard let baseArrayIndex = strokes.firstIndex(where: { $0.id == base.id }) else { continue }
-
-            // A curved cutter (circle/ellipse/arc) reshapes into a true curve so the
-            // carved bite stays crisp; straight-edged cutters stay polylines.
-            let cutterIsCurved: Bool
-            switch target.shapeType {
-            case .circle, .ellipse, .arc, .curve: cutterIsCurved = true
-            default: cutterIsCurved = false
-            }
-
-            pushUndo()
-            applySubtraction(
-                outcome,
-                toBaseAt: baseArrayIndex,
-                curvedAlong: cutterIsCurved ? targetContour : nil
-            )
-            strokes.removeAll { $0.id == target.id }
-            pruneGroups()
-            retireDesignStrokeIDs([target.id])
-            deselectStrokeAfterMutation(target.id)
-            geometryRevision += 1
-            return true
+                targetContour: cutterContour
+            ) != nil else { continue }
+            return (base, cutter)
         }
-        return false
+        return nil
+    }
+
+    private func cutterUsesCurve(_ cutter: VectorStroke) -> Bool {
+        switch cutter.shapeType {
+        case .circle, .ellipse, .arc, .curve: return true
+        default: return false
+        }
+    }
+
+    /// A point on `shape` that is not inside `other`. A shape fully contained by
+    /// `other` keeps its center.
+    private func exclusiveChipPoint(for shape: VectorStroke, other: VectorStroke) -> CGPoint {
+        let contour = ShapeGeometry.renderPoints(for: shape)
+        let center = centroid(contour)
+        guard contour.count >= 3 else { return center }
+        // `contains` counts the boundary as inside, so a center sitting on the
+        // other shape's edge still walks out into this shape's exclusive body.
+        if !other.contains(center) { return center }
+
+        var anchor: CGPoint?
+        var bestDistance = -CGFloat.greatestFiniteMagnitude
+        for point in contour where !other.contains(point) {
+            let distance = hypot(point.x - center.x, point.y - center.y)
+            if distance > bestDistance {
+                bestDistance = distance
+                anchor = point
+            }
+        }
+        guard let anchor else { return center }
+
+        var placed: CGPoint?
+        for t in [CGFloat(0.08), 0.16, 0.28, 0.42] {
+            let candidate = CGPoint(
+                x: anchor.x + (center.x - anchor.x) * t,
+                y: anchor.y + (center.y - anchor.y) * t
+            )
+            if other.contains(candidate) { break }
+            if shape.contains(candidate) {
+                placed = candidate
+            }
+        }
+        return placed ?? center
+    }
+
+    private func separatedChipPair(
+        _ kept: CGPoint,
+        _ cut: CGPoint,
+        minimumGap: CGFloat
+    ) -> (CGPoint, CGPoint) {
+        let dx = cut.x - kept.x
+        let dy = cut.y - kept.y
+        let distance = hypot(dx, dy)
+        guard distance < minimumGap else { return (kept, cut) }
+        if distance <= 0.001 {
+            return (
+                CGPoint(x: kept.x - minimumGap / 2, y: kept.y),
+                CGPoint(x: cut.x + minimumGap / 2, y: cut.y)
+            )
+        }
+        let push = (minimumGap - distance) / 2
+        let ux = dx / distance
+        let uy = dy / distance
+        return (
+            CGPoint(x: kept.x - ux * push, y: kept.y - uy * push),
+            CGPoint(x: cut.x + ux * push, y: cut.y + uy * push)
+        )
+    }
+
+    /// Moves `point` out to `minimumGap` from `origin` when it sits closer than that.
+    private func separated(from origin: CGPoint, point: CGPoint, minimumGap: CGFloat) -> CGPoint {
+        let dx = point.x - origin.x
+        let dy = point.y - origin.y
+        let distance = hypot(dx, dy)
+        guard distance < minimumGap else { return point }
+        if distance <= 0.001 {
+            return CGPoint(x: origin.x + minimumGap, y: origin.y)
+        }
+        let scale = minimumGap / distance
+        return CGPoint(x: origin.x + dx * scale, y: origin.y + dy * scale)
     }
 
     /// Uses an open arc as a knife to slice the base into two pieces and remove the piece
