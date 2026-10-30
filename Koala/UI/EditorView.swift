@@ -344,10 +344,20 @@ struct EditorView: View {
                 .allowsHitTesting(canvasOverlayAcceptsHits)
                 .transaction { $0.animation = nil }
 
-                DimensionOverlayView(document: store.document) {
-                    store.markDirty()
-                }
+                DimensionOverlayView(
+                    document: store.document,
+                    onEditFromCanvas: { strokeID in
+                        store.document.setElementSelection(strokeIDs: [strokeID], textIDs: [])
+                        store.document.selectTool(.dimensions)
+                        handleToolSelected(.dimensions)
+                    },
+                    onChanged: { store.markDirty() }
+                )
                 .ignoresSafeArea()
+                .allowsHitTesting(
+                    store.document.activeCategory == .dimensions
+                        || !store.document.pinnedVisibleDimensionKeys.isEmpty
+                )
                 .transaction { $0.animation = nil }
 
                 ViewportNavigationInstaller(
