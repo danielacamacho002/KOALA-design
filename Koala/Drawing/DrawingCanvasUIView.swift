@@ -83,6 +83,8 @@ final class DrawingCanvasUIView: UIView {
     var onLayoutMetrics: ((CGSize, UIEdgeInsets) -> Void)?
 
     private var strokeLayers: [UUID: CAShapeLayer] = [:]
+    /// Green rim drawn just behind each selected stroke.
+    private var selectionHaloLayers: [UUID: CAShapeLayer] = [:]
     private var textLayers: [UUID: CAShapeLayer] = [:]
     private var commandPreviewLayer: CAShapeLayer?
     private var dragPreviewLayer: CAShapeLayer?
@@ -222,6 +224,8 @@ final class DrawingCanvasUIView: UIView {
         for id in staleIDs {
             strokeLayers[id]?.removeFromSuperlayer()
             strokeLayers.removeValue(forKey: id)
+            selectionHaloLayers[id]?.removeFromSuperlayer()
+            selectionHaloLayers.removeValue(forKey: id)
         }
 
         for stroke in visible {
@@ -343,11 +347,72 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func reloadStrokesHighlight() {
+        var selected = document.selectedStrokeIDs
+        if let id = document.selectedStrokeID {
+            selected.insert(id)
+        }
         for (id, layer) in strokeLayers {
             guard let stroke = document.stroke(with: id) else { continue }
             let base = document.opacity(forLayerID: stroke.layerID)
-            layer.opacity = Float(base * (id == document.selectedStrokeID ? 1 : 0.85))
+            layer.opacity = Float(base * (selected.contains(id) ? 1 : 0.85))
         }
+        updateSelectionHalos(selected: selected)
+    }
+
+    /// Strokes a wider copy of each selected path behind the artwork so a green
+    /// rim shows around the shape, in the same green as an active toolbar icon.
+    private func updateSelectionHalos(selected: Set<UUID>) {
+        for id in selectionHaloLayers.keys where !selected.contains(id) {
+            selectionHaloLayers[id]?.removeFromSuperlayer()
+            selectionHaloLayers.removeValue(forKey: id)
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for id in selected {
+            guard let stroke = document.stroke(with: id),
+                  let strokeLayer = strokeLayers[id] else {
+                selectionHaloLayers[id]?.removeFromSuperlayer()
+                selectionHaloLayers.removeValue(forKey: id)
+                continue
+            }
+            let halo = selectionHaloLayer(for: id, below: strokeLayer)
+            let screenWidth = CanvasOverlayGeometry.displayStrokeScreenWidth(
+                strokeWidth: stroke.strokeWidth,
+                scale: document.viewport.scale
+            )
+            halo.path = StrokeRenderer.outlinePath(for: stroke, viewport: document.viewport).cgPath
+            halo.lineWidth = screenWidth + CanvasOverlayGeometry.selectionHaloOutset * 2
+            halo.lineDashPattern = stroke.isConstruction ? [10, 6] : nil
+            // Same depth as the stroke, sitting immediately under it, so the rim
+            // shows around the shape and still paints over artwork behind it.
+            halo.zPosition = strokeLayer.zPosition
+            halo.opacity = Float(document.opacity(forLayerID: stroke.layerID))
+            halo.contentsScale = DisplayZoomCompensation.layerContentsScale
+        }
+        CATransaction.commit()
+    }
+
+    private func selectionHaloLayer(for id: UUID, below strokeLayer: CAShapeLayer) -> CAShapeLayer {
+        let halo: CAShapeLayer
+        if let existing = selectionHaloLayers[id] {
+            halo = existing
+        } else {
+            let created = CAShapeLayer()
+            created.fillColor = nil
+            created.lineCap = .round
+            created.lineJoin = .round
+            created.strokeColor = SelectionHighlight.iconUIColor.cgColor
+            selectionHaloLayers[id] = created
+            halo = created
+        }
+        let sublayers = layer.sublayers
+        let haloIndex = sublayers?.firstIndex(of: halo)
+        let strokeIndex = sublayers?.firstIndex(of: strokeLayer)
+        if halo.superlayer !== layer || haloIndex != strokeIndex.map({ $0 - 1 }) {
+            layer.insertSublayer(halo, below: strokeLayer)
+        }
+        return halo
     }
 
     func refreshStrokeHighlight() {

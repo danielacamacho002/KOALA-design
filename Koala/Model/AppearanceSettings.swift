@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 /// App-wide appearance preferences persisted in UserDefaults.
 enum AppearanceSettings {
@@ -28,6 +29,9 @@ enum SelectionHighlight {
     static let background = Color(hex: "66653D")
     static let icon = Color(hex: "BBD159")
     static let font = Color(hex: "E2F395")
+
+    /// Toolbar-icon green, for on-canvas selection outlines.
+    static let iconUIColor = UIColor(red: 187 / 255, green: 209 / 255, blue: 89 / 255, alpha: 1)
 }
 
 extension Color {
