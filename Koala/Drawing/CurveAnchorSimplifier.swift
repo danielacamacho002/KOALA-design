@@ -135,27 +135,109 @@ private extension ShapeGeometry {
         return chain
     }
 
+    /// How far to look past a vertex before measuring its turn. A sharp corner that
+    /// the sampler split into a few short steps still reads as one corner instead of
+    /// a run of shallow bends that a cubic then rounds off.
+    static let cornerLeg: CGFloat = 4
+
     static func cornerIndices(in points: [CGPoint], closed: Bool) -> [Int] {
         let count = points.count
         guard count >= 3 else { return [] }
-        var corners: [Int] = []
+        var found: [(index: Int, turn: CGFloat)] = []
         let upper = closed ? count : count - 1
         let lower = closed ? 0 : 1
         for index in lower..<upper {
-            let previous = points[(index - 1 + count) % count]
-            let current = points[index]
-            let next = points[(index + 1) % count]
-            let incoming = CGPoint(x: current.x - previous.x, y: current.y - previous.y)
-            let outgoing = CGPoint(x: next.x - current.x, y: next.y - current.y)
-            let inLength = hypot(incoming.x, incoming.y)
-            let outLength = hypot(outgoing.x, outgoing.y)
-            guard inLength > duplicateEpsilon, outLength > duplicateEpsilon else { continue }
-            let cross = incoming.x * outgoing.y - incoming.y * outgoing.x
-            let dot = incoming.x * outgoing.x + incoming.y * outgoing.y
-            let turn = abs(atan2(cross, dot))
-            if turn >= cornerTurn { corners.append(index) }
+            guard let turn = cornerTurnAngle(points, at: index, closed: closed), turn >= cornerTurn else {
+                continue
+            }
+            found.append((index, turn))
         }
-        return corners
+        // One sharp corner sampled as several nearby vertices should stay one corner.
+        found.sort { $0.turn > $1.turn }
+        var kept: [Int] = []
+        for candidate in found {
+            let crowded = kept.contains { other in
+                let gap = abs(other - candidate.index)
+                let wrapped = min(gap, count - gap)
+                let distance = hypot(
+                    points[other].x - points[candidate.index].x,
+                    points[other].y - points[candidate.index].y
+                )
+                return wrapped <= 4 && distance <= cornerLeg
+            }
+            if !crowded { kept.append(candidate.index) }
+        }
+        return kept.sorted()
+    }
+
+    /// Turn at `index`, measured against the nearest vertices at least `cornerLeg`
+    /// away so a short chamfer does not hide the real corner.
+    static func cornerTurnAngle(_ points: [CGPoint], at index: Int, closed: Bool) -> CGFloat? {
+        let count = points.count
+        if !closed, index <= 0 || index >= count - 1 { return nil }
+        guard let previous = neighbor(points, from: index, direction: -1, minimum: cornerLeg, closed: closed),
+              let next = neighbor(points, from: index, direction: 1, minimum: cornerLeg, closed: closed) else {
+            return nil
+        }
+        let turn = absTurn(previous, points[index], next)
+        return turn > 0 ? turn : nil
+    }
+
+    static func sharpestInteriorCorner(_ points: [CGPoint]) -> Int? {
+        guard points.count >= 3 else { return nil }
+        var bestIndex: Int?
+        var bestTurn: CGFloat = 0
+        for index in 1..<(points.count - 1) {
+            guard let turn = cornerTurnAngle(points, at: index, closed: false), turn >= cornerTurn else {
+                continue
+            }
+            if turn > bestTurn {
+                bestTurn = turn
+                bestIndex = index
+            }
+        }
+        return bestIndex
+    }
+
+    static func neighbor(
+        _ points: [CGPoint],
+        from index: Int,
+        direction: Int,
+        minimum: CGFloat,
+        closed: Bool
+    ) -> CGPoint? {
+        let count = points.count
+        let origin = points[index]
+        var offset = direction
+        for _ in 1..<count {
+            let raw = index + offset
+            if !closed, raw < 0 || raw >= count { break }
+            let wrapped = (raw % count + count) % count
+            if wrapped == index { break }
+            let point = points[wrapped]
+            if hypot(point.x - origin.x, point.y - origin.y) >= minimum {
+                return point
+            }
+            offset += direction
+        }
+        let immediate = index + direction
+        if !closed, immediate < 0 || immediate >= count { return nil }
+        let wrapped = (immediate % count + count) % count
+        if wrapped == index { return nil }
+        let point = points[wrapped]
+        if hypot(point.x - origin.x, point.y - origin.y) <= duplicateEpsilon { return nil }
+        return point
+    }
+
+    static func absTurn(_ previous: CGPoint, _ current: CGPoint, _ next: CGPoint) -> CGFloat {
+        let incoming = CGPoint(x: current.x - previous.x, y: current.y - previous.y)
+        let outgoing = CGPoint(x: next.x - current.x, y: next.y - current.y)
+        let inLength = hypot(incoming.x, incoming.y)
+        let outLength = hypot(outgoing.x, outgoing.y)
+        guard inLength > duplicateEpsilon, outLength > duplicateEpsilon else { return 0 }
+        let cross = incoming.x * outgoing.y - incoming.y * outgoing.x
+        let dot = incoming.x * outgoing.x + incoming.y * outgoing.y
+        return abs(atan2(cross, dot))
     }
 
     static func closedSpan(_ points: [CGPoint], from start: Int, to end: Int) -> [CGPoint] {
@@ -227,13 +309,38 @@ private extension ShapeGeometry {
         guard count >= 2, let first = points.first, let last = points.last else {
             return FittedChain(anchors: points, handles: points.map { _ in CurveHandle() })
         }
-        if count == 2 || maxChordDeviation(points) <= fitTolerance {
+        if count == 2 {
             return line(from: first, to: last)
         }
         // A span that still will not fit must keep its samples. Replacing it with
         // the chord used to miss the outline, and the whole shape was then left dense.
         if depth >= 14 {
             return verbatim(points)
+        }
+        // A sharp corner inside this span must stay a corner. Fitting one cubic
+        // through it, or splitting it with a shared tangent, rounds the corner.
+        if let corner = sharpestInteriorCorner(points) {
+            let leftPoints = Array(points[...corner])
+            let rightPoints = Array(points[corner...])
+            let left = fitSpan(
+                leftPoints,
+                depth: depth + 1,
+                leftTangent: leftTangent,
+                rightTangent: incomingTangent(leftPoints)
+            )
+            let right = fitSpan(
+                rightPoints,
+                depth: depth + 1,
+                leftTangent: outgoingTangent(rightPoints),
+                rightTangent: rightTangent
+            )
+            var combined = FittedChain(anchors: [], handles: [])
+            append(left, onto: &combined)
+            append(right, onto: &combined)
+            return combined
+        }
+        if maxChordDeviation(points) <= fitTolerance {
+            return line(from: first, to: last)
         }
         if count == 3 {
             return throughMiddle(points)

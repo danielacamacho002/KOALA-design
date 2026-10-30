@@ -212,9 +212,10 @@ nonisolated enum CanvasOverlayGeometry: Sendable {
         return CGPoint(x: 1, y: 0)
     }
 
-    /// Raises each arm that is shorter than `minimumLength` up to that length, in its own
-    /// direction. A missing arm takes the opposite of the other arm, at the minimum, so the
-    /// curve only gains a short tangent. Arms that are already long enough stay put.
+    /// Lengthens each arm that is already shorter than `minimumLength`, along its own
+    /// direction. A zero arm is a corner and stays zero. Filling it with the opposite
+    /// of the other arm would bend a straight edge into the curve it was joined to.
+    /// Arms that are already long enough stay put.
     static func tangentHandlesObservingMinimum(
         anchors: [CGPoint],
         handles: [CurveHandle],
@@ -222,13 +223,21 @@ nonisolated enum CanvasOverlayGeometry: Sendable {
     ) -> [CurveHandle] {
         guard anchors.count == handles.count else { return handles }
         let minimum = max(minimumLength, 0)
-        return handles.enumerated().map { index, handle in
-            let axis = tangentAxis(anchors: anchors, index: index)
-            let out = extendedTangentOffset(handle.outOffset, minimum: minimum, fallback: axis)
-            let inFallback = CGPoint(x: -out.x, y: -out.y)
-            let incoming = extendedTangentOffset(handle.inOffset, minimum: minimum, fallback: inFallback)
-            return CurveHandle(inOffset: incoming, outOffset: out)
+        return handles.map { handle in
+            CurveHandle(
+                inOffset: lengthenedExistingOffset(handle.inOffset, minimum: minimum),
+                outOffset: lengthenedExistingOffset(handle.outOffset, minimum: minimum)
+            )
         }
+    }
+
+    /// Lengthens a tangent that already points somewhere. A zero offset stays zero.
+    static func lengthenedExistingOffset(_ offset: CGPoint, minimum: CGFloat) -> CGPoint {
+        let length = hypot(offset.x, offset.y)
+        if length < epsilon { return .zero }
+        if length >= minimum { return offset }
+        let scale = minimum / length
+        return CGPoint(x: offset.x * scale, y: offset.y * scale)
     }
 
     /// Lengthens `offset` to `minimum` along its own direction. A zero offset uses `fallback`.

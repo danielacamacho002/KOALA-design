@@ -375,6 +375,91 @@ struct PathJoinEngineTests {
         #expect(rendered.contains { hypot($0.x - 400, $0.y - 180) < 8 })
     }
 
+    /// Straight corners stay corners when a Bézier is welded onto them. The curve
+    /// keeps its bulge, and the joint only has a handle on the curve's side.
+    @Test func joiningABezierOntoStraightCornersKeepsThoseCorners() {
+        let origin = CGPoint(x: 0, y: 0)
+        let corner = CGPoint(x: 100, y: 0)
+        let peak = CGPoint(x: 100, y: 80)
+        let polyline = VectorStroke(
+            layerID: layerID,
+            points: [origin, corner, peak],
+            isClosed: false,
+            shapeType: .polyline
+        )
+        let curve = cubic(
+            from: peak,
+            to: origin,
+            out: CGPoint(x: 40, y: 30),
+            inn: CGPoint(x: 40, y: -30)
+        )
+        let bulge = ShapeGeometry.cubicBezierPoint(
+            peak,
+            CGPoint(x: peak.x + 40, y: peak.y + 30),
+            CGPoint(x: origin.x + 40, y: origin.y - 30),
+            origin,
+            t: 0.5
+        )
+
+        let joined = PathJoinEngine.join([polyline, curve], tolerance: joinTolerance)
+        #expect(joined?.count == 1)
+        guard let stroke = joined?.first else { return }
+        #expect(stroke.isClosed)
+        #expect(stroke.shapeType == .curve)
+        guard let handles = stroke.curveHandles, handles.count == stroke.points.count else {
+            Issue.record("joined curve is missing handles")
+            return
+        }
+
+        func index(near target: CGPoint) -> Int? {
+            stroke.points.firstIndex { hypot($0.x - target.x, $0.y - target.y) < 1 }
+        }
+        guard let cornerIndex = index(near: corner),
+              let peakIndex = index(near: peak),
+              let originIndex = index(near: origin) else {
+            Issue.record("joined path lost a corner")
+            return
+        }
+
+        let cornerHandle = handles[cornerIndex]
+        #expect(hypot(cornerHandle.inOffset.x, cornerHandle.inOffset.y) < 0.05)
+        #expect(hypot(cornerHandle.outOffset.x, cornerHandle.outOffset.y) < 0.05)
+
+        func armLengths(_ handle: CurveHandle) -> (short: CGFloat, long: CGFloat) {
+            let incoming = hypot(handle.inOffset.x, handle.inOffset.y)
+            let outgoing = hypot(handle.outOffset.x, handle.outOffset.y)
+            return (min(incoming, outgoing), max(incoming, outgoing))
+        }
+        let peakArms = armLengths(handles[peakIndex])
+        let originArms = armLengths(handles[originIndex])
+        #expect(peakArms.short < 0.05)
+        #expect(peakArms.long > 20)
+        #expect(originArms.short < 0.05)
+        #expect(originArms.long > 20)
+
+        let rendered = ShapeGeometry.renderPoints(for: stroke)
+        #expect(rendered.contains { hypot($0.x - bulge.x, $0.y - bulge.y) < 8 })
+        let nearCorner = rendered.filter { hypot($0.x - corner.x, $0.y - corner.y) < 20 }
+        #expect(!nearCorner.isEmpty)
+        #expect(nearCorner.allSatisfy { point in
+            let onBottom = abs(point.y) <= 1.5 && point.x >= -1 && point.x <= 101
+            let onSide = abs(point.x - corner.x) <= 1.5 && point.y >= -1 && point.y <= 81
+            return onBottom || onSide
+        })
+
+        let shown = CanvasOverlayGeometry.tangentHandlesObservingMinimum(
+            anchors: stroke.points,
+            handles: handles
+        )
+        let shownCorner = shown[cornerIndex]
+        #expect(shownCorner.inOffset == .zero)
+        #expect(shownCorner.outOffset == .zero)
+        let shownPeak = armLengths(shown[peakIndex])
+        let shownOrigin = armLengths(shown[originIndex])
+        #expect(shownPeak.short < 0.05)
+        #expect(shownOrigin.short < 0.05)
+    }
+
     /// Sleeve armhole: a sharp notch vertex and a cubic that swings well clear of
     /// the shoulder-to-step chord. Join must keep both, including when another
     /// edge is stacked and when the armhole is one multi-anchor curve.

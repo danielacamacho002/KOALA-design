@@ -3251,7 +3251,12 @@ final class KoalaDocument {
         case let .boundaryCut(contours):
             guard let primary = contours.first else { return }
             let baseID = strokes[baseArrayIndex].id
-            var updatedBase = reshaped(strokes[baseArrayIndex], toPoints: primary.points, curvedAlong: cutter)
+            var updatedBase = reshaped(
+                strokes[baseArrayIndex],
+                toPoints: primary.points,
+                curvedAlong: cutter,
+                cutEdgeStarts: primary.cutEdgeStarts
+            )
             // Keep existing holes only where they still fall inside the reshaped outline.
             updatedBase.cutoutPoints = updatedBase.cutoutPoints.filter { hole in
                 let holeCenter = centroid(hole)
@@ -3264,7 +3269,12 @@ final class KoalaDocument {
             guard !extraContours.isEmpty else { return }
             var newPieces: [VectorStroke] = []
             for contour in extraContours {
-                var piece = reshaped(updatedBase, toPoints: contour.points, curvedAlong: cutter)
+                var piece = reshaped(
+                    updatedBase,
+                    toPoints: contour.points,
+                    curvedAlong: cutter,
+                    cutEdgeStarts: contour.cutEdgeStarts
+                )
                 piece.id = UUID()
                 piece.cutoutPoints = []
                 newPieces.append(piece)
@@ -3286,13 +3296,15 @@ final class KoalaDocument {
     /// Returns a copy of `stroke` reshaped into an arbitrary closed contour, clearing
     /// parametric/shape-specific state so the Boolean-cut result renders as new geometry.
     ///
-    /// When `cutter` is supplied (a curved cutter's outline: circle/ellipse/arc), the run
-    /// of edges lying on that outline is rebuilt as a true Bézier `.curve` so the carved
-    /// bite stays crisp and re-editable; the straight base edges keep sharp corners.
+    /// When the Boolean tags which edges came from the cutter, a circular bite is stored
+    /// as an arc whose endpoints stay corners. Straight corners of the base stay corners.
+    /// Other curved cutters still get Bézier handles, and the simplifier refuses to
+    /// round a sharp corner into that curve.
     private func reshaped(
         _ stroke: VectorStroke,
         toPoints points: [CGPoint],
-        curvedAlong cutter: [CGPoint]? = nil
+        curvedAlong cutter: [CGPoint]? = nil,
+        cutEdgeStarts: [Int] = []
     ) -> VectorStroke {
         var copy = stroke
         copy.points = points
@@ -3305,6 +3317,17 @@ final class KoalaDocument {
         copy.smoothCornerIndices = nil
         copy.openEdgeStarts = nil
         copy.openCutoutIndices = nil
+
+        if let kept = ShapeBooleanEngine.cornerPreservingContour(
+            points: points,
+            cutEdgeStarts: cutEdgeStarts
+        ) {
+            copy.points = kept.points
+            copy.shapeType = .polyline
+            copy.curveHandles = nil
+            copy.smoothCornerIndices = kept.smoothCornerIndices.isEmpty ? nil : kept.smoothCornerIndices
+            return copy
+        }
 
         if let cutter,
            let handles = curveHandlesAlongCutter(points: points, cutter: cutter) {
