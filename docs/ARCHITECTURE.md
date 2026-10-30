@@ -1,6 +1,6 @@
 # Koala architecture
 
-iPad vector editor: design on a canvas, then arrange artwork for tiled print. iPhone is a placeholder. Source lives in `Koala/` (~120 Swift files).
+iPad-only vector editor: design on a canvas, then arrange artwork for tiled print. Source lives in `Koala/` (~120 Swift files).
 
 ## Folders
 
