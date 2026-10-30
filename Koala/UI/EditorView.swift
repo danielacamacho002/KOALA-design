@@ -65,6 +65,7 @@ struct EditorView: View {
     @State private var trimPreviewStrokeWidth: CGFloat = 1
     @State private var trimFlashTask: Task<Void, Never>?
     @State private var pendingTrim: PendingTrim?
+    @State private var pendingOverlapCut: PendingOverlapCut?
     @State private var persistTask: Task<Void, Never>?
     @State private var isLoadingProject = false
     @State private var isExporting = false
@@ -89,6 +90,7 @@ struct EditorView: View {
                     onBack: handleBack,
                     onUndo: performUndo,
                     onRedo: {
+                        pendingOverlapCut = nil
                         store.document.redo()
                         store.markDirty()
                     },
@@ -360,6 +362,18 @@ struct EditorView: View {
                 )
                 .transaction { $0.animation = nil }
 
+                if store.document.activeCategory == .delete, let pending = pendingOverlapCut {
+                    OverlapCutChooserView(
+                        document: store.document,
+                        baseID: pending.proposal.baseID,
+                        cutterID: pending.proposal.cutterID,
+                        tapPoint: pending.tapPoint
+                    )
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .transaction { $0.animation = nil }
+                }
+
                 ViewportNavigationInstaller(
                     document: store.document,
                     viewportHandle: designCanvasHandle,
@@ -572,6 +586,7 @@ struct EditorView: View {
     }
 
     private func switchToPrintLayoutMode() {
+        pendingOverlapCut = nil
         savedDesignViewport = store.document.viewport
         editorMode = .printLayout
         store.document.clearPrintSelection()
@@ -1133,6 +1148,7 @@ struct EditorView: View {
     }
 
     private func handleToolSelected(_ category: ToolCategory?) {
+        pendingOverlapCut = nil
         let category = category ?? .move
         showCommandPanel = category.isDrawingTool
         if category != .copy {
@@ -1337,6 +1353,51 @@ struct EditorView: View {
         var threshold: CGFloat
     }
 
+    /// An overlap cut waiting for the user to confirm which shape is removed.
+    private struct PendingOverlapCut: Equatable {
+        var tapPoint: CGPoint
+        var proposal: KoalaDocument.OverlapCutProposal
+    }
+
+    /// Confirm or swap the armed overlap cut. Returns true when the tap landed on a chip.
+    private func handleOverlapCutChipTap(at documentPoint: CGPoint) -> Bool {
+        guard let pending = pendingOverlapCut else { return false }
+        let slop = store.document.viewport.viewToDocument(distance: 22)
+        guard let chips = store.document.overlapCutChipPoints(
+            baseID: pending.proposal.baseID,
+            cutterID: pending.proposal.cutterID,
+            tapPoint: pending.tapPoint,
+            minimumGap: store.document.viewport.viewToDocument(distance: 44)
+        ) else {
+            pendingOverlapCut = nil
+            return false
+        }
+        func near(_ point: CGPoint) -> Bool {
+            hypot(documentPoint.x - point.x, documentPoint.y - point.y) <= slop
+        }
+        if near(chips.confirm) {
+            if store.document.applyOverlapCut(
+                baseID: pending.proposal.baseID,
+                cutterID: pending.proposal.cutterID
+            ) {
+                store.markDirty()
+            }
+            pendingOverlapCut = nil
+            return true
+        }
+        if near(chips.kept) || near(chips.cut) {
+            let swapped = KoalaDocument.OverlapCutProposal(
+                baseID: pending.proposal.cutterID,
+                cutterID: pending.proposal.baseID
+            )
+            if store.document.overlapCutPreview(baseID: swapped.baseID, cutterID: swapped.cutterID) != nil {
+                pendingOverlapCut = PendingOverlapCut(tapPoint: pending.tapPoint, proposal: swapped)
+            }
+            return true
+        }
+        return false
+    }
+
     /// Flash the span in red, then cut. `removal` already told us the trim will land, so
     /// `trimAt` is re-run after the flash rather than being made asynchronous.
     private func flashTrimRemoval(
@@ -1381,6 +1442,7 @@ struct EditorView: View {
 
     /// Leave the current tool, hide its panel/handles, and fall back to idle Move.
     private func handleDesignUndo() {
+        pendingOverlapCut = nil
         if curveDraft.canUndo {
             curveDraft.performUndo()
             return
@@ -1391,6 +1453,7 @@ struct EditorView: View {
     }
 
     private func handleDesignRedo() {
+        pendingOverlapCut = nil
         if curveDraft.canRedo {
             curveDraft.performRedo()
             return
@@ -1400,6 +1463,7 @@ struct EditorView: View {
     }
 
     private func dismissActiveTool() {
+        pendingOverlapCut = nil
         endTextEditingIfNeeded()
         commandSession.cancel()
         resetArcDragState()
@@ -1574,13 +1638,21 @@ struct EditorView: View {
                 }
             }
         case .delete:
+            if handleOverlapCutChipTap(at: documentPoint) {
+                return
+            }
             if isEmptyCanvasTap(at: documentPoint, viewThreshold: 24) {
+                if pendingOverlapCut != nil {
+                    pendingOverlapCut = nil
+                    return
+                }
                 dismissActiveTool()
                 return
             }
             if store.document.isHitOnInactiveLayer(near: documentPoint, threshold: store.document.viewport.viewToDocument(distance: 24)) {
                 return
             }
+            pendingOverlapCut = nil
             if let text = store.document.textElement(at: documentPoint) {
                 store.document.removeTextElement(id: text.id)
                 store.markDirty()
@@ -1595,15 +1667,15 @@ struct EditorView: View {
                 store.markDirty()
                 return
             }
-            // 2. Interior fill tap over an overlap: punch a hole (base MINUS target).
-            //    Attempted before the outline delete so a thin cutter still cuts:
+            // 2. Interior fill tap over an overlap: arm the chooser instead of cutting.
+            //    The signs show which shape stays and which is cut; the check applies it.
+            //    Attempted before the outline delete so a thin cutter still offers a cut:
             //    tapping inside a narrow shape lands within the outline threshold of
             //    its own edges, which would otherwise be misread as an edge tap and
-            //    delete the whole cutter. `punchOverlapHole` only fires when the tap is
-            //    inside a top shape that overlaps a shape beneath, so true edge taps on
-            //    standalone shapes still fall through to the outline delete below.
-            if store.document.punchOverlapHole(at: documentPoint) {
-                store.markDirty()
+            //    delete the whole cutter.
+            if let proposal = store.document.proposedOverlapCut(at: documentPoint) {
+                pendingOverlapCut = PendingOverlapCut(tapPoint: documentPoint, proposal: proposal)
+                statusMessage = "Tap + or − to swap which shape is cut, then tap the check"
                 return
             }
             // 3. Edge/line tap: tapping on or near an outline deletes that shape entirely.
@@ -1908,6 +1980,7 @@ struct EditorView: View {
     }
 
     private func performUndo() {
+        pendingOverlapCut = nil
         store.document.undo()
         store.markDirty()
     }
