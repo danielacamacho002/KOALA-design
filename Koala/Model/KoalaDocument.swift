@@ -74,6 +74,9 @@ final class KoalaDocument {
     // Dimensions whose edge is pinned, keyed the same way. A pinned edge stays put when
     // the perpendicular dimension is edited.
     var dimensionLocks: Set<String> = []
+    /// Labels that stay on screen after leaving the Dimensions tool, keyed the same way
+    /// as `dimensionLocks`. Persisted and undone.
+    var pinnedVisibleDimensionKeys: Set<String> = []
     /// Session-only: which dimension labels are on screen. Not persisted or undone.
     var revealedDimensionKeys: Set<String> = []
     var scaleUniform: Bool = true
@@ -199,6 +202,7 @@ final class KoalaDocument {
         printPieceSourceIDs = snapshot.printPieceSourceIDs ?? [:]
         dimensionOffsets = snapshot.dimensionOffsets
         dimensionLocks = snapshot.dimensionLocks ?? []
+        pinnedVisibleDimensionKeys = snapshot.pinnedVisibleDimensionKeys ?? []
         syncGridFromSettings()
         normalizeLayerGrouping()
     }
@@ -1198,6 +1202,15 @@ final class KoalaDocument {
         revealedDimensionKeys.contains(key)
     }
 
+    func isDimensionPinnedVisible(key: String) -> Bool {
+        pinnedVisibleDimensionKeys.contains(key)
+    }
+
+    /// True when the Dimensions tool is showing this label, or the eye is holding it on screen.
+    func isDimensionShown(key: String) -> Bool {
+        revealedDimensionKeys.contains(key) || pinnedVisibleDimensionKeys.contains(key)
+    }
+
     func hasRevealedDimensions(for elementID: UUID) -> Bool {
         let prefix = elementID.uuidString + ":"
         return revealedDimensionKeys.contains { $0.hasPrefix(prefix) }
@@ -1209,6 +1222,9 @@ final class KoalaDocument {
 
     func hideDimension(key: String) {
         revealedDimensionKeys.remove(key)
+        guard pinnedVisibleDimensionKeys.contains(key) else { return }
+        pushUndo()
+        pinnedVisibleDimensionKeys.remove(key)
     }
 
     func clearRevealedDimensions() {
@@ -1246,6 +1262,7 @@ final class KoalaDocument {
     func pruneRevealedDimensions(forElementID id: UUID) {
         let prefix = id.uuidString + ":"
         revealedDimensionKeys = revealedDimensionKeys.filter { !$0.hasPrefix(prefix) }
+        pinnedVisibleDimensionKeys = pinnedVisibleDimensionKeys.filter { !$0.hasPrefix(prefix) }
     }
 
     enum DimensionTapResult {
@@ -1258,7 +1275,7 @@ final class KoalaDocument {
     }
 
     /// Dimensions-mode tap: reveal or hide a specific edge, auto-show simple shapes,
-    /// accumulate across shapes, and clear everything on an empty-canvas tap.
+    /// accumulate across shapes, and clear unpinned labels on an empty-canvas tap.
     @discardableResult
     func handleDimensionTap(at documentPoint: CGPoint, threshold: CGFloat) -> DimensionTapResult {
         if isHitOnInactiveLayer(near: documentPoint, threshold: threshold) {
@@ -1341,6 +1358,16 @@ final class KoalaDocument {
             }
         }
         geometryRevision += 1
+    }
+
+    /// Toggles whether this label stays visible after leaving the Dimensions tool.
+    func toggleDimensionPinnedVisible(key: String, recordUndo: Bool = true) {
+        if recordUndo { pushUndo() }
+        if pinnedVisibleDimensionKeys.contains(key) {
+            pinnedVisibleDimensionKeys.remove(key)
+        } else {
+            pinnedVisibleDimensionKeys.insert(key)
+        }
     }
 
     func translateStroke(id: UUID, delta: CGPoint, recordUndo: Bool = false) {
@@ -2373,6 +2400,10 @@ final class KoalaDocument {
             let suffix = String(key.dropFirst(oldPrefix.count))
             dimensionLocks.insert(newPrefix + suffix)
         }
+        for key in pinnedVisibleDimensionKeys where key.hasPrefix(oldPrefix) {
+            let suffix = String(key.dropFirst(oldPrefix.count))
+            pinnedVisibleDimensionKeys.insert(newPrefix + suffix)
+        }
     }
 
     /// Rotates every selected element by `degrees` around the selection's combined
@@ -3041,12 +3072,12 @@ final class KoalaDocument {
         if let lineVariant { self.lineVariant = lineVariant }
         if let circleVariant { self.circleVariant = circleVariant }
         if let rectangleVariant { self.rectangleVariant = rectangleVariant }
-        // Dimensions is a measurement overlay, not an edit mode — show labels only while
-        // the tool is active, and never leave visibility stuck on after switching away.
+        // Unpinned labels hide when you leave Dimensions. Eye-pinned labels stay up
+        // so a measurement can stay on screen while drawing.
         let showingDimensions = (category == .dimensions)
         dimensionsVisible = showingDimensions
         if !showingDimensions {
-            clearRevealedDimensions()
+            revealedDimensionKeys = revealedDimensionKeys.intersection(pinnedVisibleDimensionKeys)
         }
     }
 
@@ -4012,7 +4043,8 @@ final class KoalaDocument {
             printHiddenStrokeIDs: printHiddenStrokeIDs,
             printPieceSourceIDs: printPieceSourceIDs,
             dimensionOffsets: dimensionOffsets,
-            dimensionLocks: dimensionLocks
+            dimensionLocks: dimensionLocks,
+            pinnedVisibleDimensionKeys: pinnedVisibleDimensionKeys
         )
     }
 
@@ -4046,6 +4078,7 @@ final class KoalaDocument {
         printPieceSourceIDs = snapshot.printPieceSourceIDs ?? [:]
         dimensionOffsets = snapshot.dimensionOffsets
         dimensionLocks = snapshot.dimensionLocks ?? []
+        pinnedVisibleDimensionKeys = snapshot.pinnedVisibleDimensionKeys ?? []
         syncGridFromSettings()
         printLayoutRevision += 1
     }
@@ -4115,4 +4148,6 @@ nonisolated struct DocumentSnapshot: Codable, Sendable {
     /// Optional rather than defaulted: synthesized Codable throws on a missing key even
     /// when a default exists, so projects saved before locks shipped would fail to open.
     var dimensionLocks: Set<String>?
+    /// Same optional decoding as `dimensionLocks`: files saved before the eye pin omit it.
+    var pinnedVisibleDimensionKeys: Set<String>?
 }

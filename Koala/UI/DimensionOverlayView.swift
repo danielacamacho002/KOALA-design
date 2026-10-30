@@ -12,6 +12,8 @@ private enum DimensionFormat {
 
 struct DimensionOverlayView: View {
     @Bindable var document: KoalaDocument
+    /// Tap on a label that is still up outside the Dimensions tool.
+    var onEditFromCanvas: (UUID) -> Void = { _ in }
     var onChanged: () -> Void = {}
 
     /// Document-space nudge used only to establish outward direction.
@@ -19,18 +21,18 @@ struct DimensionOverlayView: View {
 
     var body: some View {
         ZStack {
-            if document.dimensionsVisible {
-                ForEach(visibleStrokeDimensions) { item in
-                    DraggableDimensionLabel(
-                        document: document,
-                        dimension: item.dimension,
-                        strokeID: item.strokeID,
-                        onChanged: onChanged
-                    )
-                }
-                ForEach(visibleTextDimensions) { item in
-                    textDimensionLabel(item.dimension)
-                }
+            ForEach(visibleStrokeDimensions) { item in
+                DraggableDimensionLabel(
+                    document: document,
+                    dimension: item.dimension,
+                    strokeID: item.strokeID,
+                    interactive: document.activeCategory == .dimensions,
+                    onEditFromCanvas: onEditFromCanvas,
+                    onChanged: onChanged
+                )
+            }
+            ForEach(visibleTextDimensions) { item in
+                textDimensionLabel(item.dimension)
             }
         }
     }
@@ -55,14 +57,16 @@ struct DimensionOverlayView: View {
         document.strokes.flatMap { stroke in
             ShapeGeometry.semanticDimensions(for: stroke).compactMap { dimension in
                 let key = KoalaDocument.dimensionOffsetKey(strokeID: stroke.id, dimensionID: dimension.id)
-                guard document.isDimensionRevealed(key: key) else { return nil }
+                guard document.isDimensionShown(key: key) else { return nil }
+                guard document.dimensionsVisible || document.isDimensionPinnedVisible(key: key) else { return nil }
                 return RevealedStrokeDimension(strokeID: stroke.id, dimension: dimension)
             }
         }
     }
 
     private var visibleTextDimensions: [RevealedTextDimension] {
-        document.textElements.flatMap { element in
+        guard document.dimensionsVisible else { return [] }
+        return document.textElements.flatMap { element in
             textDimensions(for: element).compactMap { dimension in
                 let key = KoalaDocument.dimensionOffsetKey(strokeID: element.id, dimensionID: dimension.id)
                 guard document.isDimensionRevealed(key: key) else { return nil }
@@ -181,6 +185,9 @@ private struct DraggableDimensionLabel: View {
     @Bindable var document: KoalaDocument
     let dimension: ShapeGeometry.SemanticDimension
     let strokeID: UUID
+    /// False outside the Dimensions tool: the number stays up, and a tap opens it for editing.
+    var interactive: Bool
+    var onEditFromCanvas: (UUID) -> Void
     var onChanged: () -> Void
 
     @State private var isDragging = false
@@ -300,27 +307,41 @@ private struct DraggableDimensionLabel: View {
         }
     }
 
-    /// Keep the lock on the outside of the shape so the value sits closer to the edge
-    /// and the cluster's outward half isn't wasted on empty space.
+    /// Keep the value closest to the shape. The lock sits outside it, and the eye
+    /// is outermost, so the cluster's outward half isn't wasted on empty space.
+    /// Outside the Dimensions tool only the number is shown. Tapping it switches
+    /// to that tool and opens the value.
     @ViewBuilder
     private var labelCluster: some View {
-        let value = Group {
-            if isEditing {
-                editorField
-            } else {
-                valueLabel
-            }
-        }
-        let lock = lockButton
-        if outward.x < -0.3 {
-            HStack(spacing: 4) {
-                lock
-                value
-            }
+        if !interactive {
+            Text(labelText)
+                .dimensionLabelAppearance()
+                .contentShape(Rectangle())
+                .onTapGesture { beginEditFromCanvas() }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel("Edit \(lockTargetName)")
         } else {
-            HStack(spacing: 4) {
-                value
-                lock
+            let value = Group {
+                if isEditing {
+                    editorField
+                } else {
+                    valueLabel
+                }
+            }
+            let lock = lockButton
+            let eye = eyeButton
+            if outward.x < -0.3 {
+                HStack(spacing: 4) {
+                    eye
+                    lock
+                    value
+                }
+            } else {
+                HStack(spacing: 4) {
+                    value
+                    lock
+                    eye
+                }
             }
         }
     }
@@ -377,6 +398,35 @@ private struct DraggableDimensionLabel: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(locked ? "Unlock" : "Lock") \(lockTargetName)")
+    }
+
+    private var eyeButton: some View {
+        let pinned = document.isDimensionPinnedVisible(key: key)
+        return Button {
+            document.toggleDimensionPinnedVisible(key: key)
+            onChanged()
+        } label: {
+            Image(systemName: pinned ? "eye" : "eye.slash")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 26, height: 26)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            pinned
+                ? "Stop showing \(lockTargetName) while drawing"
+                : "Keep \(lockTargetName) visible while drawing"
+        )
+    }
+
+    /// Opens this value after the canvas switches into the Dimensions tool.
+    /// A locked edge still switches tools, matching tap-to-edit inside the tool.
+    private func beginEditFromCanvas() {
+        if !isEdgePinned {
+            isEditing = true
+            editText = editTextValue
+        }
+        onEditFromCanvas(strokeID)
     }
 
     /// Global-space drag so translation is finger motion, not the moving label.

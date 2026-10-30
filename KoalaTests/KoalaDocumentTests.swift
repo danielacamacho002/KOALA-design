@@ -283,6 +283,7 @@ struct KoalaDocumentTests {
         let lockKey = KoalaDocument.dimensionOffsetKey(strokeID: stroke.id, dimensionID: "top")
         document.dimensionOffsets[lockKey] = CGPoint(x: 3, y: 3)
         document.dimensionLocks.insert(lockKey)
+        document.pinnedVisibleDimensionKeys.insert(lockKey)
 
         document.setElementSelection(strokeIDs: [stroke.id], textIDs: [])
         document.duplicateSelectedElements(offset: CGPoint(x: 10, y: 0))
@@ -292,6 +293,53 @@ struct KoalaDocumentTests {
         let copyKey = KoalaDocument.dimensionOffsetKey(strokeID: copyID, dimensionID: "top")
         #expect(document.dimensionOffsets[copyKey] == CGPoint(x: 3, y: 3))
         #expect(document.isDimensionLocked(key: copyKey))
+        #expect(document.isDimensionPinnedVisible(key: copyKey))
+    }
+
+    /// An eye-pinned measurement stays up after leaving Dimensions. An ordinary
+    /// revealed label does not, and hiding the edge drops the pin.
+    @Test func pinnedDimensionStaysShownAfterLeavingTheTool() {
+        let document = KoalaDocument()
+        let stroke = line(on: document.activeLayerID)
+        document.addStroke(stroke)
+        let pinned = KoalaDocument.dimensionOffsetKey(strokeID: stroke.id, dimensionID: "length")
+        let fleeting = KoalaDocument.dimensionOffsetKey(strokeID: stroke.id, dimensionID: "angle")
+        document.revealDimension(key: pinned)
+        document.revealDimension(key: fleeting)
+        document.toggleDimensionPinnedVisible(key: pinned, recordUndo: false)
+
+        document.selectTool(.line)
+
+        #expect(document.isDimensionShown(key: pinned))
+        #expect(!document.isDimensionShown(key: fleeting))
+        #expect(!document.dimensionsVisible)
+
+        document.hideDimension(key: pinned)
+
+        #expect(!document.isDimensionPinnedVisible(key: pinned))
+        #expect(!document.isDimensionShown(key: pinned))
+    }
+
+    /// Files saved before the eye pin omit the key. Opening one must not fail,
+    /// and a file that does pin a label shows it before Dimensions is selected.
+    @Test func visibilityPinIsOptionalOnOlderFilesAndShowsOnOpen() throws {
+        let document = KoalaDocument()
+        let stroke = line(on: document.activeLayerID)
+        document.addStroke(stroke)
+        let key = KoalaDocument.dimensionOffsetKey(strokeID: stroke.id, dimensionID: "length")
+        document.toggleDimensionPinnedVisible(key: key, recordUndo: false)
+
+        let opened = KoalaDocument(snapshot: document.makeSnapshot())
+        #expect(opened.isDimensionShown(key: key))
+        #expect(!opened.dimensionsVisible)
+
+        let encoded = try JSONEncoder().encode(document.makeSnapshot())
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "pinnedVisibleDimensionKeys")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+        let legacy = try JSONDecoder().decode(DocumentSnapshot.self, from: stripped)
+        #expect(legacy.pinnedVisibleDimensionKeys == nil)
+        #expect(KoalaDocument(snapshot: legacy).pinnedVisibleDimensionKeys.isEmpty)
     }
 
     /// A sleeve traced as cubics plus lines used to collapse the moment it was

@@ -10,8 +10,8 @@ enum DimensionLabelStyle {
 
     /// Gap between the stroke and the inward face of the label cluster.
     static let edgeClearance: CGFloat = 10
-    /// Fallback half-size before the cluster has been measured (value + lock).
-    static let labeledHalfSize = CGSize(width: 80, height: 18)
+    /// Fallback half-size before the cluster has been measured (value + lock + eye).
+    static let labeledHalfSize = CGSize(width: 96, height: 18)
     /// Fallback half-size for plain measurement text (live draw / text dims).
     static let textOnlyHalfSize = CGSize(width: 52, height: 12)
 
