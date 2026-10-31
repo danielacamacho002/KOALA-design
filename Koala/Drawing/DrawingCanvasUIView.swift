@@ -844,7 +844,7 @@ final class DrawingCanvasUIView: UIView {
     /// Polar tracking applies to straight segments (line / construction / curve), not arcs
     /// or 2-axis shapes whose opposite corner should stay free.
     private var shouldAngleSnapDrawnSegment: Bool {
-        activeCategory == .line && lineVariant != .arc
+        document.axisAlignmentEnabled && activeCategory == .line && lineVariant != .arc
     }
 
     /// Runs the snapping engine for a live pencil position, updates the visual indicator and
@@ -1315,7 +1315,7 @@ final class DrawingCanvasUIView: UIView {
     /// It sits off the stroke, on the downward side, so the pencil and the line don't cover it.
     /// Cleared with the preview, so the committed stroke has no marker.
     private func updateAxisLockGlyph(start: CGPoint, end: CGPoint) {
-        guard activeCategory == .line, lineVariant != .arc else {
+        guard document.axisAlignmentEnabled, activeCategory == .line, lineVariant != .arc else {
             axisLockGlyph.clear()
             return
         }

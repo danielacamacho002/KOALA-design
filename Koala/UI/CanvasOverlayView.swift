@@ -174,6 +174,11 @@ struct CanvasOverlayView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .coordinateSpace(name: coordinateSpaceName)
+        .onChange(of: document.axisAlignmentEnabled) { _, enabled in
+            if !enabled {
+                clearAlignment()
+            }
+        }
     }
 
     // MARK: - Command preview
@@ -222,7 +227,7 @@ struct CanvasOverlayView: View {
             return snapDrawingEndpoint(
                 raw,
                 origin: origin,
-                applyAngleSnap: origin != nil,
+                applyAngleSnap: origin != nil && document.axisAlignmentEnabled,
                 grid: document.grid,
                 settings: document.settings,
                 gridSnapEnabled: drawingSnapEnabled,
@@ -1770,7 +1775,7 @@ struct CanvasOverlayView: View {
         excluding: Set<UUID>,
         additionalTargets: [CGPoint] = []
     ) -> CGPoint {
-        guard !movingPoints.isEmpty else {
+        guard document.axisAlignmentEnabled, !movingPoints.isEmpty else {
             clearAlignment()
             return .zero
         }

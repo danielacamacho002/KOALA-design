@@ -68,6 +68,10 @@ final class KoalaDocument {
     /// Curved-geometry snap toggles: circle/ellipse/arc center, and on-rim / compass snap.
     var centerSnapEnabled: Bool = false
     var quadrantSnapEnabled: Bool = false
+    /// Horizontal and vertical assist from the constraints bar. Pins a nearly
+    /// straight line to an axis, shows the axis mark while drawing, and sticks
+    /// a move to a shared row or column. On until the user turns it off.
+    var axisAlignmentEnabled: Bool = true
     var dimensionsVisible: Bool = false
     // Document-space offsets of dragged dimension labels, keyed by "<strokeID>:<dimensionID>".
     var dimensionOffsets: [String: CGPoint] = [:]
