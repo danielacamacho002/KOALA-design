@@ -1,5 +1,6 @@
 import CoreGraphics
 import Testing
+import UIKit
 @testable import Koala
 
 @MainActor
@@ -163,6 +164,11 @@ struct CanvasOverlayGeometryTests {
         #expect(CanvasOverlayGeometry.displayStrokeScreenWidth(strokeWidth: stroke, scale: 24) == cap)
         #expect(CanvasOverlayGeometry.displayStrokeScreenWidth(strokeWidth: 20, scale: 1) == 20)
         #expect(CanvasOverlayGeometry.displayStrokeScreenWidth(strokeWidth: 20, scale: 24) == 20)
+        #expect(CanvasOverlayGeometry.displayStrokeDocumentWidth(strokeWidth: stroke, scale: 1) == stroke)
+        #expect(CanvasOverlayGeometry.displayStrokeDocumentWidth(strokeWidth: stroke, scale: 4) == stroke)
+        #expect(abs(CanvasOverlayGeometry.displayStrokeDocumentWidth(strokeWidth: stroke, scale: 24) - cap / 24) < 0.0001)
+        #expect(CanvasOverlayGeometry.displayStrokeDocumentWidth(strokeWidth: 20, scale: 1) == 20)
+        #expect(abs(CanvasOverlayGeometry.displayStrokeDocumentWidth(strokeWidth: 20, scale: 24) - 20 / 24) < 0.0001)
         #expect(CanvasOverlayGeometry.anchorScreenLength(base: base, scale: 1, strokeWidth: stroke) == base)
         let capped = cap * clearance
         #expect(capped > base)
@@ -386,5 +392,59 @@ struct CanvasOverlayGeometryTests {
     @Test func marqueeSurvivesWhenOnlyOneAxisClearsTheMinimum() {
         let rect = CanvasOverlayGeometry.marqueeRect(from: .zero, to: CGPoint(x: 30, y: 0.1))
         #expect(rect == CGRect(x: 0, y: 0, width: 30, height: 0.1))
+    }
+
+    /// Pinch zoom scales a document-space path instead of rebuilding it. The mapped
+    /// path has to land on the same points as the view-space path.
+    @Test func documentSpacePathMatchesTheViewportTransform() {
+        let stroke = VectorStroke(
+            layerID: UUID(),
+            points: ShapeGeometry.circleCardinalPoints(center: CGPoint(x: 40, y: -15), radius: 28),
+            strokeWidth: 2,
+            isClosed: true,
+            shapeType: .circle
+        )
+        var viewport = ViewportTransform()
+        viewport.scale = 3.5
+        viewport.translation = CGPoint(x: 120, y: -40)
+
+        let viewPath = StrokeRenderer.path(for: stroke, viewport: viewport).cgPath
+        let documentPath = StrokeRenderer.path(for: stroke, viewport: StrokeRenderer.documentSpaceViewport).cgPath
+        var transform = viewport.affineTransform
+        let mapped = documentPath.copy(using: &transform) ?? documentPath
+
+        let viewElements = pathElements(viewPath)
+        let mappedElements = pathElements(mapped)
+        #expect(viewElements.count == mappedElements.count)
+        for (viewElement, mappedElement) in zip(viewElements, mappedElements) {
+            #expect(viewElement.type == mappedElement.type)
+            #expect(viewElement.points.count == mappedElement.points.count)
+            for (viewPoint, mappedPoint) in zip(viewElement.points, mappedElement.points) {
+                #expect(abs(viewPoint.x - mappedPoint.x) < 0.001)
+                #expect(abs(viewPoint.y - mappedPoint.y) < 0.001)
+            }
+        }
+    }
+
+    private func pathElements(_ path: CGPath) -> [(type: CGPathElementType, points: [CGPoint])] {
+        var elements: [(type: CGPathElementType, points: [CGPoint])] = []
+        path.applyWithBlock { element in
+            let pointer = element.pointee.points
+            switch element.pointee.type {
+            case .moveToPoint:
+                elements.append((.moveToPoint, [pointer[0]]))
+            case .addLineToPoint:
+                elements.append((.addLineToPoint, [pointer[0]]))
+            case .addQuadCurveToPoint:
+                elements.append((.addQuadCurveToPoint, [pointer[0], pointer[1]]))
+            case .addCurveToPoint:
+                elements.append((.addCurveToPoint, [pointer[0], pointer[1], pointer[2]]))
+            case .closeSubpath:
+                elements.append((.closeSubpath, []))
+            @unknown default:
+                break
+            }
+        }
+        return elements
     }
 }
