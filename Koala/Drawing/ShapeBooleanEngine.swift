@@ -418,45 +418,62 @@ enum ShapeBooleanEngine {
         return worst > 2
     }
 
+    /// How far a vertex may sit from the chord of its neighbors and still be a
+    /// sample of a straight edge. A sampled curve bows farther than this, so it
+    /// is not collapsed into that chord.
+    private static let straightEpsilon: CGFloat = 0.25
+
     /// Drops vertices that sit on a straight edge. Arc samples and the corners where
-    /// an arc meets a straight side are kept, so the junction is not absorbed into the curve.
+    /// an arc meets a side are kept, so the junction is not absorbed into the curve.
+    ///
+    /// Removal is measured against the neighbors that remain. Judging every sample
+    /// by its original neighbors deletes a whole smooth bend at once — each step
+    /// turns only a few degrees — and the bend comes back as a cornered chord.
     private static func dropCollinearCorners(
         _ points: [CGPoint],
         smooth: Set<Int>
     ) -> (points: [CGPoint], smoothCornerIndices: Set<Int>) {
-        let count = points.count
-        guard count >= 4 else { return (points, smooth) }
-        var keep = [Bool](repeating: true, count: count)
-        for index in 0..<count where !smooth.contains(index) {
-            let previousIndex = (index - 1 + count) % count
-            let nextIndex = (index + 1) % count
-            if smooth.contains(previousIndex) || smooth.contains(nextIndex) { continue }
-            let turn = turnAngle(points[previousIndex], points[index], points[nextIndex])
-            if turn < 8 * .pi / 180 {
-                keep[index] = false
+        guard points.count >= 4 else { return (points, smooth) }
+        var kept = points
+        var keptSmooth = smooth
+        var removed = true
+        while removed && kept.count > 3 {
+            removed = false
+            let count = kept.count
+            var bestIndex: Int?
+            var bestDeviation = straightEpsilon
+            for index in 0..<count {
+                if keptSmooth.contains(index) { continue }
+                let previous = (index - 1 + count) % count
+                let next = (index + 1) % count
+                if keptSmooth.contains(previous) || keptSmooth.contains(next) { continue }
+                let deviation = distanceFromPoint(kept[index], toSegment: kept[previous], kept[next])
+                if deviation < bestDeviation {
+                    bestDeviation = deviation
+                    bestIndex = index
+                }
             }
-        }
-        var rebuilt: [CGPoint] = []
-        var rebuiltSmooth = Set<Int>()
-        for index in 0..<count where keep[index] {
-            if smooth.contains(index) {
-                rebuiltSmooth.insert(rebuilt.count)
+            guard let index = bestIndex else { break }
+            kept.remove(at: index)
+            var shifted = Set<Int>()
+            for smoothIndex in keptSmooth where smoothIndex != index {
+                shifted.insert(smoothIndex > index ? smoothIndex - 1 : smoothIndex)
             }
-            rebuilt.append(points[index])
+            keptSmooth = shifted
+            removed = true
         }
-        guard rebuilt.count >= 3 else { return (points, smooth) }
-        return (rebuilt, rebuiltSmooth)
+        guard kept.count >= 3 else { return (points, smooth) }
+        return (kept, keptSmooth)
     }
 
-    private static func turnAngle(_ previous: CGPoint, _ current: CGPoint, _ next: CGPoint) -> CGFloat {
-        let incoming = CGPoint(x: current.x - previous.x, y: current.y - previous.y)
-        let outgoing = CGPoint(x: next.x - current.x, y: next.y - current.y)
-        let inLength = hypot(incoming.x, incoming.y)
-        let outLength = hypot(outgoing.x, outgoing.y)
-        guard inLength > 1e-6, outLength > 1e-6 else { return 0 }
-        let cross = incoming.x * outgoing.y - incoming.y * outgoing.x
-        let dot = incoming.x * outgoing.x + incoming.y * outgoing.y
-        return abs(atan2(cross, dot))
+    private static func distanceFromPoint(_ point: CGPoint, toSegment start: CGPoint, _ end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 1e-8 else { return hypot(point.x - start.x, point.y - start.y) }
+        let t = max(0, min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
+        let projection = CGPoint(x: start.x + t * dx, y: start.y + t * dy)
+        return hypot(point.x - projection.x, point.y - projection.y)
     }
 
     private static func circumcircle(

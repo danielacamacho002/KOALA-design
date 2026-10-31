@@ -3528,8 +3528,8 @@ final class KoalaDocument {
     ///
     /// When the Boolean tags which edges came from the cutter, a circular bite is stored
     /// as an arc whose endpoints stay corners. Straight corners of the base stay corners.
-    /// Other curved cutters still get Bézier handles, and the simplifier refuses to
-    /// round a sharp corner into that curve.
+    /// A bend that was not part of the cut is fit back to cubics, so it does not come
+    /// back as a run of corners. Other curved cutters still get Bézier handles.
     private func reshaped(
         _ stroke: VectorStroke,
         toPoints points: [CGPoint],
@@ -3556,7 +3556,9 @@ final class KoalaDocument {
             copy.shapeType = .polyline
             copy.curveHandles = nil
             copy.smoothCornerIndices = kept.smoothCornerIndices.isEmpty ? nil : kept.smoothCornerIndices
-            return copy
+            // The cut arc is already a few smooth anchors. Anything still dense is
+            // the base curve; fit that back to cubics instead of leaving the samples.
+            return ShapeGeometry.withSimplifiedDenseAnchors(copy)
         }
 
         if let cutter,
@@ -3567,7 +3569,10 @@ final class KoalaDocument {
             copy.shapeType = .polyline
             copy.curveHandles = nil
         }
-        return ShapeGeometry.withCompactedCircularAnchors(copy)
+        // Partial circular compaction rewrites a garment curve that merely sits
+        // near some circle as a chain of arcs. Those arcs meet at a point. The
+        // cubic fit below keeps the bend smooth and still preserves real corners.
+        return ShapeGeometry.withCompactedCircularAnchors(copy, rewritingPartialRuns: false)
     }
 
     /// Builds per-anchor Bézier handles that reproduce the curved cutter edge as a true

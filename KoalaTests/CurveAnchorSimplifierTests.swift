@@ -123,6 +123,34 @@ struct CurveAnchorSimplifierTests {
         })
     }
 
+    /// A tight semicircle turns more than the corner threshold across a few
+    /// points, but the turn is spread along the curve. Splitting it there used
+    /// to meet two cubics at a point.
+    @Test func tightSmoothArcDoesNotGainACorner() {
+        let radius: CGFloat = 8
+        let start = 0 as CGFloat
+        let sweep = CGFloat.pi
+        let steps = 48
+        let points = (0...steps).map { step in
+            let angle = start + sweep * CGFloat(step) / CGFloat(steps)
+            return CGPoint(x: cos(angle) * radius, y: sin(angle) * radius)
+        }
+        let dense = VectorStroke(
+            layerID: layerID,
+            points: points,
+            isClosed: false,
+            shapeType: .polyline
+        )
+        #expect(dense.points.count > 20)
+
+        let simplified = ShapeGeometry.withSimplifiedDenseAnchors(dense)
+        let rendered = ShapeGeometry.renderPoints(for: simplified)
+        #expect(simplified.points.count < 8)
+        #expect(simplified.shapeType == .curve)
+        #expect(maxStepTurn(rendered) < 15 * .pi / 180)
+        #expect(maxDistance(from: points, to: simplified) < 4)
+    }
+
     @Test func sharpZigzagKeepsItsCorners() {
         var points: [CGPoint] = []
         for index in 0..<18 {
@@ -198,6 +226,28 @@ struct CurveAnchorSimplifierTests {
         #expect(document.simplifyStoredDenseAnchors())
         #expect(document.strokes[0].points.count <= 6)
         #expect(!document.simplifyStoredDenseAnchors())
+    }
+
+    private func maxStepTurn(_ points: [CGPoint]) -> CGFloat {
+        guard points.count >= 3 else { return 0 }
+        var worst: CGFloat = 0
+        for index in 1..<(points.count - 1) {
+            let incoming = CGPoint(
+                x: points[index].x - points[index - 1].x,
+                y: points[index].y - points[index - 1].y
+            )
+            let outgoing = CGPoint(
+                x: points[index + 1].x - points[index].x,
+                y: points[index + 1].y - points[index].y
+            )
+            let inLength = hypot(incoming.x, incoming.y)
+            let outLength = hypot(outgoing.x, outgoing.y)
+            guard inLength > 0.001, outLength > 0.001 else { continue }
+            let cross = incoming.x * outgoing.y - incoming.y * outgoing.x
+            let dot = incoming.x * outgoing.x + incoming.y * outgoing.y
+            worst = max(worst, abs(atan2(cross, dot)))
+        }
+        return worst
     }
 
     private func samples(from start: CGPoint, to end: CGPoint, count: Int) -> [CGPoint] {

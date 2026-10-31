@@ -172,6 +172,11 @@ private extension ShapeGeometry {
 
     /// Turn at `index`, measured against the nearest vertices at least `cornerLeg`
     /// away so a short chamfer does not hide the real corner.
+    ///
+    /// A smooth bend accumulates that turn steadily, so the short neighborhood
+    /// sees only a fraction of it. A corner — including one the sampler broke
+    /// into a few short steps — packs most of the turn nearby. Treating the
+    /// bend as a corner splits the refit there and the two cubics meet in a point.
     static func cornerTurnAngle(_ points: [CGPoint], at index: Int, closed: Bool) -> CGFloat? {
         let count = points.count
         if !closed, index <= 0 || index >= count - 1 { return nil }
@@ -179,8 +184,17 @@ private extension ShapeGeometry {
               let next = neighbor(points, from: index, direction: 1, minimum: cornerLeg, closed: closed) else {
             return nil
         }
-        let turn = absTurn(previous, points[index], next)
-        return turn > 0 ? turn : nil
+        let wide = absTurn(previous, points[index], next)
+        guard wide > 0 else { return nil }
+        let nearLeg: CGFloat = 1
+        guard let nearPrevious = neighbor(points, from: index, direction: -1, minimum: nearLeg, closed: closed),
+              let nearNext = neighbor(points, from: index, direction: 1, minimum: nearLeg, closed: closed) else {
+            return wide
+        }
+        let local = absTurn(nearPrevious, points[index], nearNext)
+        if local >= cornerTurn * 0.55 { return wide }
+        if local < wide * 0.45 { return nil }
+        return wide
     }
 
     static func sharpestInteriorCorner(_ points: [CGPoint]) -> Int? {
