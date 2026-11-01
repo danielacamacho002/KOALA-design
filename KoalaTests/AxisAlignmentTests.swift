@@ -207,6 +207,52 @@ struct AxisAlignmentTests {
         #expect(points.contains(CGPoint(x: 10, y: 5)))
     }
 
+    @Test func angleSnapHonorsTheAllowedAxis() {
+        let grid = GridSettings()
+        let nearlyHorizontal = CGPoint(x: 100, y: 4)
+        let nearlyVertical = CGPoint(x: 4, y: 100)
+
+        let horizontal = snapDrawingAngle(
+            nearlyHorizontal,
+            origin: .zero,
+            grid: grid,
+            scale: 1,
+            allowed: [.horizontal]
+        )
+        #expect(horizontal.isLocked)
+        #expect(horizontal.point == CGPoint(x: 100, y: 0))
+
+        let horizontalOff = snapDrawingAngle(
+            nearlyHorizontal,
+            origin: .zero,
+            grid: grid,
+            scale: 1,
+            allowed: [.vertical]
+        )
+        #expect(!horizontalOff.isLocked)
+        #expect(horizontalOff.point == nearlyHorizontal)
+
+        let vertical = snapDrawingAngle(
+            nearlyVertical,
+            origin: .zero,
+            grid: grid,
+            scale: 1,
+            allowed: [.vertical]
+        )
+        #expect(vertical.isLocked)
+        #expect(vertical.point == CGPoint(x: 0, y: 100))
+
+        let neither = snapDrawingAngle(
+            nearlyHorizontal,
+            origin: .zero,
+            grid: grid,
+            scale: 1,
+            allowed: []
+        )
+        #expect(!neither.isLocked)
+        #expect(neither.point == nearlyHorizontal)
+    }
+
     @Test func drawingAxisMatchesPinnedSegments() {
         #expect(drawingAxis(from: .zero, to: CGPoint(x: 20, y: 0)) == .horizontal)
         #expect(drawingAxis(from: .zero, to: CGPoint(x: 0, y: 20)) == .vertical)

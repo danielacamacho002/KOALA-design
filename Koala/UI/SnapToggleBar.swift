@@ -8,8 +8,8 @@ import SwiftUI
 /// Bottom-left canvas control for the object snapping engine. Starts as a single
 /// button; tapping it reveals independent toggles for which snap types the engine
 /// considers: Endpoints (square), Midpoints (triangle), Intersections (X), Center,
-/// on-rim / compass (diamond), and horizontal/vertical alignment (plus). Point snaps
-/// map to `PathSnapEngine`; alignment is `KoalaDocument.axisAlignmentEnabled`.
+/// on-rim / compass (diamond), and separate horizontal and vertical alignment.
+/// Point snaps map to `PathSnapEngine`; alignment is the document's axis toggles.
 struct SnapToggleBar: View {
     @Bindable var document: KoalaDocument
     /// Top-left of this chrome overlay, in canvas-view coordinates.
@@ -112,13 +112,21 @@ struct SnapToggleBar: View {
                 .frame(width: 21, height: 21)
         }
 
-        canvasIcon(
-            systemImage: "plus",
-            isActive: document.axisAlignmentEnabled
-        ) {
-            document.axisAlignmentEnabled.toggle()
+        canvasIcon(isActive: document.horizontalAlignmentEnabled) {
+            document.horizontalAlignmentEnabled.toggle()
+        } icon: {
+            HorizontalAlignmentIcon()
+                .frame(width: 17, height: 17)
         }
-        .accessibilityLabel("Horizontal and vertical alignment")
+        .accessibilityLabel("Horizontal alignment")
+
+        canvasIcon(isActive: document.verticalAlignmentEnabled) {
+            document.verticalAlignmentEnabled.toggle()
+        } icon: {
+            VerticalAlignmentIcon()
+                .frame(width: 17, height: 17)
+        }
+        .accessibilityLabel("Vertical alignment")
     }
 
     private func constraintButton(

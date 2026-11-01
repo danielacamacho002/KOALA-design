@@ -725,6 +725,7 @@ struct EditorView: View {
             settings: store.document.settings,
             gridSnapEnabled: drawingSnapEnabled,
             scale: store.document.viewport.scale,
+            allowedAxes: store.document.enabledDrawingAxes,
             objectSnap: { query, alignmentOrigin, alignmentThrough in
                 objectSnappedPoint(
                     query,
@@ -736,7 +737,7 @@ struct EditorView: View {
     }
 
     private var shouldAngleSnapDrawnSegment: Bool {
-        store.document.axisAlignmentEnabled
+        !store.document.enabledDrawingAxes.isEmpty
             && store.document.activeCategory == .line
             && store.document.lineVariant != .arc
     }

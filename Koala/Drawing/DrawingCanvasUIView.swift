@@ -824,6 +824,7 @@ final class DrawingCanvasUIView: UIView {
             settings: document.settings,
             gridSnapEnabled: shouldGridSnapDrawnPoint,
             scale: document.viewport.scale,
+            allowedAxes: document.enabledDrawingAxes,
             objectSnap: { query, alignmentOrigin, alignmentThrough in
                 resolveObjectSnap(
                     rawPoint: query,
@@ -844,7 +845,7 @@ final class DrawingCanvasUIView: UIView {
     /// Polar tracking applies to straight segments (line / construction / curve), not arcs
     /// or 2-axis shapes whose opposite corner should stay free.
     private var shouldAngleSnapDrawnSegment: Bool {
-        document.axisAlignmentEnabled && activeCategory == .line && lineVariant != .arc
+        !document.enabledDrawingAxes.isEmpty && activeCategory == .line && lineVariant != .arc
     }
 
     /// Runs the snapping engine for a live pencil position, updates the visual indicator and
@@ -1315,12 +1316,13 @@ final class DrawingCanvasUIView: UIView {
     /// It sits off the stroke, on the downward side, so the pencil and the line don't cover it.
     /// Cleared with the preview, so the committed stroke has no marker.
     private func updateAxisLockGlyph(start: CGPoint, end: CGPoint) {
-        guard document.axisAlignmentEnabled, activeCategory == .line, lineVariant != .arc else {
+        guard activeCategory == .line, lineVariant != .arc else {
             axisLockGlyph.clear()
             return
         }
         let minimum = document.viewport.viewToDocument(distance: 12)
-        guard let axis = drawingAxis(from: start, to: end, minimumLength: minimum) else {
+        guard let axis = drawingAxis(from: start, to: end, minimumLength: minimum),
+              document.enabledDrawingAxes.contains(axis) else {
             axisLockGlyph.clear()
             return
         }
