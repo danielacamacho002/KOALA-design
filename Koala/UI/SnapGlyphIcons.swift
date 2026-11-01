@@ -106,6 +106,57 @@ struct QuadrantSnapIcon: View {
     }
 }
 
+/// Two points on one horizontal stroke: a shared row.
+struct HorizontalAlignmentIcon: View {
+    var body: some View {
+        alignmentIcon(horizontal: true)
+    }
+}
+
+/// Two points on one vertical stroke: a shared column.
+struct VerticalAlignmentIcon: View {
+    var body: some View {
+        alignmentIcon(horizontal: false)
+    }
+}
+
+private struct AlignmentAxisIcon: View {
+    var horizontal: Bool
+
+    var body: some View {
+        Canvas { context, size in
+            let inset = size.width * 0.14
+            let dotRadius = SnapGlyphMetrics.dotRadius
+            let lineWidth = SnapGlyphMetrics.lineWidth
+            let start: CGPoint
+            let end: CGPoint
+            if horizontal {
+                start = CGPoint(x: inset, y: size.height / 2)
+                end = CGPoint(x: size.width - inset, y: size.height / 2)
+            } else {
+                start = CGPoint(x: size.width / 2, y: inset)
+                end = CGPoint(x: size.width / 2, y: size.height - inset)
+            }
+
+            var line = Path()
+            line.move(to: start)
+            line.addLine(to: end)
+            context.stroke(
+                line,
+                with: .foreground,
+                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+            )
+            context.fill(dot(at: start, radius: dotRadius), with: .foreground)
+            context.fill(dot(at: end, radius: dotRadius), with: .foreground)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+private func alignmentIcon(horizontal: Bool) -> some View {
+    AlignmentAxisIcon(horizontal: horizontal)
+}
+
 /// Circle with a straight line kissing the rim — tangent, not a secant through the middle.
 struct TangentSnapIcon: View {
     var body: some View {

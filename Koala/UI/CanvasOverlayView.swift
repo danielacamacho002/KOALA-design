@@ -174,6 +174,12 @@ struct CanvasOverlayView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .coordinateSpace(name: coordinateSpaceName)
+        .onChange(of: document.horizontalAlignmentEnabled) { _, _ in
+            clearAlignment()
+        }
+        .onChange(of: document.verticalAlignmentEnabled) { _, _ in
+            clearAlignment()
+        }
     }
 
     // MARK: - Command preview
@@ -222,11 +228,12 @@ struct CanvasOverlayView: View {
             return snapDrawingEndpoint(
                 raw,
                 origin: origin,
-                applyAngleSnap: origin != nil,
+                applyAngleSnap: origin != nil && !document.enabledDrawingAxes.isEmpty,
                 grid: document.grid,
                 settings: document.settings,
                 gridSnapEnabled: drawingSnapEnabled,
                 scale: scale,
+                allowedAxes: document.enabledDrawingAxes,
                 objectSnap: { _, _, _ in nil }
             )
         }
@@ -1770,7 +1777,7 @@ struct CanvasOverlayView: View {
         excluding: Set<UUID>,
         additionalTargets: [CGPoint] = []
     ) -> CGPoint {
-        guard !movingPoints.isEmpty else {
+        guard !allowedAlignmentAxes.isEmpty, !movingPoints.isEmpty else {
             clearAlignment()
             return .zero
         }
@@ -1794,15 +1801,17 @@ struct CanvasOverlayView: View {
         return update.correction
     }
 
-    /// Drag-axis lock already zeros one component. Alignment may stick only the axis still free.
+    /// Drag-axis lock already zeros one component. Alignment may stick only the axis still free,
+    /// and only the axes the constraints bar has turned on.
     private var allowedAlignmentAxes: Set<AxisAlignment> {
+        let enabled = document.enabledAlignmentAxes
         switch moveTranslationAxis {
         case .free:
-            return [.horizontal, .vertical]
+            return enabled
         case .horizontal:
-            return [.vertical]
+            return enabled.intersection([.vertical])
         case .vertical:
-            return [.horizontal]
+            return enabled.intersection([.horizontal])
         }
     }
 

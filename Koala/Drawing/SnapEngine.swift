@@ -73,13 +73,14 @@ func snapDrawingAngle(
     _ point: CGPoint,
     origin: CGPoint,
     grid: GridSettings,
-    scale: CGFloat?
+    scale: CGFloat?,
+    allowed: Set<DrawingAxis> = [.horizontal, .vertical]
 ) -> AngleSnapResult {
     _ = grid
     let dx = point.x - origin.x
     let dy = point.y - origin.y
     let length = hypot(dx, dy)
-    guard length > 1e-4 else {
+    guard length > 1e-4, !allowed.isEmpty else {
         return AngleSnapResult(point: point, isLocked: false)
     }
 
@@ -89,9 +90,11 @@ func snapDrawingAngle(
     let verticalError = abs(atan2(dx, dy))
     let horizontalError = abs(atan2(dy, dx))
 
-    let lockVertical = abs(dy) > abs(dx)
+    let lockVertical = allowed.contains(.vertical)
+        && abs(dy) > abs(dx)
         && (verticalError <= maxAxisError || abs(dx) <= maxOffAxis)
-    let lockHorizontal = abs(dx) > abs(dy)
+    let lockHorizontal = allowed.contains(.horizontal)
+        && abs(dx) > abs(dy)
         && (horizontalError <= maxAxisError || abs(dy) <= maxOffAxis)
 
     if lockVertical {
@@ -106,7 +109,7 @@ func snapDrawingAngle(
 /// Axis of a segment that is already horizontal or vertical, such as a line
 /// the angle assist has pinned. `nil` for diagonals and for segments shorter
 /// than `minimumLength` (document units).
-enum DrawingAxis: Equatable, Sendable {
+enum DrawingAxis: Equatable, Sendable, Hashable {
     case horizontal
     case vertical
 }
@@ -134,18 +137,19 @@ func snapDrawingEndpoint(
     settings: DocumentSettings,
     gridSnapEnabled: Bool,
     scale: CGFloat,
+    allowedAxes: Set<DrawingAxis> = [.horizontal, .vertical],
     objectSnap: (_ query: CGPoint, _ alignmentOrigin: CGPoint?, _ alignmentThrough: CGPoint?) -> CGPoint?
 ) -> CGPoint {
     let angle: AngleSnapResult
     if applyAngleSnap, let origin {
-        angle = snapDrawingAngle(point, origin: origin, grid: grid, scale: scale)
+        angle = snapDrawingAngle(point, origin: origin, grid: grid, scale: scale, allowed: allowedAxes)
     } else {
         angle = AngleSnapResult(point: point, isLocked: false)
     }
 
     if angle.isLocked, let origin {
         if let snapped = objectSnap(point, origin, angle.point),
-           snapDrawingAngle(snapped, origin: origin, grid: grid, scale: scale).isLocked {
+           snapDrawingAngle(snapped, origin: origin, grid: grid, scale: scale, allowed: allowedAxes).isLocked {
             return snapped
         }
     } else if let snapped = objectSnap(point, nil, nil) {
