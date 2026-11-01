@@ -83,9 +83,22 @@ final class DrawingCanvasUIView: UIView {
     var onLayoutMetrics: ((CGSize, UIEdgeInsets) -> Void)?
 
     private var strokeLayers: [UUID: CAShapeLayer] = [:]
+    /// Width and dash inputs cached so a pinch does not scan the document per shape.
+    private struct ArtworkStrokeMetrics {
+        var strokeWidth: CGFloat
+        var isConstruction: Bool
+        var rendersSeparateOutline: Bool
+    }
+    private var artworkStrokeMetrics: [UUID: ArtworkStrokeMetrics] = [:]
+    private var artworkMaxStrokeWidth: CGFloat = 0
+    private var artworkHasConstruction = false
+    /// True after line widths were written for a zoom range where they do not depend on scale.
+    private var artworkAppliedUncappedMetrics = false
     /// Green rim drawn just behind each selected stroke.
     private var selectionHaloLayers: [UUID: CAShapeLayer] = [:]
     private var textLayers: [UUID: CAShapeLayer] = [:]
+    /// Outline-text stroke widths. Filled text does not change with zoom.
+    private var outlineTextWidths: [UUID: CGFloat] = [:]
     private var commandPreviewLayer: CAShapeLayer?
     private var dragPreviewLayer: CAShapeLayer?
     private var trimPreviewLayer: CAShapeLayer?
@@ -102,6 +115,9 @@ final class DrawingCanvasUIView: UIView {
     private let gridLayer = CALayer()
     private let sheetLayer = CALayer()
     private let worldLayer = CALayer()
+    /// Strokes, text, halos, and reference images in document space. Pinch and pan
+    /// set this layer's transform instead of rebuilding every path.
+    private let artworkLayer = CALayer()
     private let clipLayer = CALayer()
     private var rankLayers: [CAShapeLayer] = []
     private let axisXLayer = CAShapeLayer()
@@ -142,6 +158,7 @@ final class DrawingCanvasUIView: UIView {
         isMultipleTouchEnabled = true
         layer.addSublayer(gridLayer)
         setupGridLayers()
+        setupArtworkLayer()
         setupGestures()
     }
 
@@ -228,12 +245,16 @@ final class DrawingCanvasUIView: UIView {
             selectionHaloLayers.removeValue(forKey: id)
         }
 
+        var metrics: [UUID: ArtworkStrokeMetrics] = [:]
+        metrics.reserveCapacity(visible.count)
+        var maxStrokeWidth: CGFloat = 0
+        var hasConstruction = false
         for stroke in visible {
             if let existing = strokeLayers[stroke.id] {
                 StrokeRenderer.updateShapeLayer(
                     existing,
                     stroke: stroke,
-                    viewport: document.viewport,
+                    viewport: StrokeRenderer.documentSpaceViewport,
                     opacity: document.opacity(forLayerID: stroke.layerID),
                     limitZoomedWidth: true
                 )
@@ -241,11 +262,26 @@ final class DrawingCanvasUIView: UIView {
                 addStrokeLayer(stroke)
             }
             strokeLayers[stroke.id]?.zPosition = zPositions[stroke.layerID] ?? 1
+            let separateOutline = StrokeRenderer.rendersSeparateOutline(stroke)
+            metrics[stroke.id] = ArtworkStrokeMetrics(
+                strokeWidth: stroke.strokeWidth,
+                isConstruction: stroke.isConstruction,
+                rendersSeparateOutline: separateOutline
+            )
+            maxStrokeWidth = max(maxStrokeWidth, stroke.strokeWidth)
+            if stroke.isConstruction {
+                hasConstruction = true
+            }
         }
+        artworkStrokeMetrics = metrics
+        artworkMaxStrokeWidth = maxStrokeWidth
+        artworkHasConstruction = hasConstruction
+        artworkAppliedUncappedMetrics = false
         reloadStrokesHighlight()
         reloadTextElements()
         reloadReferenceImages()
         applyContinuationVisibility()
+        applyArtworkTransform()
     }
 
     func reloadTextElements() {
@@ -262,14 +298,28 @@ final class DrawingCanvasUIView: UIView {
         for element in visible {
             let opacity = document.opacity(forLayerID: element.layerID)
             if let existing = textLayers[element.id] {
-                TextRenderer.update(existing, for: element, viewport: document.viewport, opacity: opacity)
+                TextRenderer.updateDocumentSpace(
+                    existing,
+                    for: element,
+                    scale: document.viewport.scale,
+                    opacity: opacity
+                )
             } else {
-                let created = TextRenderer.makeLayer(for: element, viewport: document.viewport, opacity: opacity)
-                layer.addSublayer(created)
+                let created = TextRenderer.makeDocumentSpaceLayer(
+                    for: element,
+                    scale: document.viewport.scale,
+                    opacity: opacity
+                )
+                artworkLayer.addSublayer(created)
                 textLayers[element.id] = created
             }
             textLayers[element.id]?.zPosition = zPositions[element.layerID] ?? 1
         }
+        var outlines: [UUID: CGFloat] = [:]
+        for element in visible where element.isOutline {
+            outlines[element.id] = element.strokeWidth
+        }
+        outlineTextWidths = outlines
     }
 
     func reloadReferenceImages() {
@@ -298,39 +348,31 @@ final class DrawingCanvasUIView: UIView {
                 continue
             }
 
-            let layer: CALayer
+            let imageLayer: CALayer
             if let existing = referenceImageLayers[item.id] {
-                layer = existing
+                imageLayer = existing
             } else {
                 let created = CALayer()
-                self.layer.insertSublayer(created, above: gridLayer)
+                artworkLayer.addSublayer(created)
                 referenceImageLayers[item.id] = created
-                layer = created
+                imageLayer = created
             }
 
             let frame = item.frame
-            let viewOrigin = document.viewport.documentToView(frame.origin)
-            let viewSize = CGSize(
-                width: document.viewport.documentToView(distance: frame.width),
-                height: document.viewport.documentToView(distance: frame.height)
-            )
-            let viewCenter = CGPoint(
-                x: viewOrigin.x + viewSize.width / 2,
-                y: viewOrigin.y + viewSize.height / 2
-            )
+            let center = CGPoint(x: frame.midX, y: frame.midY)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            layer.contents = contents
-            layer.contentsGravity = .resize
-            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            layer.bounds = CGRect(origin: .zero, size: viewSize)
-            layer.position = viewCenter
-            layer.transform = item.rotation == 0
+            imageLayer.contents = contents
+            imageLayer.contentsGravity = .resize
+            imageLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            imageLayer.bounds = CGRect(origin: .zero, size: frame.size)
+            imageLayer.position = center
+            imageLayer.transform = item.rotation == 0
                 ? CATransform3DIdentity
                 : CATransform3DMakeRotation(item.rotation, 0, 0, 1)
-            layer.opacity = Float(document.opacity(forLayerID: item.layerID) * item.opacity)
+            imageLayer.opacity = Float(document.opacity(forLayerID: item.layerID) * item.opacity)
             let layerZ = zPositions[item.layerID] ?? 1
-            layer.zPosition = layerZ - 0.5 + CGFloat(index) * 0.001
+            imageLayer.zPosition = layerZ - 0.5 + CGFloat(index) * 0.001
             CATransaction.commit()
         }
     }
@@ -338,11 +380,11 @@ final class DrawingCanvasUIView: UIView {
     private func addStrokeLayer(_ stroke: VectorStroke) {
         let shapeLayer = StrokeRenderer.makeShapeLayer(
             for: stroke,
-            viewport: document.viewport,
+            viewport: StrokeRenderer.documentSpaceViewport,
             opacity: document.opacity(forLayerID: stroke.layerID),
             limitZoomedWidth: true
         )
-        layer.addSublayer(shapeLayer)
+        artworkLayer.addSublayer(shapeLayer)
         strokeLayers[stroke.id] = shapeLayer
     }
 
@@ -377,13 +419,20 @@ final class DrawingCanvasUIView: UIView {
                 continue
             }
             let halo = selectionHaloLayer(for: id, below: strokeLayer)
+            let scale = document.viewport.scale
             let screenWidth = CanvasOverlayGeometry.displayStrokeScreenWidth(
                 strokeWidth: stroke.strokeWidth,
-                scale: document.viewport.scale
+                scale: scale
             )
-            halo.path = StrokeRenderer.outlinePath(for: stroke, viewport: document.viewport).cgPath
-            halo.lineWidth = screenWidth + CanvasOverlayGeometry.selectionHaloOutset * 2
-            halo.lineDashPattern = stroke.isConstruction ? [10, 6] : nil
+            let inv = 1 / max(scale, .leastNonzeroMagnitude)
+            halo.path = StrokeRenderer.outlinePath(
+                for: stroke,
+                viewport: StrokeRenderer.documentSpaceViewport
+            ).cgPath
+            halo.lineWidth = (screenWidth + CanvasOverlayGeometry.selectionHaloOutset * 2) * inv
+            halo.lineDashPattern = stroke.isConstruction
+                ? StrokeRenderer.constructionDashPattern(scale: scale)
+                : nil
             // Same depth as the stroke, sitting immediately under it, so the rim
             // shows around the shape and still paints over artwork behind it.
             halo.zPosition = strokeLayer.zPosition
@@ -406,11 +455,11 @@ final class DrawingCanvasUIView: UIView {
             selectionHaloLayers[id] = created
             halo = created
         }
-        let sublayers = layer.sublayers
+        let sublayers = artworkLayer.sublayers
         let haloIndex = sublayers?.firstIndex(of: halo)
         let strokeIndex = sublayers?.firstIndex(of: strokeLayer)
-        if halo.superlayer !== layer || haloIndex != strokeIndex.map({ $0 - 1 }) {
-            layer.insertSublayer(halo, below: strokeLayer)
+        if halo.superlayer !== artworkLayer || haloIndex != strokeIndex.map({ $0 - 1 }) {
+            artworkLayer.insertSublayer(halo, below: strokeLayer)
         }
         return halo
     }
@@ -457,34 +506,111 @@ final class DrawingCanvasUIView: UIView {
     }
 
     private func refreshViewportContents() {
-        for (id, layer) in strokeLayers {
-            if let stroke = document.stroke(with: id) {
-                StrokeRenderer.updateShapeLayer(
-                    layer,
-                    stroke: stroke,
-                    viewport: document.viewport,
-                    opacity: document.opacity(forLayerID: stroke.layerID),
-                    limitZoomedWidth: true
-                )
-            }
+        applyArtworkTransform()
+        if !commandPreviewPoints.isEmpty || !commandControlPoints.isEmpty {
+            updateCommandPreviewLayer()
         }
-        reloadStrokesHighlight()
-        for (id, layer) in textLayers {
-            if let element = document.textElement(with: id) {
-                TextRenderer.update(
-                    layer,
-                    for: element,
-                    viewport: document.viewport,
-                    opacity: document.opacity(forLayerID: element.layerID)
-                )
-            }
+        if dragDrawStart != nil {
+            updateDragPreviewLayer()
         }
-        reloadReferenceImages()
-        updateCommandPreviewLayer()
-        updateDragPreviewLayer()
-        updateTrimPreviewLayer()
-        updateCurvePreview()
+        if trimPreviewPoints.count >= 2 {
+            updateTrimPreviewLayer()
+        }
+        if !(curveDraft?.anchors.isEmpty ?? true) || curveDragCurrent != nil {
+            updateCurvePreview()
+        }
         updateGridPresentation()
+    }
+
+    private func setupArtworkLayer() {
+        artworkLayer.anchorPoint = .zero
+        artworkLayer.position = .zero
+        artworkLayer.masksToBounds = false
+        artworkLayer.zPosition = 1
+        layer.addSublayer(artworkLayer)
+    }
+
+    /// Pan and zoom move `artworkLayer`. Stroke paths stay in document space.
+    /// Line widths are rewritten only once a stroke is thick enough on screen that
+    /// the cap (or a construction dash) actually depends on the zoom level.
+    private func applyArtworkTransform() {
+        let scale = document.viewport.scale
+        artworkLayer.setAffineTransform(document.viewport.affineTransform)
+        if artworkZoomNeedsMetricUpdate(scale: scale) {
+            for (id, metrics) in artworkStrokeMetrics {
+                guard let shape = strokeLayers[id] else { continue }
+                let widthChanges = strokeWidthDependsOnScale(metrics.strokeWidth, scale: scale)
+                if !metrics.isConstruction && !widthChanges && artworkAppliedUncappedMetrics {
+                    continue
+                }
+                StrokeRenderer.applyDocumentSpaceZoom(
+                    shape,
+                    strokeWidth: metrics.strokeWidth,
+                    isConstruction: metrics.isConstruction,
+                    rendersSeparateOutline: metrics.rendersSeparateOutline,
+                    scale: scale
+                )
+            }
+            artworkAppliedUncappedMetrics = !artworkWidthsDependOnScale(scale)
+        }
+        if !selectionHaloLayers.isEmpty {
+            updateHaloZoomMetrics(scale: scale)
+        }
+        if !outlineTextWidths.isEmpty {
+            for (id, strokeWidth) in outlineTextWidths {
+                guard let textLayer = textLayers[id] else { continue }
+                let local = CanvasOverlayGeometry.displayStrokeDocumentWidth(
+                    strokeWidth: strokeWidth,
+                    scale: scale
+                )
+                if textLayer.lineWidth != local {
+                    textLayer.lineWidth = local
+                }
+            }
+        }
+    }
+
+    private func artworkZoomNeedsMetricUpdate(scale: CGFloat) -> Bool {
+        if artworkHasConstruction || !artworkAppliedUncappedMetrics {
+            return true
+        }
+        return artworkWidthsDependOnScale(scale)
+    }
+
+    /// True when at least one stroke's on-screen width is holding at the cap,
+    /// so its document-space line width has to shrink as the zoom grows.
+    private func artworkWidthsDependOnScale(_ scale: CGFloat) -> Bool {
+        guard artworkMaxStrokeWidth > 0, scale > 0 else { return false }
+        return strokeWidthDependsOnScale(artworkMaxStrokeWidth, scale: scale)
+    }
+
+    private func strokeWidthDependsOnScale(_ strokeWidth: CGFloat, scale: CGFloat) -> Bool {
+        let cap = CanvasOverlayGeometry.displayStrokeScreenCap
+        if strokeWidth > cap { return scale > 1 }
+        if strokeWidth <= 0 { return false }
+        return scale > cap / strokeWidth
+    }
+
+    private func updateHaloZoomMetrics(scale: CGFloat) {
+        let inv = 1 / max(scale, .leastNonzeroMagnitude)
+        let outset = CanvasOverlayGeometry.selectionHaloOutset * 2 * inv
+        for (id, halo) in selectionHaloLayers {
+            let metrics = artworkStrokeMetrics[id]
+            let screen = CanvasOverlayGeometry.displayStrokeScreenWidth(
+                strokeWidth: metrics?.strokeWidth ?? 0,
+                scale: scale
+            )
+            let local = screen * inv + outset
+            if halo.lineWidth != local {
+                halo.lineWidth = local
+            }
+            if metrics?.isConstruction == true {
+                let dash = StrokeRenderer.constructionDashPattern(scale: scale)
+                if halo.lineDashPattern != dash {
+                    halo.lineDashPattern = dash
+                }
+            }
+        }
     }
 
     // MARK: - Layer-backed grid

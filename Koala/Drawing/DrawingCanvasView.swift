@@ -109,6 +109,8 @@ struct DrawingCanvasView: UIViewRepresentable {
 
         if geometryChanged {
             uiView.reloadStrokes()
+        } else if referenceImageChanged || didSwapDocument {
+            uiView.reloadReferenceImages()
         }
 
         var didRefreshViewport = false

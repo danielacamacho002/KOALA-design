@@ -128,6 +128,20 @@ nonisolated enum CanvasOverlayGeometry: Sendable {
         return min(trueScreen, max(width, displayStrokeScreenCap))
     }
 
+    /// Line width in document space for a shape layer whose parent applies the viewport
+    /// scale. Matches `displayStrokeScreenWidth` on screen, and stays equal to
+    /// `strokeWidth` for the whole zoom range before the screen cap so pinch updates
+    /// do not rewrite the layer.
+    static func displayStrokeDocumentWidth(strokeWidth: CGFloat, scale: CGFloat) -> CGFloat {
+        let width = max(strokeWidth, 0)
+        let safeScale = max(scale, .leastNonzeroMagnitude)
+        let cap = max(width, displayStrokeScreenCap)
+        if width * safeScale <= cap {
+            return width
+        }
+        return cap / safeScale
+    }
+
     /// Screen length of an anchor that measures `base` points at 1× zoom.
     /// From the floor up to 1× the mark shrinks with the viewport, then holds at `base`.
     /// When `strokeWidth` is set, the square also stays `anchorStrokeClearance` times

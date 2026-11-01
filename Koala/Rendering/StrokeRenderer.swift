@@ -104,6 +104,52 @@ enum StrokeRenderer {
         )
     }
 
+    /// Viewport with scale 1 and no translation. Paths built with it are in document
+    /// space so a parent layer can pan and zoom them without rebuilding geometry.
+    static let documentSpaceViewport = ViewportTransform()
+
+    static func rendersSeparateOutline(_ stroke: VectorStroke) -> Bool {
+        hasCutEdges(stroke)
+    }
+
+    /// Screen-constant construction dashes, expressed in document space under a
+    /// parent layer scaled by `scale`.
+    static func constructionDashPattern(scale: CGFloat) -> [NSNumber] {
+        let inv = 1 / max(scale, .leastNonzeroMagnitude)
+        return [
+            NSNumber(value: Double(10 * inv)),
+            NSNumber(value: Double(6 * inv))
+        ]
+    }
+
+    /// Updates stroke width and dashes on a layer whose path is already in document
+    /// space. Does not replace the path.
+    static func applyDocumentSpaceZoom(
+        _ layer: CAShapeLayer,
+        strokeWidth: CGFloat,
+        isConstruction: Bool,
+        rendersSeparateOutline: Bool,
+        scale: CGFloat
+    ) {
+        let localWidth = CanvasOverlayGeometry.displayStrokeDocumentWidth(
+            strokeWidth: strokeWidth,
+            scale: scale
+        )
+        if rendersSeparateOutline {
+            if let outline = layer.sublayers?.first(where: { $0.name == outlineSublayerName }) as? CAShapeLayer,
+               outline.lineWidth != localWidth {
+                outline.lineWidth = localWidth
+            }
+        } else if layer.lineWidth != localWidth {
+            layer.lineWidth = localWidth
+        }
+        guard isConstruction else { return }
+        let dash = constructionDashPattern(scale: scale)
+        if layer.lineDashPattern != dash {
+            layer.lineDashPattern = dash
+        }
+    }
+
     private static let outlineSublayerName = "cutOutlineSublayer"
 
     /// Configures a stroke's shape layer. When the stroke carries cut edges
