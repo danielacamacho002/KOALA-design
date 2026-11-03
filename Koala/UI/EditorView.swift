@@ -137,6 +137,7 @@ struct EditorView: View {
                 document: store.document,
                 fileName: $store.fileName,
                 onFileNameChanged: handleFileNameChanged,
+                onCanvasSizeChanged: { store.markDirty() },
                 onReplayTutorial: replayTutorials,
                 onImport: {
                     pendingImportSourceAfterSettings = true
@@ -256,6 +257,7 @@ struct EditorView: View {
                     ),
                     measurementUnit: store.document.settings.units,
                     gridVisible: store.document.grid.isVisible,
+                    documentCanvasSize: store.document.settings.canvasSize,
                     isConstructionPreview: store.document.activeCategory == .line
                         && store.document.lineVariant == .constructionLine,
                     commandPreviewClosed: commandSession.canFinish

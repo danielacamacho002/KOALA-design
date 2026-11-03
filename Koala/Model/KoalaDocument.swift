@@ -3123,6 +3123,20 @@ final class KoalaDocument {
         )
     }
 
+    /// Sets the sheet size in document points. The sheet stays centered on the origin.
+    /// Returns false when the clamped size matches the current sheet, so callers can skip undo and save.
+    @discardableResult
+    func setCanvasSize(width: CGFloat, height: CGFloat) -> Bool {
+        let resolvedWidth = DocumentSettings.clampedCanvasExtent(width, unit: settings.units)
+        let resolvedHeight = DocumentSettings.clampedCanvasExtent(height, unit: settings.units)
+        guard abs(resolvedWidth - settings.canvasWidth) > 0.01
+                || abs(resolvedHeight - settings.canvasHeight) > 0.01 else { return false }
+        pushUndo()
+        settings.canvasWidth = resolvedWidth
+        settings.canvasHeight = resolvedHeight
+        return true
+    }
+
     /// Applies defaults intended for newly created projects.
     /// - Parameters:
     ///   - canvasSize: Optional canvas dimensions in document points. Defaults to 24" × 18" when nil.
