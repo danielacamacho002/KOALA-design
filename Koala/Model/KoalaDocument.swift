@@ -69,11 +69,11 @@ final class KoalaDocument {
     var centerSnapEnabled: Bool = false
     var quadrantSnapEnabled: Bool = false
     /// Horizontal assist from the constraints bar. Pins a nearly level line,
-    /// shows the axis mark, and sticks a move to a shared row.
-    var horizontalAlignmentEnabled: Bool = true
+    /// shows the axis mark, and sticks a move to a shared row. Off until selected.
+    var horizontalAlignmentEnabled: Bool = false
     /// Vertical assist from the constraints bar. Pins a nearly upright line,
-    /// shows the axis mark, and sticks a move to a shared column.
-    var verticalAlignmentEnabled: Bool = true
+    /// shows the axis mark, and sticks a move to a shared column. Off until selected.
+    var verticalAlignmentEnabled: Bool = false
 
     var enabledDrawingAxes: Set<DrawingAxis> {
         var axes: Set<DrawingAxis> = []
