@@ -94,6 +94,7 @@ struct PrintLayoutView: View {
                         onChanged: onChanged,
                         onClose: { showPaperPanel = false }
                     )
+                    .commandPanelScreenMargin()
                     .transition(.identity)
                 } else if showMarginPanel {
                     PrintMarginPanelView(
@@ -102,6 +103,7 @@ struct PrintLayoutView: View {
                         onChanged: onChanged,
                         onClose: { showMarginPanel = false }
                     )
+                    .commandPanelScreenMargin()
                     .transition(.identity)
                 } else if showsMovePanel {
                     PrintMoveRotatePanelView(
@@ -114,6 +116,7 @@ struct PrintLayoutView: View {
                             document.clearPrintSelection()
                         }
                     )
+                    .commandPanelScreenMargin()
                     .transition(.identity)
                 }
             }
