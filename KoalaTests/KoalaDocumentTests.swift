@@ -6,6 +6,16 @@ import Testing
 @MainActor
 struct KoalaDocumentTests {
 
+    /// Axis constraints stay off on a fresh document. They only engage after
+    /// the user selects them in the constraints bar.
+    @Test func axisConstraintsStartOff() {
+        let document = KoalaDocument()
+        #expect(document.horizontalAlignmentEnabled == false)
+        #expect(document.verticalAlignmentEnabled == false)
+        #expect(document.enabledDrawingAxes.isEmpty)
+        #expect(document.enabledAlignmentAxes.isEmpty)
+    }
+
     // MARK: - Layer lifecycle
 
     /// Deleting a layer has to take its contents with it. Anything left behind
