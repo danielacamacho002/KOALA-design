@@ -1170,6 +1170,43 @@ final class KoalaDocument {
         geometryRevision += 1
     }
 
+    /// Writes a finished group translation once. One id lookup, one geometry revision.
+    /// Does not push undo — the drag already called `beginInteractiveEdit()`.
+    func commitGroupTranslation(
+        strokes movedStrokes: [UUID: VectorStroke],
+        textPositions: [UUID: CGPoint]
+    ) {
+        guard !movedStrokes.isEmpty || !textPositions.isEmpty else { return }
+        var didWrite = false
+        if !movedStrokes.isEmpty {
+            var indexByID: [UUID: Int] = [:]
+            indexByID.reserveCapacity(strokes.count)
+            for (index, stroke) in strokes.enumerated() {
+                indexByID[stroke.id] = index
+            }
+            for (id, stroke) in movedStrokes {
+                guard let index = indexByID[id] else { continue }
+                strokes[index] = stroke
+                didWrite = true
+            }
+        }
+        if !textPositions.isEmpty {
+            var indexByID: [UUID: Int] = [:]
+            indexByID.reserveCapacity(textElements.count)
+            for (index, element) in textElements.enumerated() {
+                indexByID[element.id] = index
+            }
+            for (id, position) in textPositions {
+                guard let index = indexByID[id] else { continue }
+                textElements[index].position = position
+                didWrite = true
+            }
+        }
+        if didWrite {
+            geometryRevision += 1
+        }
+    }
+
     func beginInteractiveEdit() {
         pushUndo()
         compactCircularAnchors(for: selectedStrokeIDs)
@@ -2097,9 +2134,16 @@ final class KoalaDocument {
     /// snap tolerance, or two closed shapes overlap. Open vs closed does not
     /// matter for the anchor case — Join appears exactly when a fuse is possible.
     var canJoinSelection: Bool {
+        guard let input = joinCheckInput() else { return false }
+        return PathJoinEngine.canJoin(input.strokes, tolerance: input.tolerance)
+    }
+
+    /// Value copies for running `PathJoinEngine.canJoin` off the main thread.
+    /// `nil` when fewer than two selected shapes can join.
+    func joinCheckInput() -> (strokes: [VectorStroke], tolerance: CGFloat)? {
         let selected = joinableSelectedStrokes
-        guard selected.count >= 2 else { return false }
-        return PathJoinEngine.canJoin(selected, tolerance: grid.spacing * 0.5)
+        guard selected.count >= 2 else { return nil }
+        return (selected, grid.spacing * 0.5)
     }
 
     /// Permanently welds selected shapes that share touching anchors into one

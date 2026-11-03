@@ -21,7 +21,7 @@ import Foundation
 /// geometry through a join instead of collapsing into a few straight segments.
 /// Open curves keep their Bézier handles; only native arcs are tessellated and
 /// then compacted back to circular anchors.
-enum PathJoinEngine {
+nonisolated enum PathJoinEngine {
     private struct Path {
         var points: [CGPoint]
         var handles: [CurveHandle]

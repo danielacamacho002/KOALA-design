@@ -340,7 +340,8 @@ struct EditorView: View {
                         store.markDirty()
                     },
                     onEditText: { beginTextEditing($0) },
-                    onDismissTool: { dismissActiveTool() }
+                    onDismissTool: { dismissActiveTool() },
+                    canvasHandle: designCanvasHandle
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(canvasOverlayAcceptsHits)

@@ -13,6 +13,8 @@ struct CanvasOverlayView: View {
     var onChanged: () -> Void
     var onEditText: (UUID) -> Void = { _ in }
     var onDismissTool: () -> Void = {}
+    /// Design canvas. Group moves shift its layers and commit geometry on release.
+    var canvasHandle: CanvasViewportHandle?
 
     @State private var nodeDragOriginPoints: [CGPoint] = []
     @State private var nodeDragOriginStroke: VectorStroke?
@@ -104,6 +106,14 @@ struct CanvasOverlayView: View {
     @State private var groupMoveSnapOrigins: [CGPoint] = []
     /// Center reference points of every group member (center-to-center priority).
     @State private var groupMoveSnapCenters: [CGPoint] = []
+    /// Moving alignment samples, captured once at drag start.
+    @State private var groupMoveAlignmentPoints: [CGPoint] = []
+    /// Stationary alignment samples outside the selection, captured once at drag start.
+    @State private var groupMoveAlignmentTargets: [CGPoint] = []
+    /// Selection box at drag start. The frame follows `groupMovePreviewDelta` from here.
+    @State private var groupMoveOriginBounds: CGRect = .null
+    /// Document-space preview currently shown by the canvas layers.
+    @State private var groupMovePreviewDelta: CGPoint = .zero
     @State private var groupRotateStrokeOrigins: [UUID: VectorStroke] = [:]
     @State private var groupRotateTextOrigins: [UUID: TextElement] = [:]
     @State private var groupRotatePivot: CGPoint = .zero
@@ -823,7 +833,7 @@ struct CanvasOverlayView: View {
 
     @ViewBuilder
     private var multiSelectionMoveOverlay: some View {
-        if let bbox = document.selectionBoundingBox() {
+        if let bbox = groupMoveDisplayBounds() {
             let center = CGPoint(x: bbox.midX, y: bbox.midY)
             let viewCorners = [
                 CGPoint(x: bbox.minX, y: bbox.minY),
@@ -849,7 +859,7 @@ struct CanvasOverlayView: View {
                                 rawDelta: raw,
                                 viewTranslation: value.translation
                             )
-                            applyGroupMove(delta: locked, alignmentPoints: groupAlignmentPoints())
+                            applyGroupMove(delta: locked)
                         }
                     )
                 },
@@ -896,11 +906,30 @@ struct CanvasOverlayView: View {
             .highPriorityGesture(groupRotateGesture(pivot: pivot))
     }
 
+    private var groupMovePreviewActive: Bool {
+        !groupMoveStrokeOrigins.isEmpty || !groupMoveTextOrigins.isEmpty
+    }
+
+    /// Box the selection frame follows. During a drag the model stays put, so the
+    /// frame is the box from drag start plus the preview delta.
+    private func groupMoveDisplayBounds() -> CGRect? {
+        if groupMovePreviewActive,
+           !groupMoveOriginBounds.isNull,
+           !groupMoveOriginBounds.isInfinite {
+            return groupMoveOriginBounds.offsetBy(
+                dx: groupMovePreviewDelta.x,
+                dy: groupMovePreviewDelta.y
+            )
+        }
+        return document.selectionBoundingBox()
+    }
+
     private func beginGroupMove() {
         // Guarantee every group member is included before capturing origins so
         // a partial selection never translates one child independently.
         document.expandSelectionToGroupsIfNeeded()
         document.beginInteractiveEdit()
+        groupMovePreviewDelta = .zero
         groupMoveStrokeOrigins = [:]
         groupMoveSnapOrigins = []
         groupMoveSnapCenters = []
@@ -920,50 +949,84 @@ struct CanvasOverlayView: View {
                 groupMoveTextOrigins[id] = position
             }
         }
+        groupMoveAlignmentTargets = stationaryAlignmentTargets(
+            excluding: Set(groupMoveStrokeOrigins.keys)
+        )
+        groupMoveOriginBounds = document.selectionBoundingBox() ?? .null
+        if GroupMoveSnap.usesSelectionBounds(anchorCount: groupMoveSnapOrigins.count),
+           let bounds = document.selectionBoundingBox(),
+           let references = GroupMoveSnap.selectionReferences(in: bounds) {
+            groupMoveSnapOrigins = references.origins
+            groupMoveSnapCenters = [references.center]
+            groupMoveAlignmentPoints = references.origins
+        } else {
+            groupMoveAlignmentPoints = groupMoveStrokeOrigins.keys
+                .sorted { $0.uuidString < $1.uuidString }
+                .flatMap { id in
+                    groupMoveStrokeOrigins[id].map { AxisAlignmentPoints.points(on: $0) } ?? []
+                }
+        }
         snapHaptics.prepare()
     }
 
-    private func groupAlignmentPoints() -> [CGPoint] {
-        groupMoveStrokeOrigins.keys.sorted { $0.uuidString < $1.uuidString }.flatMap { id in
-            groupMoveStrokeOrigins[id].map { AxisAlignmentPoints.points(on: $0) } ?? []
-        }
+    private func stationaryAlignmentTargets(excluding ids: Set<UUID>) -> [CGPoint] {
+        document.interactiveStrokes()
+            .filter { !ids.contains($0.id) }
+            .flatMap { AxisAlignmentPoints.points(on: $0) }
     }
 
-    private func applyGroupMove(delta rawDelta: CGPoint, alignmentPoints: [CGPoint]) {
+    private func applyGroupMove(delta rawDelta: CGPoint) {
         // Snap the whole group when any member's anchor/center lands on other geometry.
+        // Large groups offer only the selection box, captured at drag start.
         var delta = translationSnappedDelta(
             origins: groupMoveSnapOrigins,
             centerOrigins: groupMoveSnapCenters,
-            alignmentPoints: alignmentPoints,
+            alignmentPoints: groupMoveAlignmentPoints,
             rawDelta: rawDelta,
-            excluding: Set(groupMoveStrokeOrigins.keys)
+            excluding: Set(groupMoveStrokeOrigins.keys),
+            cachedAlignmentTargets: groupMoveAlignmentTargets
         )
         // Object snap must not pull the group off the locked axis.
         delta = MoveAxisLock.constrainedDelta(delta, axis: moveTranslationAxis)
-        // Translate each child independently from its captured origin. Overlapping
-        // anchors may coincide visually but are never welded or merged.
-        for (_, origin) in groupMoveStrokeOrigins {
-            document.updateStroke(origin.offsettingGeometry(by: delta), recordUndo: false)
-        }
-        for (id, origin) in groupMoveTextOrigins {
-            document.setTextPosition(
-                id: id,
-                position: CGPoint(x: origin.x + delta.x, y: origin.y + delta.y),
-                recordUndo: false
-            )
-        }
-        onChanged()
+        groupMovePreviewDelta = delta
+        canvasHandle?.previewTranslation(
+            delta: delta,
+            strokeIDs: Set(groupMoveStrokeOrigins.keys),
+            textIDs: Set(groupMoveTextOrigins.keys)
+        )
     }
 
     private func finishGroupMove() {
+        let delta = groupMovePreviewDelta
+        let strokeOrigins = groupMoveStrokeOrigins
+        let textOrigins = groupMoveTextOrigins
         groupMoveStrokeOrigins = [:]
         groupMoveTextOrigins = [:]
         groupMoveSnapOrigins = []
         groupMoveSnapCenters = []
+        groupMoveAlignmentPoints = []
+        groupMoveAlignmentTargets = []
+        groupMoveOriginBounds = .null
+        groupMovePreviewDelta = .zero
         clearMoveSnap()
         resetMoveAxisLock()
-        // Skip intersection-anchor reconciliation so overlapping vertices inside a
-        // group stay independent (no weld/merge of coordinate arrays).
+        // The model stays at the drag-start geometry until now, so one write
+        // commits the whole group. Overlapping anchors are not welded.
+        let moved = hypot(delta.x, delta.y) > 0.001
+        if moved {
+            var strokes: [UUID: VectorStroke] = [:]
+            strokes.reserveCapacity(strokeOrigins.count)
+            for (id, origin) in strokeOrigins {
+                strokes[id] = origin.offsettingGeometry(by: delta)
+            }
+            var textPositions: [UUID: CGPoint] = [:]
+            textPositions.reserveCapacity(textOrigins.count)
+            for (id, origin) in textOrigins {
+                textPositions[id] = CGPoint(x: origin.x + delta.x, y: origin.y + delta.y)
+            }
+            document.commitGroupTranslation(strokes: strokes, textPositions: textPositions)
+        }
+        canvasHandle?.endTranslationPreview(reloadGeometry: moved)
         onChanged()
     }
 
@@ -1735,7 +1798,8 @@ struct CanvasOverlayView: View {
         alignmentPoints: [CGPoint] = [],
         rawDelta: CGPoint,
         excluding excludedStrokeIDs: Set<UUID>,
-        additionalTargets: [CGPoint] = []
+        additionalTargets: [CGPoint] = [],
+        cachedAlignmentTargets: [CGPoint]? = nil
     ) -> CGPoint {
         let scale = max(document.viewport.scale, 0.0001)
         if !document.enabledSnapKinds.isEmpty, !(origins.isEmpty && centerOrigins.isEmpty) {
@@ -1763,7 +1827,8 @@ struct CanvasOverlayView: View {
             movingPoints: moving,
             rawDelta: rawDelta,
             excluding: excludedStrokeIDs,
-            additionalTargets: additionalTargets
+            additionalTargets: additionalTargets,
+            cachedTargets: cachedAlignmentTargets
         )
         return CGPoint(x: rawDelta.x + correction.x, y: rawDelta.y + correction.y)
     }
@@ -1775,7 +1840,8 @@ struct CanvasOverlayView: View {
         movingPoints: [CGPoint],
         rawDelta: CGPoint,
         excluding: Set<UUID>,
-        additionalTargets: [CGPoint] = []
+        additionalTargets: [CGPoint] = [],
+        cachedTargets: [CGPoint]? = nil
     ) -> CGPoint {
         guard !allowedAlignmentAxes.isEmpty, !movingPoints.isEmpty else {
             clearAlignment()
@@ -1783,8 +1849,12 @@ struct CanvasOverlayView: View {
         }
         let proposed = movingPoints.map { CGPoint(x: $0.x + rawDelta.x, y: $0.y + rawDelta.y) }
         var targets = additionalTargets
-        for stroke in document.interactiveStrokes() where !excluding.contains(stroke.id) {
-            targets.append(contentsOf: AxisAlignmentPoints.points(on: stroke))
+        if let cachedTargets {
+            targets.append(contentsOf: cachedTargets)
+        } else {
+            for stroke in document.interactiveStrokes() where !excluding.contains(stroke.id) {
+                targets.append(contentsOf: AxisAlignmentPoints.points(on: stroke))
+            }
         }
         let scale = max(document.viewport.scale, 0.0001)
         let joinPoints: CGFloat = document.enabledSnapKinds.isEmpty ? 2 : SnapTuning.snapRadiusPoints

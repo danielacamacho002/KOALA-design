@@ -52,7 +52,7 @@ These counters mean different things. Mixing them is the usual bug.
 
 ## Canvas updates
 
-**Design** (`DrawingCanvasView.Coordinator`): diff viewport vs geometry vs selection vs command preview. Pan/zoom should transform existing layers, not rebuild every stroke. Pinch / two-finger pan / two-finger tap live on `ViewportNavigationInstaller` (a parent of the canvas and SwiftUI overlay) so Move/Scale cannot swallow zoom.
+**Design** (`DrawingCanvasView.Coordinator`): diff viewport vs geometry vs selection vs command preview. Pan/zoom should transform existing layers, not rebuild every stroke. A group translation previews by shifting those layers and bumps `geometryRevision` once on release. Pinch / two-finger pan / two-finger tap live on `ViewportNavigationInstaller` (a parent of the canvas and SwiftUI overlay) so Move/Scale cannot swallow zoom.
 
 **Print** (`PrintLayoutCanvasView.updateUIView`): today calls `reloadAll()` on almost every SwiftUI update; `printLayoutRevision` / `geometryRevision` are passed in and ignored. Match design-canvas diffing when touching this path.
 

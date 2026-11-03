@@ -31,6 +31,15 @@ struct MoveRotatePanelView: View {
     @State private var showTextStrokePicker = false
     @State private var showColorPicker = false
     @State private var showFillColorPicker = false
+    /// `canJoinSelection` runs the join engine over the whole selection. Evaluated
+    /// in `body`, it ran on every panel refresh and stalled zoom and selection on
+    /// a large group, so it is refreshed once after the selection or geometry settles.
+    @State private var canJoin = false
+
+    private struct JoinCheckKey: Equatable {
+        var strokeIDs: Set<UUID>
+        var geometryRevision: Int
+    }
 
     private var selectedStroke: VectorStroke? {
         guard let id = document.selectedStrokeID else { return nil }
@@ -157,6 +166,28 @@ struct MoveRotatePanelView: View {
             syncThicknessText()
             syncFillOpacity()
             syncImageOpacity()
+        }
+        .task(id: JoinCheckKey(
+            strokeIDs: document.selectedStrokeIDs,
+            geometryRevision: document.geometryRevision
+        )) {
+            guard document.selectedStrokeIDs.count >= 2 else {
+                canJoin = false
+                return
+            }
+            // A drag bumps the revision every frame; wait for it to settle.
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            guard let input = document.joinCheckInput() else {
+                canJoin = false
+                return
+            }
+            // Off the main thread so a grab right after selecting is not held up.
+            let result = await Task.detached(priority: .userInitiated) {
+                PathJoinEngine.canJoin(input.strokes, tolerance: input.tolerance)
+            }.value
+            guard !Task.isCancelled else { return }
+            canJoin = result
         }
     }
 
@@ -556,7 +587,7 @@ struct MoveRotatePanelView: View {
             }
         }
 
-        if document.canJoinSelection {
+        if canJoin {
             ToolPanelLabelButton(
                 title: "Join",
                 prominent: true,
