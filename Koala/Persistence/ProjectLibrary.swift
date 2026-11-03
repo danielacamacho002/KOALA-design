@@ -16,9 +16,10 @@ final class ProjectLibrary {
     private let indexFileName = "projects-index.json"
     /// Bump when gallery PNGs need to be rewritten (canvas color, fit).
     private static let thumbnailFormat = "canvas-fit-1"
+    private let rootDirectory: URL?
 
     var projectsDirectory: URL {
-        let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let docs = rootDirectory ?? fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return docs.appendingPathComponent("Projects", isDirectory: true)
     }
 
@@ -30,7 +31,8 @@ final class ProjectLibrary {
         projectsDirectory.appendingPathComponent(indexFileName)
     }
 
-    init() {
+    init(rootDirectory: URL? = nil) {
+        self.rootDirectory = rootDirectory
         ensureDirectories()
         loadIndex()
     }
@@ -38,6 +40,7 @@ final class ProjectLibrary {
     func refresh() async {
         await scanFilesystem()
         await rebuildThumbnailsIfFormatChanged()
+        await writeMissingThumbnails()
     }
 
     @discardableResult
@@ -211,7 +214,16 @@ final class ProjectLibrary {
     private func loadIndex() {
         guard let data = try? Data(contentsOf: indexURL),
               let decoded = try? JSONDecoder().decode([ProjectRecord].self, from: data) else { return }
-        projects = decoded.filter { fileManager.fileExists(atPath: $0.fileURL.path) }
+        // The app container path changes across installs, so absolute URLs in
+        // the index go stale. Rebase them onto the current directories.
+        projects = decoded
+            .map { record in
+                var record = record
+                record.fileURL = projectsDirectory.appendingPathComponent(record.fileURL.lastPathComponent)
+                record.thumbnailURL = thumbnailURL(for: record.id)
+                return record
+            }
+            .filter { fileManager.fileExists(atPath: $0.fileURL.path) }
     }
 
     private func saveIndex() {
@@ -231,8 +243,9 @@ final class ProjectLibrary {
         var unknownURLs: [URL] = []
         for url in files where url.pathExtension == DocumentCodec.fileExtension {
             let modDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
-            if let existing = projects.first(where: { $0.fileURL == url }) {
+            if let existing = projects.first(where: { $0.fileURL.lastPathComponent == url.lastPathComponent }) {
                 var record = existing
+                record.fileURL = url
                 record.modifiedAt = modDate
                 scanned.append(record)
             } else {
@@ -312,6 +325,23 @@ final class ProjectLibrary {
         ProjectThumbnailCache.removeAll()
         try? Self.thumbnailFormat.write(to: thumbnailFormatURL, atomically: true, encoding: .utf8)
         thumbnailRevision += 1
+    }
+
+    /// Renders a gallery PNG for any project that has none on disk, e.g. one
+    /// found by the filesystem scan or whose PNG was removed.
+    private func writeMissingThumbnails() async {
+        var wroteAny = false
+        for record in projects {
+            guard let url = record.thumbnailURL, !fileManager.fileExists(atPath: url.path) else { continue }
+            do {
+                let snapshot = try await PersistenceWorker.shared.readSnapshot(from: record.fileURL)
+                try await writeThumbnail(for: record, snapshot: snapshot)
+                wroteAny = true
+            } catch {
+                continue
+            }
+        }
+        if wroteAny { thumbnailRevision += 1 }
     }
 
     private func thumbnailURL(for id: UUID) -> URL {
