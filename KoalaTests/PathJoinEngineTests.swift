@@ -8,6 +8,35 @@ struct PathJoinEngineTests {
     private let layerID = UUID()
     private let joinTolerance: CGFloat = 10
 
+    @Test func joinCheckInputMatchesCanJoinSelectionOffTheMainThread() async {
+        let document = KoalaDocument()
+        let left = VectorStroke(
+            layerID: document.activeLayerID,
+            points: [CGPoint(x: 0, y: 0), CGPoint(x: 40, y: 0)]
+        )
+        let right = VectorStroke(
+            layerID: document.activeLayerID,
+            points: [CGPoint(x: 40, y: 0), CGPoint(x: 80, y: 0)]
+        )
+        document.addStroke(left)
+        document.addStroke(right)
+
+        document.setElementSelection(strokeIDs: [left.id], textIDs: [])
+        #expect(document.joinCheckInput() == nil)
+
+        document.setElementSelection(strokeIDs: [left.id, right.id], textIDs: [])
+        guard let input = document.joinCheckInput() else {
+            Issue.record("Two touching lines should be a join candidate")
+            return
+        }
+        #expect(input.strokes.count == 2)
+        let offMain = await Task.detached {
+            PathJoinEngine.canJoin(input.strokes, tolerance: input.tolerance)
+        }.value
+        #expect(offMain == document.canJoinSelection)
+        #expect(offMain)
+    }
+
     /// Two open cubic lobes that meet at one endpoint. Import used to tessellate
     /// them; Join then rewrote those samples as circular arcs and the S collapsed.
     @Test func joiningImportedOpenCubicsKeepsTheBezierLobes() {

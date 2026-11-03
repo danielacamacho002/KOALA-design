@@ -97,6 +97,11 @@ final class DrawingCanvasUIView: UIView {
     /// Green rim drawn just behind each selected stroke.
     private var selectionHaloLayers: [UUID: CAShapeLayer] = [:]
     private var textLayers: [UUID: CAShapeLayer] = [:]
+    /// Document-space shift of a group move. Member paths stay where they were
+    /// drawn; only layer positions move until the drag commits.
+    private var translationPreviewDelta: CGPoint = .zero
+    private var translationPreviewStrokeIDs: Set<UUID> = []
+    private var translationPreviewTextIDs: Set<UUID> = []
     /// Outline-text stroke widths. Filled text does not change with zoom.
     private var outlineTextWidths: [UUID: CGFloat] = [:]
     private var commandPreviewLayer: CAShapeLayer?
@@ -282,6 +287,14 @@ final class DrawingCanvasUIView: UIView {
         reloadReferenceImages()
         applyContinuationVisibility()
         applyArtworkTransform()
+        // A reload mid-drag rebuilds halos at position zero. Put the preview back.
+        if !translationPreviewStrokeIDs.isEmpty || !translationPreviewTextIDs.isEmpty {
+            setTranslationPreview(
+                translationPreviewDelta,
+                strokeIDs: translationPreviewStrokeIDs,
+                textIDs: translationPreviewTextIDs
+            )
+        }
     }
 
     func reloadTextElements() {
@@ -466,6 +479,51 @@ final class DrawingCanvasUIView: UIView {
 
     func refreshStrokeHighlight() {
         reloadStrokesHighlight()
+    }
+
+    /// Shifts already-drawn stroke, halo, and text layers by a document-space delta.
+    /// Paths are absolute in `artworkLayer`, so this is a position change, not a rebuild.
+    func previewTranslation(delta: CGPoint, strokeIDs: Set<UUID>, textIDs: Set<UUID>) {
+        let retiredStrokes = translationPreviewStrokeIDs.subtracting(strokeIDs)
+        let retiredText = translationPreviewTextIDs.subtracting(textIDs)
+        translationPreviewDelta = delta
+        translationPreviewStrokeIDs = strokeIDs
+        translationPreviewTextIDs = textIDs
+        performWithoutLayerAnimation {
+            setTranslationPreview(.zero, strokeIDs: retiredStrokes, textIDs: retiredText)
+            setTranslationPreview(delta, strokeIDs: strokeIDs, textIDs: textIDs)
+        }
+    }
+
+    /// Drops the preview shift. When `reloadGeometry` is set, rebuilds paths in the
+    /// same transaction so the reset and the committed geometry appear together.
+    func endTranslationPreview(reloadGeometry: Bool) {
+        let strokes = translationPreviewStrokeIDs
+        let texts = translationPreviewTextIDs
+        guard !strokes.isEmpty || !texts.isEmpty else { return }
+        translationPreviewDelta = .zero
+        translationPreviewStrokeIDs = []
+        translationPreviewTextIDs = []
+        performWithoutLayerAnimation {
+            setTranslationPreview(.zero, strokeIDs: strokes, textIDs: texts)
+            if reloadGeometry {
+                reloadStrokes()
+            }
+        }
+    }
+
+    private func setTranslationPreview(_ delta: CGPoint, strokeIDs: Set<UUID>, textIDs: Set<UUID>) {
+        guard !strokeIDs.isEmpty || !textIDs.isEmpty else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for id in strokeIDs {
+            strokeLayers[id]?.position = delta
+            selectionHaloLayers[id]?.position = delta
+        }
+        for id in textIDs {
+            textLayers[id]?.position = delta
+        }
+        CATransaction.commit()
     }
 
     func refreshViewport() {

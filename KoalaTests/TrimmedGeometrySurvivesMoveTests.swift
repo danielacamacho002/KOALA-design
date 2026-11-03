@@ -231,8 +231,8 @@ struct TrimmedGeometrySurvivesMoveTests {
         let before = document.strokes.map { (id: $0.id, params: Self.parameters(of: $0)) }
         #expect(before.allSatisfy { $0.params != nil })
 
-        // What `beginGroupMove()` + `applyGroupMove(delta:)` do: compact anchors on the
-        // first frame, then offset every member from its captured origin by one delta.
+        // Offset every member from its captured origin by one delta. A group drag
+        // commits that result once, via `commitGroupTranslation`, instead of per frame.
         document.selectedStrokeIDs = Set(document.strokes.map(\.id))
         document.beginInteractiveEdit()
         for stroke in document.strokes {
@@ -252,5 +252,65 @@ struct TrimmedGeometrySurvivesMoveTests {
             #expect(Self.angularGap(moved.endAngle, original.endAngle) < 0.0001)
             #expect(abs(moved.sweep - original.sweep) < 0.0001)
         }
+    }
+
+    /// A group release writes every member in one geometry revision and does not
+    /// push another undo. An unknown id is ignored. An empty commit is a no-op.
+    @Test func commitGroupTranslationMovesEveryMemberOnce() {
+        let document = KoalaDocument()
+        let layerID = document.activeLayerID
+        let arc = Self.arc(
+            center: .zero, radius: 40, startDeg: 10, sweepDeg: 80, layerID: layerID
+        )
+        let line = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 0, y: 0), CGPoint(x: 30, y: 10)]
+        )
+        let untouched = VectorStroke(
+            layerID: layerID,
+            points: [CGPoint(x: 400, y: 400), CGPoint(x: 420, y: 400)]
+        )
+        document.strokes = [arc, line, untouched]
+        let text = document.makeTextElement(at: CGPoint(x: 8, y: 12))
+        document.addTextElement(text)
+
+        let before = Self.parameters(of: arc)
+        #expect(before != nil)
+        let revision = document.geometryRevision
+        let undo = document.undoRevision
+        let delta = Self.delta
+
+        document.commitGroupTranslation(
+            strokes: [
+                arc.id: arc.offsettingGeometry(by: delta),
+                line.id: line.offsettingGeometry(by: delta)
+            ],
+            textPositions: [
+                text.id: CGPoint(x: text.position.x + delta.x, y: text.position.y + delta.y)
+            ]
+        )
+
+        #expect(document.geometryRevision == revision + 1)
+        #expect(document.undoRevision == undo)
+        guard let original = before,
+              let moved = document.stroke(with: arc.id).flatMap(Self.parameters(of:)) else {
+            Issue.record("arc lost its circular parameters")
+            return
+        }
+        #expect(abs(moved.center.x - (original.center.x + delta.x)) < 0.001)
+        #expect(abs(moved.center.y - (original.center.y + delta.y)) < 0.001)
+        #expect(abs(moved.radius - original.radius) < 0.001)
+        #expect(abs(moved.sweep - original.sweep) < 0.0001)
+        #expect(document.stroke(with: line.id)?.points.first == CGPoint(x: delta.x, y: delta.y))
+        #expect(document.stroke(with: untouched.id)?.points == untouched.points)
+        #expect(document.textElement(with: text.id)?.position == CGPoint(
+            x: text.position.x + delta.x,
+            y: text.position.y + delta.y
+        ))
+
+        document.commitGroupTranslation(strokes: [:], textPositions: [:])
+        document.commitGroupTranslation(strokes: [UUID(): line], textPositions: [:])
+        #expect(document.geometryRevision == revision + 1)
+        #expect(document.undoRevision == undo)
     }
 }
