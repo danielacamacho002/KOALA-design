@@ -104,26 +104,27 @@ enum StrokeRenderer {
         )
     }
 
-    /// Viewport with scale 1 and no translation. Paths built with it are in document
-    /// space so a parent layer can pan and zoom them without rebuilding geometry.
+    /// Viewport with scale 1 and no translation. Paths built with it are raw
+    /// document points. On-canvas layers use `CanvasRenderSpace.pathViewport`
+    /// instead: a floor-plan path in raw points is too large for Core Animation.
     static let documentSpaceViewport = ViewportTransform()
 
     static func rendersSeparateOutline(_ stroke: VectorStroke) -> Bool {
         hasCutEdges(stroke)
     }
 
-    /// Screen-constant construction dashes, expressed in document space under a
-    /// parent layer scaled by `scale`.
+    /// Screen-constant construction dashes, in `CanvasRenderSpace`, for a parent
+    /// layer that undoes that compression and then applies `scale`.
     static func constructionDashPattern(scale: CGFloat) -> [NSNumber] {
-        let inv = 1 / max(scale, .leastNonzeroMagnitude)
+        let inv = CanvasRenderSpace.geometryScale / max(scale, .leastNonzeroMagnitude)
         return [
             NSNumber(value: Double(10 * inv)),
             NSNumber(value: Double(6 * inv))
         ]
     }
 
-    /// Updates stroke width and dashes on a layer whose path is already in document
-    /// space. Does not replace the path.
+    /// Updates stroke width and dashes on a layer whose path is already in
+    /// `CanvasRenderSpace`. Does not replace the path.
     static func applyDocumentSpaceZoom(
         _ layer: CAShapeLayer,
         strokeWidth: CGFloat,
@@ -131,9 +132,11 @@ enum StrokeRenderer {
         rendersSeparateOutline: Bool,
         scale: CGFloat
     ) {
-        let localWidth = CanvasOverlayGeometry.displayStrokeDocumentWidth(
-            strokeWidth: strokeWidth,
-            scale: scale
+        let localWidth = CanvasRenderSpace.compress(
+            CanvasOverlayGeometry.displayStrokeDocumentWidth(
+                strokeWidth: strokeWidth,
+                scale: scale
+            )
         )
         if rendersSeparateOutline {
             if let outline = layer.sublayers?.first(where: { $0.name == outlineSublayerName }) as? CAShapeLayer,

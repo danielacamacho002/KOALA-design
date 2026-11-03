@@ -9,7 +9,8 @@ import UIKit
 /// `CAShapeLayer`, so on-canvas text is a real shape that matches the exported
 /// vectors exactly (same `TextOutline` path used for SVG/PDF/image export).
 enum TextRenderer {
-    /// Glyph outlines stay in document space. The canvas parent layer carries the viewport.
+    /// Glyph outlines are stored in `CanvasRenderSpace`. The canvas parent layer
+    /// undoes that compression and applies the viewport.
     static func makeDocumentSpaceLayer(
         for element: TextElement,
         scale: CGFloat,
@@ -29,14 +30,16 @@ enum TextRenderer {
         scale: CGFloat,
         opacity: CGFloat = 1
     ) {
-        layer.path = TextOutline.path(for: element)
+        layer.path = CanvasRenderSpace.compress(TextOutline.path(for: element))
         layer.opacity = Float(opacity)
         if element.isOutline {
             layer.fillColor = nil
             layer.strokeColor = element.strokeCGColor
-            layer.lineWidth = CanvasOverlayGeometry.displayStrokeDocumentWidth(
-                strokeWidth: element.strokeWidth,
-                scale: scale
+            layer.lineWidth = CanvasRenderSpace.compress(
+                CanvasOverlayGeometry.displayStrokeDocumentWidth(
+                    strokeWidth: element.strokeWidth,
+                    scale: scale
+                )
             )
         } else {
             layer.fillColor = element.cgColor

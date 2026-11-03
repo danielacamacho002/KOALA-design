@@ -254,7 +254,7 @@ final class DrawingCanvasUIView: UIView {
                 StrokeRenderer.updateShapeLayer(
                     existing,
                     stroke: stroke,
-                    viewport: StrokeRenderer.documentSpaceViewport,
+                    viewport: CanvasRenderSpace.pathViewport,
                     opacity: document.opacity(forLayerID: stroke.layerID),
                     limitZoomedWidth: true
                 )
@@ -365,8 +365,14 @@ final class DrawingCanvasUIView: UIView {
             imageLayer.contents = contents
             imageLayer.contentsGravity = .resize
             imageLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            imageLayer.bounds = CGRect(origin: .zero, size: frame.size)
-            imageLayer.position = center
+            imageLayer.bounds = CGRect(
+                origin: .zero,
+                size: CGSize(
+                    width: CanvasRenderSpace.compress(frame.width),
+                    height: CanvasRenderSpace.compress(frame.height)
+                )
+            )
+            imageLayer.position = CanvasRenderSpace.compress(center)
             imageLayer.transform = item.rotation == 0
                 ? CATransform3DIdentity
                 : CATransform3DMakeRotation(item.rotation, 0, 0, 1)
@@ -380,7 +386,7 @@ final class DrawingCanvasUIView: UIView {
     private func addStrokeLayer(_ stroke: VectorStroke) {
         let shapeLayer = StrokeRenderer.makeShapeLayer(
             for: stroke,
-            viewport: StrokeRenderer.documentSpaceViewport,
+            viewport: CanvasRenderSpace.pathViewport,
             opacity: document.opacity(forLayerID: stroke.layerID),
             limitZoomedWidth: true
         )
@@ -427,9 +433,11 @@ final class DrawingCanvasUIView: UIView {
             let inv = 1 / max(scale, .leastNonzeroMagnitude)
             halo.path = StrokeRenderer.outlinePath(
                 for: stroke,
-                viewport: StrokeRenderer.documentSpaceViewport
+                viewport: CanvasRenderSpace.pathViewport
             ).cgPath
-            halo.lineWidth = (screenWidth + CanvasOverlayGeometry.selectionHaloOutset * 2) * inv
+            halo.lineWidth = CanvasRenderSpace.compress(
+                (screenWidth + CanvasOverlayGeometry.selectionHaloOutset * 2) * inv
+            )
             halo.lineDashPattern = stroke.isConstruction
                 ? StrokeRenderer.constructionDashPattern(scale: scale)
                 : nil
@@ -530,12 +538,13 @@ final class DrawingCanvasUIView: UIView {
         layer.addSublayer(artworkLayer)
     }
 
-    /// Pan and zoom move `artworkLayer`. Stroke paths stay in document space.
-    /// Line widths are rewritten only once a stroke is thick enough on screen that
-    /// the cap (or a construction dash) actually depends on the zoom level.
+    /// Pan and zoom move `artworkLayer`. Stroke paths stay in `CanvasRenderSpace`
+    /// so a room-sized shape still paints. Line widths are rewritten only once a
+    /// stroke is thick enough on screen that the cap (or a construction dash)
+    /// actually depends on the zoom level.
     private func applyArtworkTransform() {
         let scale = document.viewport.scale
-        artworkLayer.setAffineTransform(document.viewport.affineTransform)
+        artworkLayer.setAffineTransform(CanvasRenderSpace.layerTransform(for: document.viewport))
         if artworkZoomNeedsMetricUpdate(scale: scale) {
             for (id, metrics) in artworkStrokeMetrics {
                 guard let shape = strokeLayers[id] else { continue }
@@ -600,7 +609,7 @@ final class DrawingCanvasUIView: UIView {
                 strokeWidth: metrics?.strokeWidth ?? 0,
                 scale: scale
             )
-            let local = screen * inv + outset
+            let local = CanvasRenderSpace.compress(screen * inv + outset)
             if halo.lineWidth != local {
                 halo.lineWidth = local
             }
@@ -716,11 +725,11 @@ final class DrawingCanvasUIView: UIView {
         cachedGridMajor = grid.visualSpacing(for: settings)
         cachedCanvasSize = canvasSize
 
-        updateClipLayer(canvasRect: paths.canvasRect)
+        updateClipLayer(canvasRect: paths.canvasRect.map(CanvasRenderSpace.compress))
 
         ensureRankLayerCount(paths.rankPaths.count)
         for (index, path) in paths.rankPaths.enumerated() {
-            rankLayers[index].path = path
+            rankLayers[index].path = CanvasRenderSpace.compress(path)
             rankLayers[index].isHidden = path.isEmpty
         }
         for index in paths.rankPaths.count..<rankLayers.count {
@@ -728,8 +737,8 @@ final class DrawingCanvasUIView: UIView {
             rankLayers[index].path = nil
         }
 
-        axisXLayer.path = paths.axisX
-        axisYLayer.path = paths.axisY
+        axisXLayer.path = CanvasRenderSpace.compress(paths.axisX)
+        axisYLayer.path = CanvasRenderSpace.compress(paths.axisY)
 
         applyGridColors()
         applyWorldTransform()
@@ -760,8 +769,8 @@ final class DrawingCanvasUIView: UIView {
 
     private func applyWorldTransform() {
         let viewport = document.viewport
-        worldLayer.setAffineTransform(viewport.affineTransform)
-        let inv = 1 / max(viewport.scale, .leastNonzeroMagnitude)
+        worldLayer.setAffineTransform(CanvasRenderSpace.layerTransform(for: viewport))
+        let inv = CanvasRenderSpace.geometryScale / max(viewport.scale, .leastNonzeroMagnitude)
         let gridWidth = GridRenderer.gridLineWidth * inv
         for layer in rankLayers {
             layer.lineWidth = gridWidth
