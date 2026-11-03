@@ -164,6 +164,7 @@ enum SVGExporter {
         let lineWidth = formatSVG(max(0, stroke.strokeWidth))
         let isFilled = stroke.isClosed && !stroke.isConstruction && stroke.resolvedFillOpacity > 0.0001
         let fillHex = stroke.fillColor.map { hexRGB(from: $0) } ?? Self.planeFillHex
+        let fillOpacityAttr = " fill-opacity=\"\(formatSVG(stroke.resolvedFillOpacity))\""
         let cutEdges = Set(stroke.openEdgeStarts ?? [])
         let prefix = pad(indent)
         let fillRuleAttr: String
@@ -187,7 +188,7 @@ enum SVGExporter {
         if isFilled, !cutEdges.isEmpty {
             // Fill the filleted contour, then stroke only the retained (non-cut)
             // edges so the carved notch has no outline.
-            var markup = "\(prefix)<path d=\"\(displayData)\" fill=\"\(fillHex)\" stroke=\"none\"\(fillRuleAttr)/>\n"
+            var markup = "\(prefix)<path d=\"\(displayData)\" fill=\"\(fillHex)\"\(fillOpacityAttr) stroke=\"none\"\(fillRuleAttr)/>\n"
             let points = ShapeGeometry.renderPoints(for: stroke)
             let strokeData = strokePathData(from: points, cutEdges: cutEdges)
             if !strokeData.isEmpty {
@@ -197,7 +198,7 @@ enum SVGExporter {
         }
 
         if isFilled {
-            return "\(prefix)<path d=\"\(displayData)\" \(strokePaint) fill=\"\(fillHex)\"\(fillRuleAttr)/>\n"
+            return "\(prefix)<path d=\"\(displayData)\" \(strokePaint) fill=\"\(fillHex)\"\(fillOpacityAttr)\(fillRuleAttr)/>\n"
         }
         return "\(prefix)<path d=\"\(displayData)\" \(strokePaint) fill=\"none\"/>\n"
     }
@@ -232,10 +233,9 @@ enum SVGExporter {
         return path
     }
 
-    /// Closed-plane fill color. Canvas `fillOpacity` is a see-through preview
-    /// only — SVG omits `fill-opacity` so Illustrator can recolor to solid black.
-    /// (Illustrator keeps `fill-opacity` when the user changes fill, so 25%
-    /// black imports as grey.)
+    /// Closed-plane fill when a shape has never had a fill color chosen.
+    /// `fill-opacity` is the canvas preview, so opening the SVG in Koala
+    /// paints the same strength. Shapes with no fill omit it entirely.
     private nonisolated static let planeFillHex = "#CCCCCC"
 
     /// sRGB hex. Components are clamped so Display P3 values cannot emit
