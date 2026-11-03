@@ -2535,46 +2535,24 @@ final class KoalaDocument {
         guard let bbox = selectionBoundingBox() else { return false }
         if recordUndo { pushUndo() }
         let center = CGPoint(x: bbox.midX, y: bbox.midY)
-        let radiusScale = sqrt(factorX * factorY)
-
-        func scaled(_ point: CGPoint) -> CGPoint {
-            CGPoint(
-                x: center.x + (point.x - center.x) * factorX,
-                y: center.y + (point.y - center.y) * factorY
-            )
-        }
 
         for id in selectedStrokeIDs {
             guard let index = strokes.firstIndex(where: { $0.id == id }) else { continue }
-            strokes[index].points = strokes[index].points.map(scaled)
-            strokes[index].cutoutPoints = strokes[index].cutoutPoints.map { $0.map(scaled) }
-            if let handles = strokes[index].curveHandles {
-                strokes[index].curveHandles = handles.map { handle in
-                    CurveHandle(
-                        inOffset: CGPoint(x: handle.inOffset.x * factorX, y: handle.inOffset.y * factorY),
-                        outOffset: CGPoint(x: handle.outOffset.x * factorX, y: handle.outOffset.y * factorY)
-                    )
-                }
-            }
-            strokes[index].cornerRadius *= radiusScale
-            if let overrides = strokes[index].cornerRadiiByIndex {
-                var scaledOverrides: [Int: CGFloat] = [:]
-                for (corner, radius) in overrides {
-                    scaledOverrides[corner] = radius * radiusScale
-                }
-                strokes[index].cornerRadiiByIndex = scaledOverrides
-            }
+            strokes[index] = CanvasOverlayGeometry.scaledStroke(
+                strokes[index],
+                about: center,
+                x: factorX,
+                y: factorY
+            )
         }
 
-        let fontFactor = abs(factorX - factorY) <= 1e-6 ? abs(factorX) : abs(factorY)
         for id in selectedTextIDs {
             guard let index = textElements.firstIndex(where: { $0.id == id }) else { continue }
-            let newCenter = scaled(textElements[index].center)
-            textElements[index].fontSize = max(4, textElements[index].fontSize * fontFactor)
-            let size = textElements[index].textSize()
-            textElements[index].position = CGPoint(
-                x: newCenter.x - size.width / 2,
-                y: newCenter.y - size.height / 2
+            textElements[index] = CanvasOverlayGeometry.scaledText(
+                textElements[index],
+                about: center,
+                x: factorX,
+                y: factorY
             )
         }
         if selectedTextIDs.count == 1,
@@ -2693,7 +2671,7 @@ final class KoalaDocument {
             || selectedTextIDs.contains { group(containingText: $0) != nil }
     }
 
-    /// True when the move tool should transform the selection as a unit
+    /// True when Move and Scale should transform the selection as one unit
     /// (multi-select or any selected member of a group).
     var usesGroupTransform: Bool {
         hasMultiSelection || selectionTouchesGroup

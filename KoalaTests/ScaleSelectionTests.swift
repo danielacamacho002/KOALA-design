@@ -76,6 +76,70 @@ struct ScaleSelectionTests {
         ]))
     }
 
+    @Test func scalingOneGroupedShapeScalesTheWholeGroup() {
+        let document = KoalaDocument()
+        let left = rectangle(layerID: document.activeLayerID)
+        var right = rectangle(layerID: document.activeLayerID)
+        right.points = right.points.map { CGPoint(x: $0.x + 20, y: $0.y) }
+        var outsider = rectangle(layerID: document.activeLayerID)
+        outsider.points = outsider.points.map { CGPoint(x: $0.x + 80, y: $0.y) }
+        document.addStroke(left)
+        document.addStroke(right)
+        document.addStroke(outsider)
+        document.setElementSelection(strokeIDs: [left.id, right.id], textIDs: [])
+        document.groupSelectedElements()
+        document.setElementSelection(strokeIDs: [left.id], textIDs: [])
+
+        #expect(document.scaleSelectedElements(factorX: 2, factorY: 2))
+
+        #expect(document.selectedStrokeIDs == Set([left.id, right.id]))
+        #expect(pointsMatch(document.stroke(with: left.id)?.points ?? [], [
+            CGPoint(x: -15, y: -5),
+            CGPoint(x: 5, y: -5),
+            CGPoint(x: 5, y: 15),
+            CGPoint(x: -15, y: 15)
+        ]))
+        #expect(pointsMatch(document.stroke(with: right.id)?.points ?? [], [
+            CGPoint(x: 25, y: -5),
+            CGPoint(x: 45, y: -5),
+            CGPoint(x: 45, y: 15),
+            CGPoint(x: 25, y: 15)
+        ]))
+        #expect(document.stroke(with: outsider.id)?.points == outsider.points)
+    }
+
+    @Test func groupedTextScalesAboutTheSharedCenter() {
+        let document = KoalaDocument()
+        let stroke = rectangle(layerID: document.activeLayerID)
+        document.addStroke(stroke)
+        var element = document.makeTextElement(at: CGPoint(x: 40, y: 0))
+        element.text = "Hi"
+        element.fontSize = 12
+        document.addTextElement(element)
+        document.setElementSelection(strokeIDs: [stroke.id], textIDs: [element.id])
+        document.groupSelectedElements()
+        let textCenter = document.textElement(with: element.id)?.center ?? .zero
+        let box = document.selectionBoundingBox()
+        let groupCenter = CGPoint(x: box?.midX ?? 0, y: box?.midY ?? 0)
+
+        #expect(document.scaleSelectedElements(factorX: 2, factorY: 2))
+
+        let scaled = document.textElement(with: element.id)
+        let expected = CGPoint(
+            x: groupCenter.x + (textCenter.x - groupCenter.x) * 2,
+            y: groupCenter.y + (textCenter.y - groupCenter.y) * 2
+        )
+        #expect(scaled?.fontSize == 24)
+        #expect(abs((scaled?.center.x ?? 0) - expected.x) < 0.5)
+        #expect(abs((scaled?.center.y ?? 0) - expected.y) < 0.5)
+        #expect(pointsMatch(document.stroke(with: stroke.id)?.points ?? [], [
+            CGPoint(x: groupCenter.x + (0 - groupCenter.x) * 2, y: groupCenter.y + (0 - groupCenter.y) * 2),
+            CGPoint(x: groupCenter.x + (10 - groupCenter.x) * 2, y: groupCenter.y + (0 - groupCenter.y) * 2),
+            CGPoint(x: groupCenter.x + (10 - groupCenter.x) * 2, y: groupCenter.y + (10 - groupCenter.y) * 2),
+            CGPoint(x: groupCenter.x + (0 - groupCenter.x) * 2, y: groupCenter.y + (10 - groupCenter.y) * 2)
+        ]))
+    }
+
     @Test func uniformScaleDoublesTextFontAndKeepsTheCenter() {
         let document = KoalaDocument()
         var element = document.makeTextElement(at: CGPoint(x: 10, y: 20))

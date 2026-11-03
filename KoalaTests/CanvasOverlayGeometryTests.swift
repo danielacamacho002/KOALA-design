@@ -88,6 +88,32 @@ struct CanvasOverlayGeometryTests {
         #expect(scaled == [center, CGPoint(x: 30, y: 10), CGPoint(x: 10, y: 70)])
     }
 
+    @Test func scaledStrokeScalesFilletsHolesAndTheRotationBaseline() {
+        let stroke = VectorStroke(
+            layerID: UUID(),
+            points: [CGPoint(x: 0, y: 0), CGPoint(x: 10, y: 0)],
+            cornerRadius: 4,
+            cornerRadiiByIndex: [0: 2],
+            rotationBasePoints: [CGPoint(x: 0, y: 0), CGPoint(x: 10, y: 0)],
+            rotationBaseCenter: CGPoint(x: 5, y: 0),
+            cutoutPoints: [[CGPoint(x: 2, y: 1)]],
+            curveHandles: [CurveHandle(inOffset: CGPoint(x: 1, y: 0), outOffset: .zero)]
+        )
+        let scaled = CanvasOverlayGeometry.scaledStroke(
+            stroke,
+            about: CGPoint(x: 0, y: 0),
+            x: 2,
+            y: -2
+        )
+        #expect(scaled.points == [CGPoint(x: 0, y: 0), CGPoint(x: 20, y: 0)])
+        #expect(scaled.cutoutPoints == [[CGPoint(x: 4, y: -2)]])
+        #expect(scaled.curveHandles?.first?.inOffset == CGPoint(x: 2, y: 0))
+        #expect(scaled.rotationBasePoints == [CGPoint(x: 0, y: 0), CGPoint(x: 20, y: 0)])
+        #expect(scaled.rotationBaseCenter == CGPoint(x: 10, y: 0))
+        #expect(abs(scaled.cornerRadius - 8) < 0.001)
+        #expect(abs((scaled.cornerRadiiByIndex?[0] ?? 0) - 4) < 0.001)
+    }
+
     @Test func curveHandlesScaleAsOffsetsNotPositions() {
         let handles = [CurveHandle(inOffset: CGPoint(x: -4, y: 2), outOffset: CGPoint(x: 4, y: -2))]
         let scaled = CanvasOverlayGeometry.scaled(handles: handles, x: 2, y: 0.5)
