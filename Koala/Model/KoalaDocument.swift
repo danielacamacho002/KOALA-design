@@ -4175,8 +4175,10 @@ final class KoalaDocument {
     }
 
     /// Cut tool: slices the print-layout stroke nearest `point` that crosses the
-    /// printable-margin line nearest the tap. Print-layout-only — design strokes
-    /// are hidden, not mutated.
+    /// printable-margin line nearest the tap. When that stroke is part of a
+    /// multi-selection, every selected stroke crossing the line is sliced along it
+    /// together as one undo step. Print-layout-only — design strokes are hidden,
+    /// not mutated.
     @discardableResult
     func cutAlongNearestPrintBorder(near point: CGPoint, threshold: CGFloat) -> Bool {
         let rects = PrintPageGridEngine.printableRects(for: printLayout)
@@ -4210,13 +4212,14 @@ final class KoalaDocument {
         guard let axis = bestAxis else { return false }
         let coordinate = bestCoordinate
 
+        let candidates = printLayoutStrokes().filter {
+            PrintSliceEngine.crosses(transformedPrintStroke($0), axis: axis, coordinate: coordinate)
+        }
+
         var bestStroke: VectorStroke?
         var bestStrokeDistance = threshold
-        for stroke in printLayoutStrokes() {
+        for stroke in candidates {
             let strokeInP = transformedPrintStroke(stroke)
-            guard PrintSliceEngine.crosses(strokeInP, axis: axis, coordinate: coordinate) else {
-                continue
-            }
             let distance = strokeInP.contains(point) ? 0 : strokeInP.distance(to: point)
             if distance < bestStrokeDistance {
                 bestStrokeDistance = distance
@@ -4225,59 +4228,66 @@ final class KoalaDocument {
         }
         guard let stroke = bestStroke else { return false }
 
-        let strokeInP = transformedPrintStroke(stroke)
-        guard let fragments = PrintSliceEngine.slice(
-            strokeInP,
-            axis: axis,
-            coordinate: coordinate,
-            nearestCrossingTo: point
-        ) else { return false }
+        // A group cut runs the whole line through every selected stroke; a lone cut
+        // only splits the crossing nearest the tap.
+        let isGroupCut = printSelectedStrokeIDs.count > 1 && printSelectedStrokeIDs.contains(stroke.id)
+        let targets = isGroupCut
+            ? candidates.filter { printSelectedStrokeIDs.contains($0.id) }
+            : [stroke]
 
-        // Convert each fragment from print-grid space back to base space so that
-        // `effectivePrintTransform` (identity per-piece + contentOffset) re-places it
-        // exactly where the sliced portion was — no visual jump.
+        // Fragments go from print-grid space back to base space so that
+        // `effectivePrintTransform` (identity per-piece + contentOffset) re-places
+        // them exactly where the sliced portion was — no visual jump.
         let offset = printLayout.contentOffset
-        let basePieces = fragments.map { piece -> VectorStroke in
-            var copy = piece
-            copy.points = piece.points.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
-            if !copy.cutoutPoints.isEmpty {
-                copy.cutoutPoints = copy.cutoutPoints.map { contour in
-                    contour.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
+        var cuts: [(target: VectorStroke, pieces: [VectorStroke])] = []
+        for target in targets {
+            guard let fragments = PrintSliceEngine.slice(
+                transformedPrintStroke(target),
+                axis: axis,
+                coordinate: coordinate,
+                nearestCrossingTo: isGroupCut ? nil : point
+            ) else { continue }
+            let basePieces = fragments.map { piece -> VectorStroke in
+                var copy = piece
+                copy.points = piece.points.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
+                if !copy.cutoutPoints.isEmpty {
+                    copy.cutoutPoints = copy.cutoutPoints.map { contour in
+                        contour.map { CGPoint(x: $0.x - offset.x, y: $0.y - offset.y) }
+                    }
                 }
+                return copy
             }
-            return copy
+            cuts.append((target, basePieces))
         }
-
-        let sourceID: UUID
-        var hideIDs: [UUID] = []
-        var removePieceIDs: [UUID] = []
-        if strokes.contains(where: { $0.id == stroke.id }) {
-            sourceID = stroke.id
-            hideIDs.append(stroke.id)
-        } else {
-            sourceID = printPieceSourceIDs[stroke.id] ?? stroke.id
-            removePieceIDs.append(stroke.id)
-        }
+        guard !cuts.isEmpty else { return false }
 
         pushUndo()
 
-        for id in hideIDs {
-            printHiddenStrokeIDs.insert(id)
-        }
-        if !removePieceIDs.isEmpty {
-            let removeSet = Set(removePieceIDs)
-            printPieces.removeAll { removeSet.contains($0.id) }
-            for id in removePieceIDs {
-                printStrokeTransforms.removeValue(forKey: id)
-                printPieceSourceIDs.removeValue(forKey: id)
+        let designIDs = Set(strokes.map(\.id))
+        var newPieceIDs: Set<UUID> = []
+        for (target, basePieces) in cuts {
+            let sourceID: UUID
+            if designIDs.contains(target.id) {
+                sourceID = target.id
+                printHiddenStrokeIDs.insert(target.id)
+            } else {
+                sourceID = printPieceSourceIDs[target.id] ?? target.id
+                printPieces.removeAll { $0.id == target.id }
+                printStrokeTransforms.removeValue(forKey: target.id)
+                printPieceSourceIDs.removeValue(forKey: target.id)
+            }
+            printPieces.append(contentsOf: basePieces)
+            for piece in basePieces {
+                printPieceSourceIDs[piece.id] = sourceID
+                newPieceIDs.insert(piece.id)
             }
         }
-        printPieces.append(contentsOf: basePieces)
-        for piece in basePieces {
-            printPieceSourceIDs[piece.id] = sourceID
-        }
 
-        setPrintSelection(strokeIDs: Set(basePieces.map(\.id)), textIDs: [])
+        // Selected strokes the line missed stay in the group for the next cut.
+        let cutIDs = Set(cuts.map(\.target.id))
+        let keptSelection = isGroupCut ? printSelectedStrokeIDs.subtracting(cutIDs) : []
+        let keptTextSelection = isGroupCut ? printSelectedTextIDs : []
+        setPrintSelection(strokeIDs: keptSelection.union(newPieceIDs), textIDs: keptTextSelection)
         printLayoutRevision += 1
         geometryRevision += 1
         return true

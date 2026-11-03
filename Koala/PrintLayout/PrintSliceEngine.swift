@@ -223,7 +223,9 @@ enum PrintSliceEngine {
             strokeColor: source.strokeColor,
             isClosed: closed,
             isConstruction: source.isConstruction,
-            shapeType: .polyline
+            shapeType: .polyline,
+            fillOpacity: source.fillOpacity,
+            fillColor: source.fillColor
         )
     }
 }
