@@ -257,8 +257,11 @@ struct MoveRotatePanelView: View {
                 .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
 
             Button(action: action) {
-                textColorWheel
-                    .frame(width: 26, height: 26)
+                Image(systemName: "eyedropper")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(Color(hex: "BBD159"))
+                    .frame(width: 24, height: 32)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(accessibility)
@@ -289,26 +292,6 @@ struct MoveRotatePanelView: View {
                 ToolPanelIconButton(systemImage: "plus", action: onPlus)
             }
         }
-    }
-
-    private var textColorWheel: some View {
-        Circle()
-            .fill(
-                AngularGradient(
-                    colors: (0...12).map { Color(hue: Double($0) / 12.0, saturation: 0.85, brightness: 0.95) },
-                    center: .center
-                )
-            )
-            .overlay(
-                Circle().fill(
-                    RadialGradient(
-                        colors: [Color.white.opacity(0.85), Color.white.opacity(0)],
-                        center: .center,
-                        startRadius: 0,
-                        endRadius: 13
-                    )
-                )
-            )
     }
 
     /// Representative text element whose values populate the style controls.
