@@ -9,6 +9,7 @@ struct SettingsView: View {
     @Bindable var document: KoalaDocument
     @Binding var fileName: String
     var onFileNameChanged: () -> Void
+    var onCanvasSizeChanged: () -> Void = {}
     var onReplayTutorial: (() -> Void)? = nil
     var onImport: () -> Void
     var onExport: () -> Void
@@ -16,7 +17,15 @@ struct SettingsView: View {
 
     @State private var editingName = ""
     @State private var gridSpacingText = ""
+    @State private var canvasWidthText = ""
+    @State private var canvasHeightText = ""
     @FocusState private var gridSpacingFocused: Bool
+    @FocusState private var canvasDimension: CanvasDimension?
+
+    private enum CanvasDimension: Hashable {
+        case width
+        case height
+    }
 
     @AppStorage(AppearanceSettings.canvasColorKey) private var canvasColorHex = AppearanceSettings.defaultCanvasHex
 
@@ -55,7 +64,16 @@ struct SettingsView: View {
                     settingsCard("Units") {
                         SettingsOptionBar(
                             options: MeasurementUnit.allCases,
-                            selection: $document.settings.units,
+                            selection: Binding(
+                                get: { document.settings.units },
+                                set: { newUnit in
+                                    commitCanvasSize()
+                                    commitGridSpacing()
+                                    document.settings.units = newUnit
+                                    reloadDisplayValues()
+                                    document.syncGridFromSettings()
+                                }
+                            ),
                             title: \.label
                         )
                         .onChange(of: document.settings.units) { _, _ in
@@ -82,6 +100,12 @@ struct SettingsView: View {
                     }
 
                     settingsCard("Canvas & grid") {
+                        canvasDimensionRow("Width", text: $canvasWidthText, dimension: .width)
+                        rowDivider
+                        canvasDimensionRow("Height", text: $canvasHeightText, dimension: .height)
+                        rowDivider
+                        settingsCaption("The sheet stays centered on the origin.")
+                        rowDivider
                         Toggle("Show grid", isOn: $document.grid.isVisible)
                             .toggleStyle(SettingsCheckboxToggleStyle())
                             .settingsInset()
@@ -113,6 +137,9 @@ struct SettingsView: View {
                         rowDivider
                         settingsCaption("Snap to fractions of a grid square without changing the grid. Zoom in to reveal these sub-grid lines.")
                     }
+                    .onChange(of: canvasDimension) { previous, _ in
+                        if previous != nil { commitCanvasSize() }
+                    }
 
                     settingsCard("Help") {
                         Button {
@@ -142,6 +169,7 @@ struct SettingsView: View {
                     Button {
                         commitProjectName()
                         commitGridSpacing()
+                        commitCanvasSize()
                         dismiss()
                     } label: {
                         Image(systemName: "checkmark")
@@ -155,6 +183,9 @@ struct SettingsView: View {
             .onAppear {
                 editingName = fileName
                 reloadDisplayValues()
+            }
+            .onDisappear {
+                commitCanvasSize()
             }
         }
         .background(SquareSheetCorners())
@@ -233,8 +264,49 @@ struct SettingsView: View {
         onFileNameChanged()
     }
 
+    private func canvasDimensionRow(
+        _ title: String,
+        text: Binding<String>,
+        dimension: CanvasDimension
+    ) -> some View {
+        HStack {
+            Text(title)
+            Spacer(minLength: 12)
+            squareTextField(title, text: text)
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.trailing)
+                .focused($canvasDimension, equals: dimension)
+                .frame(width: 88)
+                .onSubmit(commitCanvasSize)
+            Text(document.settings.units.shortLabel)
+                .foregroundStyle(.secondary)
+        }
+        .settingsInset()
+    }
+
     private func reloadDisplayValues() {
         gridSpacingText = spacingText(document.settings.defaultGridSpacingInUnits)
+        refreshCanvasSizeFields()
+    }
+
+    private func refreshCanvasSizeFields() {
+        canvasWidthText = spacingText(document.settings.units.fromDocumentUnits(document.settings.canvasWidth))
+        canvasHeightText = spacingText(document.settings.units.fromDocumentUnits(document.settings.canvasHeight))
+    }
+
+    private func commitCanvasSize() {
+        let width = canvasPoints(from: canvasWidthText, fallback: document.settings.canvasWidth)
+        let height = canvasPoints(from: canvasHeightText, fallback: document.settings.canvasHeight)
+        if document.setCanvasSize(width: width, height: height) {
+            onCanvasSizeChanged()
+        }
+        refreshCanvasSizeFields()
+    }
+
+    private func canvasPoints(from text: String, fallback: CGFloat) -> CGFloat {
+        let cleaned = text.trimmingCharacters(in: .whitespaces)
+        guard let value = Double(cleaned), value > 0 else { return fallback }
+        return document.settings.units.toDocumentUnits(CGFloat(value))
     }
 
     private func commitGridSpacing() {
