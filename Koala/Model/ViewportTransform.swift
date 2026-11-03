@@ -178,9 +178,20 @@ nonisolated struct ViewportTransform: Codable, Equatable, Sendable {
     ) {
         guard canvasSize.width > 0, canvasSize.height > 0,
               visibleRect.width > 0, visibleRect.height > 0 else { return }
-        let fit = min(visibleRect.width / canvasSize.width, visibleRect.height / canvasSize.height) * fillFactor
-        scale = min(Self.maxScale, max(Self.minScale, fit))
+        scale = Self.scaleFittingCanvas(canvasSize, in: visibleRect, fillFactor: fillFactor)
         translation = CGPoint(x: visibleRect.midX, y: visibleRect.midY)
+    }
+
+    /// Scale that fits `canvasSize` in `visibleRect` with `fillFactor`.
+    static func scaleFittingCanvas(
+        _ canvasSize: CGSize,
+        in visibleRect: CGRect,
+        fillFactor: CGFloat = 1.2
+    ) -> CGFloat {
+        guard canvasSize.width > 0, canvasSize.height > 0,
+              visibleRect.width > 0, visibleRect.height > 0 else { return 1 }
+        let fit = min(visibleRect.width / canvasSize.width, visibleRect.height / canvasSize.height) * fillFactor
+        return min(maxScale, max(minScale, fit))
     }
 
     /// Default view for a new empty project: reasonable zoom with origin centered.
