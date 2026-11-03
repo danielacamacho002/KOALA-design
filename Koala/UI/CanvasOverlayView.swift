@@ -121,6 +121,14 @@ struct CanvasOverlayView: View {
     @State private var groupRotateAccumulated: CGFloat = 0
     @State private var groupRotateReadoutBaseline: Double = 0
     @State private var groupRotateActive = false
+    /// Geometry captured when a multi-selection or group scale drag begins.
+    /// Each sample scales these origins, so the gesture does not compound.
+    @State private var groupScaleStrokeOrigins: [UUID: VectorStroke] = [:]
+    @State private var groupScaleTextOrigins: [UUID: TextElement] = [:]
+    @State private var groupScaleCenter: CGPoint = .zero
+    @State private var groupScaleCorner: CGPoint = .zero
+    @State private var groupScaleCornerDist: CGFloat = 1
+    @State private var groupScaleActive = false
     /// Dominant axis chosen for the current whole-object Move drag. Resets on end.
     @State private var moveTranslationAxis: MoveDragAxis = .free
 
@@ -154,7 +162,9 @@ struct CanvasOverlayView: View {
                     moveToolOverlay(canvasSize: geo.size)
                 } else if document.activeCategory == .scale {
                     emptyToolDismissOverlay
-                    if document.selectedTextID != nil {
+                    if document.usesGroupTransform {
+                        groupScaleOverlay
+                    } else if document.selectedTextID != nil {
                         textScaleOverlay
                     } else if document.isReferenceImageSelected {
                         imageScaleOverlay
@@ -2143,6 +2153,96 @@ struct CanvasOverlayView: View {
                     .highPriorityGesture(scaleDrag(strokeID: strokeID, cornerIndex: index, bbox: bbox))
             }
         }
+    }
+
+    /// Combined box and corner handles for a multi-selection or group. Dragging a
+    /// corner scales every member about the shared center, the same way Move
+    /// translates them together.
+    @ViewBuilder
+    private var groupScaleOverlay: some View {
+        if let bbox = document.selectionBoundingBox(), !bbox.isNull, !bbox.isInfinite {
+            let viewCorners = CanvasOverlayGeometry.cornerHandles(of: bbox)
+                .map { document.viewport.documentToView($0) }
+
+            selectionFrame(viewCorners)
+
+            ForEach(Array(viewCorners.enumerated()), id: \.offset) { index, corner in
+                handleView(style: .edit)
+                    .position(corner)
+                    .highPriorityGesture(groupScaleDrag(cornerIndex: index))
+            }
+        }
+    }
+
+    private func groupScaleDrag(cornerIndex: Int) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
+            .onChanged { value in
+                if !groupScaleActive {
+                    document.expandSelectionToGroupsIfNeeded()
+                    guard !document.selectionIsEmpty, document.selectionBoundingBox() != nil else { return }
+                    document.beginInteractiveEdit()
+                    groupScaleActive = true
+                    guard let bbox = document.selectionBoundingBox() else { return }
+                    let corners = CanvasOverlayGeometry.cornerHandles(of: bbox)
+                    guard corners.indices.contains(cornerIndex) else { return }
+                    var strokes: [UUID: VectorStroke] = [:]
+                    for id in document.selectedStrokeIDs {
+                        if let stroke = document.stroke(with: id) {
+                            strokes[id] = stroke
+                        }
+                    }
+                    var texts: [UUID: TextElement] = [:]
+                    for id in document.selectedTextIDs {
+                        if let text = document.textElement(with: id) {
+                            texts[id] = text
+                        }
+                    }
+                    guard !strokes.isEmpty || !texts.isEmpty else { return }
+                    let center = CGPoint(x: bbox.midX, y: bbox.midY)
+                    groupScaleStrokeOrigins = strokes
+                    groupScaleTextOrigins = texts
+                    groupScaleCenter = center
+                    groupScaleCorner = corners[cornerIndex]
+                    groupScaleCornerDist = CanvasOverlayGeometry.cornerDistance(from: center, to: corners[cornerIndex])
+                }
+                guard groupScaleActive,
+                      !groupScaleStrokeOrigins.isEmpty || !groupScaleTextOrigins.isEmpty else { return }
+                let factors = CanvasOverlayGeometry.scaleFactors(
+                    center: groupScaleCenter,
+                    corner: groupScaleCorner,
+                    dragPoint: document.viewport.viewToDocument(value.location),
+                    uniform: document.scaleUniform,
+                    originCornerDistance: groupScaleCornerDist
+                )
+                guard factors.x.isFinite, factors.y.isFinite else { return }
+                let center = groupScaleCenter
+                for (_, origin) in groupScaleStrokeOrigins {
+                    document.updateStroke(
+                        CanvasOverlayGeometry.scaledStroke(origin, about: center, x: factors.x, y: factors.y),
+                        recordUndo: false
+                    )
+                }
+                for (_, origin) in groupScaleTextOrigins {
+                    document.updateTextElement(
+                        CanvasOverlayGeometry.scaledText(origin, about: center, x: factors.x, y: factors.y),
+                        recordUndo: false
+                    )
+                }
+                if groupScaleTextOrigins.count == 1,
+                   let id = groupScaleTextOrigins.keys.first,
+                   let text = document.textElement(with: id) {
+                    document.activeFontSize = text.fontSize
+                }
+                onChanged()
+            }
+            .onEnded { _ in
+                let didScale = groupScaleActive
+                groupScaleActive = false
+                groupScaleStrokeOrigins = [:]
+                groupScaleTextOrigins = [:]
+                guard didScale else { return }
+                onChanged()
+            }
     }
 
     private func scaleDrag(strokeID: UUID, cornerIndex: Int, bbox: CGRect) -> some Gesture {

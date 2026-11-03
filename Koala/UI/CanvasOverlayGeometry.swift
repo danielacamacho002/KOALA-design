@@ -84,6 +84,61 @@ nonisolated enum CanvasOverlayGeometry: Sendable {
         }
     }
 
+    /// One stroke scaled about `center`. Points, holes, curve handles, and the rotation
+    /// baseline all use the same factors. Fillet radii follow the geometric mean so a
+    /// uniform scale matches the factor and a flip (negative factor) cannot make them NaN.
+    static func scaledStroke(
+        _ stroke: VectorStroke,
+        about center: CGPoint,
+        x sx: CGFloat,
+        y sy: CGFloat
+    ) -> VectorStroke {
+        var copy = stroke
+        copy.points = scaled(points: stroke.points, about: center, x: sx, y: sy)
+        copy.cutoutPoints = stroke.cutoutPoints.map {
+            scaled(points: $0, about: center, x: sx, y: sy)
+        }
+        if let handles = stroke.curveHandles {
+            copy.curveHandles = scaled(handles: handles, x: sx, y: sy)
+        }
+        if let base = stroke.rotationBasePoints {
+            copy.rotationBasePoints = scaled(points: base, about: center, x: sx, y: sy)
+        }
+        if let baseCenter = stroke.rotationBaseCenter {
+            copy.rotationBaseCenter = scaled(points: [baseCenter], about: center, x: sx, y: sy)[0]
+        }
+        let radiusScale = sqrt(abs(sx * sy))
+        copy.cornerRadius = stroke.cornerRadius * radiusScale
+        if let overrides = stroke.cornerRadiiByIndex {
+            var scaledOverrides: [Int: CGFloat] = [:]
+            for (corner, radius) in overrides {
+                scaledOverrides[corner] = radius * radiusScale
+            }
+            copy.cornerRadiiByIndex = scaledOverrides
+        }
+        return copy
+    }
+
+    /// Text scaled about `center`. The block moves on both axes. Font size follows a
+    /// uniform factor, or the vertical factor when the axes differ, and stays legible.
+    static func scaledText(
+        _ element: TextElement,
+        about center: CGPoint,
+        x sx: CGFloat,
+        y sy: CGFloat
+    ) -> TextElement {
+        var copy = element
+        let fontFactor = abs(sx - sy) <= 1e-6 ? abs(sx) : abs(sy)
+        copy.fontSize = max(4, element.fontSize * fontFactor)
+        let newCenter = scaled(points: [element.center], about: center, x: sx, y: sy)[0]
+        let size = copy.textSize()
+        copy.position = CGPoint(
+            x: newCenter.x - size.width / 2,
+            y: newCenter.y - size.height / 2
+        )
+        return copy
+    }
+
     /// Reference-image frame after a corner drag. The frame stays centered and takes the
     /// magnitude of each factor, so dragging a handle past the center grows the image
     /// instead of inverting it.
