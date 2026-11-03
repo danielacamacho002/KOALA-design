@@ -1272,6 +1272,11 @@ struct EditorView: View {
                 } else {
                     statusMessage = "Drag anchors or curve handles to edit; drag empty space to marquee-select"
                 }
+            } else {
+                store.document.expandSelectionToGroupsIfNeeded()
+                if store.document.usesGroupTransform {
+                    statusMessage = "Drag a corner to scale the selection together"
+                }
             }
         default:
             startDrawingSessionIfNeeded()
