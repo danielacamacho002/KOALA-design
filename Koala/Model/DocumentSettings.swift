@@ -90,4 +90,11 @@ nonisolated struct DocumentSettings: Codable, Equatable, Sendable {
             unit: unit
         )
     }
+
+    /// Canvas edge in document points, limited to at least 1 pt and the unit's maximum.
+    static func clampedCanvasExtent(_ points: CGFloat, unit: MeasurementUnit) -> CGFloat {
+        let maxPoints = maximumCanvasExtent(for: unit)
+        guard points.isFinite else { return 1 }
+        return min(max(points, 1), maxPoints)
+    }
 }

@@ -24,6 +24,10 @@ struct DrawingCanvasView: UIViewRepresentable {
     var visualGridSpacing: CGFloat = 20
     var measurementUnit: MeasurementUnit = .points
     var gridVisible: Bool = true
+    var documentCanvasSize: CGSize = CGSize(
+        width: DocumentSettings.defaultCanvasWidth,
+        height: DocumentSettings.defaultCanvasHeight
+    )
     var isConstructionPreview: Bool = false
     var commandPreviewClosed: Bool = false
     var allowsDragDraw: Bool = false
@@ -97,6 +101,7 @@ struct DrawingCanvasView: UIViewRepresentable {
             visualGridSpacing: visualGridSpacing,
             measurementUnit: measurementUnit,
             gridVisible: gridVisible,
+            documentCanvasSize: documentCanvasSize,
             didSwapDocument: didSwapDocument
         )
         let referenceImageChanged = context.coordinator.consumeReferenceImageChange(
@@ -217,6 +222,7 @@ struct DrawingCanvasView: UIViewRepresentable {
         private var lastVisualGridSpacing: CGFloat?
         private var lastMeasurementUnit: MeasurementUnit?
         private var lastGridVisible: Bool?
+        private var lastDocumentCanvasSize: CGSize?
         private var lastReferenceImageIDs: [UUID] = []
         private var lastReferenceImageFrames: [CGRect] = []
         private var lastReferenceImageRotations: [CGFloat] = []
@@ -285,18 +291,24 @@ struct DrawingCanvasView: UIViewRepresentable {
             visualGridSpacing: CGFloat,
             measurementUnit: MeasurementUnit,
             gridVisible: Bool,
+            documentCanvasSize: CGSize,
             didSwapDocument: Bool
         ) -> Bool {
             defer {
                 lastVisualGridSpacing = visualGridSpacing
                 lastMeasurementUnit = measurementUnit
                 lastGridVisible = gridVisible
+                lastDocumentCanvasSize = documentCanvasSize
             }
             if didSwapDocument { return true }
-            guard let lastVisualGridSpacing, let lastMeasurementUnit, let lastGridVisible else { return true }
+            guard let lastVisualGridSpacing,
+                  let lastMeasurementUnit,
+                  let lastGridVisible,
+                  let lastDocumentCanvasSize else { return true }
             return abs(lastVisualGridSpacing - visualGridSpacing) > 0.0001
                 || lastMeasurementUnit != measurementUnit
                 || lastGridVisible != gridVisible
+                || lastDocumentCanvasSize != documentCanvasSize
         }
 
         func consumeReferenceImageChange(
