@@ -962,19 +962,10 @@ struct EditorView: View {
         let visibleRect = visibleRectInCanvasSpace
         guard store.needsInitialViewportLayout, visibleRect.width > 0, visibleRect.height > 0 else { return }
         guard canvasViewSize.width > 0 else { return }
-        let contentPoints = store.document.visibleStrokes().flatMap { ShapeGeometry.renderPoints(for: $0) }
-        if contentPoints.isEmpty {
-            store.document.viewport.frameCanvasInDrawableArea(
-                canvasSize: store.document.settings.canvasSize,
-                visibleRect: visibleRect
-            )
-        } else {
-            store.document.viewport.fitToPoints(contentPoints, in: visibleRect.size)
-            store.document.viewport.clampToCanvasSize(
-                in: visibleRect.size,
-                canvasSize: store.document.settings.canvasSize
-            )
-        }
+        store.document.viewport.frameCanvasInDrawableArea(
+            canvasSize: store.document.settings.canvasSize,
+            visibleRect: visibleRect
+        )
         store.needsInitialViewportLayout = false
         designCanvasHandle.refreshViewport()
     }
@@ -1998,11 +1989,34 @@ struct EditorView: View {
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             do {
+                let importingProject = url.pathExtension.lowercased() == DocumentCodec.fileExtension
+                let projectIsEmpty = store.document.strokes.isEmpty
+                    && store.document.textElements.isEmpty
+                    && store.document.referenceImages.isEmpty
+                if importingProject {
+                    let source = KoalaDocument(snapshot: try DocumentCodec.readSnapshot(from: url))
+                    store.document.settings.canvasWidth = max(
+                        store.document.settings.canvasWidth,
+                        source.settings.canvasWidth
+                    )
+                    store.document.settings.canvasHeight = max(
+                        store.document.settings.canvasHeight,
+                        source.settings.canvasHeight
+                    )
+                    if projectIsEmpty {
+                        store.document.settings.units = source.settings.units
+                        store.document.settings.defaultGridSpacing = source.settings.defaultGridSpacing
+                        store.document.grid = source.grid
+                        store.document.syncGridFromSettings()
+                    }
+                }
                 let content = try ImportRouter.loadContent(
                     from: url,
                     layerID: store.document.activeLayerID
                 )
-                let count = try store.document.importContent(content, offset: importPlacementOffset)
+                let offset = importingProject && projectIsEmpty ? CGPoint.zero : importPlacementOffset
+                let count = try store.document.importContent(content, offset: offset)
+                store.document.expandCanvasToFitContents()
                 store.markDirty()
                 if count > 0 {
                     let noun = count == 1 ? "item" : "items"
@@ -2060,6 +2074,7 @@ struct EditorView: View {
                 syncDisplayName(for: renamedURL)
             }
             guard let url = store.fileURL else { return }
+            store.document.expandCanvasToFitContents()
             let snapshot = store.document.makeSnapshot()
             let revision = store.contentRevision
             let name = store.fileName

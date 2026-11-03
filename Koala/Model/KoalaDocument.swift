@@ -226,6 +226,7 @@ final class KoalaDocument {
         pinnedVisibleDimensionKeys = snapshot.pinnedVisibleDimensionKeys ?? []
         syncGridFromSettings()
         normalizeLayerGrouping()
+        expandCanvasToFitContents()
     }
 
     /// Rewrites sampled curves already stored in the file. Opening a project is
@@ -3165,6 +3166,57 @@ final class KoalaDocument {
             sliderValue: settings.defaultGridSpacingInUnits,
             unit: settings.units
         )
+    }
+
+    /// Grows the sheet so every visible piece sits inside it, with one grid square of margin.
+    /// A sheet that already contains the artwork is left alone, so a size chosen in Settings stays put.
+    @discardableResult
+    func expandCanvasToFitContents() -> Bool {
+        let bounds = artworkBounds()
+        guard !bounds.isNull else { return false }
+        let canvas = CGRect(
+            x: -settings.canvasWidth / 2,
+            y: -settings.canvasHeight / 2,
+            width: settings.canvasWidth,
+            height: settings.canvasHeight
+        )
+        guard canvas.width > 0, canvas.height > 0, !canvas.contains(bounds) else { return false }
+
+        let pad = max(settings.defaultGridSpacing, 1)
+        let padded = bounds.insetBy(dx: -pad, dy: -pad)
+        let limit = DocumentSettings.maximumCanvasExtent(for: settings.units)
+        let width = min(max(settings.canvasWidth, max(abs(padded.minX), abs(padded.maxX)) * 2), limit)
+        let height = min(max(settings.canvasHeight, max(abs(padded.minY), abs(padded.maxY)) * 2), limit)
+        guard abs(width - settings.canvasWidth) > 0.5 || abs(height - settings.canvasHeight) > 0.5 else {
+            return false
+        }
+        settings.canvasWidth = width
+        settings.canvasHeight = height
+        return true
+    }
+
+    /// Visible artwork in document space, padded by half the heaviest stroke.
+    private func artworkBounds() -> CGRect {
+        var bounds = CGRect.null
+        var strokePad: CGFloat = 0
+        for stroke in visibleStrokes() {
+            strokePad = max(strokePad, stroke.strokeWidth / 2)
+            for point in ShapeGeometry.renderPoints(for: stroke) {
+                bounds = bounds.union(CGRect(origin: point, size: .zero))
+            }
+        }
+        for element in visibleTextElements() {
+            for point in element.corners() {
+                bounds = bounds.union(CGRect(origin: point, size: .zero))
+            }
+        }
+        for image in visibleReferenceImages() {
+            for point in image.corners() {
+                bounds = bounds.union(CGRect(origin: point, size: .zero))
+            }
+        }
+        guard !bounds.isNull else { return .null }
+        return bounds.insetBy(dx: -strokePad, dy: -strokePad)
     }
 
     /// Sets the sheet size in document points. The sheet stays centered on the origin.
