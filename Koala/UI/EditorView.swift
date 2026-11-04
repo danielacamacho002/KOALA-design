@@ -2000,14 +2000,6 @@ struct EditorView: View {
                     && store.document.referenceImages.isEmpty
                 if importingProject {
                     let source = KoalaDocument(snapshot: try DocumentCodec.readSnapshot(from: url))
-                    store.document.settings.canvasWidth = max(
-                        store.document.settings.canvasWidth,
-                        source.settings.canvasWidth
-                    )
-                    store.document.settings.canvasHeight = max(
-                        store.document.settings.canvasHeight,
-                        source.settings.canvasHeight
-                    )
                     if projectIsEmpty {
                         store.document.settings.units = source.settings.units
                         store.document.settings.defaultGridSpacing = source.settings.defaultGridSpacing
@@ -2021,7 +2013,6 @@ struct EditorView: View {
                 )
                 let offset = importingProject && projectIsEmpty ? CGPoint.zero : importPlacementOffset
                 let count = try store.document.importContent(content, offset: offset)
-                store.document.expandCanvasToFitContents()
                 store.markDirty()
                 if count > 0 {
                     let noun = count == 1 ? "item" : "items"
@@ -2079,7 +2070,6 @@ struct EditorView: View {
                 syncDisplayName(for: renamedURL)
             }
             guard let url = store.fileURL else { return }
-            store.document.expandCanvasToFitContents()
             let snapshot = store.document.makeSnapshot()
             let revision = store.contentRevision
             let name = store.fileName

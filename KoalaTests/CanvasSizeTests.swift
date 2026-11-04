@@ -45,7 +45,7 @@ struct CanvasSizeTests {
         #expect(decoded.settings.canvasHeight == height)
     }
 
-    @Test func openingGrowsTheSheetUntilThePatternFits() {
+    @Test func openingKeepsTheSavedSheetWhenArtworkLiesOutsideIt() {
         let document = KoalaDocument()
         document.addStroke(VectorStroke(
             layerID: document.activeLayerID,
@@ -56,29 +56,20 @@ struct CanvasSizeTests {
         snapshot.settings.canvasHeight = DocumentSettings.defaultCanvasHeight
 
         let opened = KoalaDocument(snapshot: snapshot)
-        let canvas = CGRect(
-            x: -opened.settings.canvasWidth / 2,
-            y: -opened.settings.canvasHeight / 2,
-            width: opened.settings.canvasWidth,
-            height: opened.settings.canvasHeight
-        )
-        #expect(canvas.contains(CGPoint(x: 2_100, y: 40)))
-        #expect(opened.settings.canvasWidth > DocumentSettings.defaultCanvasWidth)
+        #expect(opened.settings.canvasWidth == DocumentSettings.defaultCanvasWidth)
         #expect(opened.settings.canvasHeight == DocumentSettings.defaultCanvasHeight)
     }
 
-    @Test func aSheetThatAlreadyContainsThePatternDoesNotGrow() {
+    @Test func resizingOneProjectDoesNotChangeNewProjects() {
         let document = KoalaDocument()
-        document.addStroke(VectorStroke(
-            layerID: document.activeLayerID,
-            points: [CGPoint(x: -20, y: -20), CGPoint(x: 20, y: 20)]
-        ))
-        let width = document.settings.canvasWidth
-        let height = document.settings.canvasHeight
+        document.setCanvasSize(
+            width: UnitConversion.documentPoints(from: 6, unit: .inches),
+            height: UnitConversion.documentPoints(from: 4, unit: .inches)
+        )
 
-        #expect(document.expandCanvasToFitContents() == false)
-        #expect(document.settings.canvasWidth == width)
-        #expect(document.settings.canvasHeight == height)
+        let fresh = KoalaDocument()
+        #expect(fresh.settings.canvasWidth == DocumentSettings.defaultCanvasWidth)
+        #expect(fresh.settings.canvasHeight == DocumentSettings.defaultCanvasHeight)
     }
 
     @Test func anUnchangedCanvasSizeDoesNotRecordUndo() {
