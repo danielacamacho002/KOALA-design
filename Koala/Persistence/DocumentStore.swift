@@ -70,9 +70,7 @@ final class DocumentStore {
         hasUnsavedChanges = false
         // Always re-center on the grid origin when opening, ignoring the viewport saved in the file.
         needsInitialViewportLayout = true
-        let canvasGrew = document.settings.canvasWidth != snapshot.settings.canvasWidth
-            || document.settings.canvasHeight != snapshot.settings.canvasHeight
-        if document.simplifyStoredDenseAnchors() || canvasGrew {
+        if document.simplifyStoredDenseAnchors() {
             markDirty()
         }
     }
@@ -81,7 +79,6 @@ final class DocumentStore {
         cancelAutoSave()
         let destination = url ?? fileURL
         guard let destination else { return }
-        document.expandCanvasToFitContents()
         try DocumentCodec.write(document.makeSnapshot(), to: destination)
         fileURL = destination
         hasUnsavedChanges = false
