@@ -13,6 +13,10 @@ enum ImportRouter {
         var strokes: [VectorStroke] = []
         var textElements: [TextElement] = []
         var referenceImages: [ReferenceImage] = []
+        /// Source layers (index 0 = backmost). Items whose `layerID` is not in
+        /// this list land on the target document's active layer.
+        var layers: [Layer] = []
+        var layerGroups: [LayerGroup] = []
 
         var hasVectorContent: Bool { !strokes.isEmpty || !textElements.isEmpty }
         var hasReferenceImage: Bool { !referenceImages.isEmpty }
@@ -56,7 +60,9 @@ enum ImportRouter {
             return ImportedContent(
                 strokes: imported.strokes,
                 textElements: imported.textElements,
-                referenceImages: imported.referenceImages
+                referenceImages: imported.referenceImages,
+                layers: imported.layers,
+                layerGroups: imported.layerGroups
             )
 
         case "jpg", "jpeg", "png", "heic", "heif", "gif", "tif", "tiff", "webp":
@@ -66,7 +72,12 @@ enum ImportRouter {
             let parsed = try SVGImporter.importDocument(from: sourceURL, layerID: layerID)
             let centered = SVGImporter.centered(parsed)
             guard centered.hasVectorContent else { throw ImportError.noVectorContent }
-            return ImportedContent(strokes: centered.strokes, textElements: centered.textElements)
+            return ImportedContent(
+                strokes: centered.strokes,
+                textElements: centered.textElements,
+                layers: centered.layers,
+                layerGroups: centered.layerGroups
+            )
 
         case "pdf", "ai":
             return try loadPDF(from: sourceURL, layerID: layerID)
@@ -84,6 +95,16 @@ enum ImportRouter {
             copy.layerID = document.activeLayerID
             return copy
         }
+        guard let topLayer = content.layers.last else { return }
+        let importedIDs = Set(content.layers.map(\.id))
+        let usesFallback = content.strokes.contains { !importedIDs.contains($0.layerID) }
+            || content.textElements.contains { !importedIDs.contains($0.layerID) }
+            || !document.referenceImages.isEmpty
+        let fallback = usesFallback ? document.layers.filter { $0.id == document.activeLayerID } : []
+        document.layers = fallback + content.layers
+        document.layerGroups = content.layerGroups
+        document.activeLayerID = usesFallback ? document.activeLayerID : topLayer.id
+        document.normalizeLayerGrouping()
     }
 
     private static func loadRasterImage(from sourceURL: URL, layerID: UUID) throws -> ImportedContent {
