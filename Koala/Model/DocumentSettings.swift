@@ -75,12 +75,12 @@ nonisolated struct DocumentSettings: Codable, Equatable, Sendable {
         switch unit {
         case .inches:
             return 1_000
-        case .centimeters:
-            return 2_500
+        case .feet:
+            return 1_000.0 / 12
         case .millimeters:
-            return 25_000
-        case .points:
-            return UnitConversion.documentPoints(from: 1_000, unit: .inches)
+            return 25_400
+        case .meters:
+            return 25.4
         }
     }
 

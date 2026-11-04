@@ -222,7 +222,7 @@ struct PrintPaperPanelView: View {
 
     private func syncCustomFields() {
         let size = document.printLayout.pageSizeInPoints
-        widthText = String(format: "%.2f", units.fromDocumentUnits(size.width))
-        heightText = String(format: "%.2f", units.fromDocumentUnits(size.height))
+        widthText = units.formatted(units.fromDocumentUnits(size.width))
+        heightText = units.formatted(units.fromDocumentUnits(size.height))
     }
 }

@@ -125,6 +125,6 @@ struct FilletRadiusPanelView: View {
     }
 
     private func displayString(_ value: CGFloat) -> String {
-        String(format: "%.2f", value)
+        units.formatted(value)
     }
 }

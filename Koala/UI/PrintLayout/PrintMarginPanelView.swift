@@ -25,9 +25,9 @@ struct PrintMarginPanelView: View {
     private var stepInPoints: CGFloat {
         switch units {
         case .inches: return units.toDocumentUnits(0.05)
-        case .centimeters: return units.toDocumentUnits(0.1)
+        case .feet: return units.toDocumentUnits(0.01)
         case .millimeters: return units.toDocumentUnits(1)
-        case .points: return 3
+        case .meters: return units.toDocumentUnits(0.001)
         }
     }
 
@@ -92,7 +92,7 @@ struct PrintMarginPanelView: View {
     }
 
     private func syncThickness() {
-        thicknessText = String(format: "%.2f", units.fromDocumentUnits(document.printLayout.printableMargin))
+        thicknessText = units.formatted(units.fromDocumentUnits(document.printLayout.printableMargin))
     }
 
     /// Refreshes the field from the model, but never clobbers a value the user is

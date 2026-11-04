@@ -167,6 +167,6 @@ struct LiveDimensionOverlay: View {
     private func format(_ value: CGFloat, units: MeasurementUnit) -> String {
         let pointsPerUnit = UnitConversion.pointsPerUnit(for: units)
         let realWorldValue = value / max(pointsPerUnit, 0.0001)
-        return String(format: "%.3f %@", realWorldValue, units.shortLabel)
+        return "\(units.formatted(realWorldValue, extraDigits: 1)) \(units.shortLabel)"
     }
 }

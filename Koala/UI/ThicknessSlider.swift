@@ -7,7 +7,7 @@ import SwiftUI
 
 struct ThicknessSlider: View {
     @Binding var strokeWidth: CGFloat
-    var units: MeasurementUnit = .points
+    var units: MeasurementUnit = .inches
 
     private let range: ClosedRange<CGFloat> = 0.5...48
     private let trackHeight: CGFloat = 120
@@ -55,7 +55,7 @@ struct ThicknessSlider: View {
         if display.truncatingRemainder(dividingBy: 1) == 0 {
             return "\(Int(display)) \(label)"
         }
-        return String(format: "%.1f %@", display, label)
+        return "\(units.formatted(display, extraDigits: -1)) \(label)"
     }
 
     private var verticalTrack: some View {
@@ -108,7 +108,7 @@ struct ThicknessSlider: View {
     struct PreviewWrapper: View {
         @State private var width: CGFloat = 4
         var body: some View {
-            ThicknessSlider(strokeWidth: $width, units: .points)
+            ThicknessSlider(strokeWidth: $width, units: .inches)
                 .padding()
         }
     }

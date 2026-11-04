@@ -13,10 +13,10 @@ nonisolated enum UnitConversion: Sendable {
     /// Document points represented by one unit of the given measurement.
     static func pointsPerUnit(for unit: MeasurementUnit) -> CGFloat {
         switch unit {
-        case .points: return 1
         case .inches: return pointsPerInch
+        case .feet: return pointsPerInch * 12
         case .millimeters: return pointsPerInch / 25.4
-        case .centimeters: return pointsPerInch / 2.54
+        case .meters: return pointsPerInch / 0.0254
         }
     }
 
