@@ -204,7 +204,7 @@ final class ShapeCommandSession {
 
     @discardableResult
     func submit(
-        units: MeasurementUnit = .points,
+        units: MeasurementUnit = .inches,
         grid: GridSettings? = nil,
         documentSettings: DocumentSettings? = nil,
         snapEnabled: Bool = false

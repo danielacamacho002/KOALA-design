@@ -19,8 +19,7 @@ struct CanvasSizeSheet: View {
     @State private var heightText = ""
     @State private var unit: MeasurementUnit = .inches
 
-    /// Units offered in the picker (inches default, plus centimeters and points).
-    private static let selectableUnits: [MeasurementUnit] = [.inches, .centimeters, .points]
+    private static let selectableUnits: [MeasurementUnit] = MeasurementUnit.allCases
 
     private var defaultWidthDisplay: CGFloat {
         unit.fromDocumentUnits(DocumentSettings.defaultCanvasWidth)
@@ -145,7 +144,7 @@ struct CanvasSizeSheet: View {
         if value == value.rounded() {
             return String(Int(value))
         }
-        return String(format: "%.2f", value)
+        return unit.formatted(value)
     }
 }
 

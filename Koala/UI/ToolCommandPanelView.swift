@@ -243,6 +243,6 @@ extension ShapeCommandSession {
         guard let last = controlPoints.last else { return nil }
         let x = units.fromDocumentUnits(last.x)
         let y = units.fromDocumentUnits(last.y)
-        return String(format: "Placed: %.1f, %.1f %@", x, y, units.shortLabel)
+        return "Placed: \(units.formatted(x, extraDigits: -1)), \(units.formatted(y, extraDigits: -1)) \(units.shortLabel)"
     }
 }

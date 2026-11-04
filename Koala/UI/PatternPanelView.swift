@@ -301,10 +301,10 @@ private struct PatternLengthStepperRow: View {
 
     private var lengthStep: Double {
         switch units {
-        case .points: return 1
         case .millimeters: return 0.5
-        case .centimeters: return 0.1
+        case .meters: return 0.001
         case .inches: return 0.05
+        case .feet: return 0.01
         }
     }
 
@@ -342,7 +342,7 @@ private struct PatternLengthStepperRow: View {
     }
 
     private func formatted(_ value: Double) -> String {
-        String(format: "%.2f", value)
+        units.formatted(value)
     }
 
     private func syncText() {
