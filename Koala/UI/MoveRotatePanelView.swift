@@ -106,15 +106,21 @@ struct MoveRotatePanelView: View {
             if !document.selectedStrokeIDs.isEmpty {
                 ToolPanelDivider()
                 thicknessSection
+            }
 
+            if !document.selectedStrokeIDs.isEmpty || document.hasClosedFillableSelection {
                 ToolPanelDivider()
-                colorSection
+                HStack(alignment: .top, spacing: 12) {
+                    if !document.selectedStrokeIDs.isEmpty {
+                        colorSection
+                    }
+                    if document.hasClosedFillableSelection {
+                        fillColorSection
+                    }
+                }
             }
 
             if document.hasClosedFillableSelection {
-                ToolPanelDivider()
-                fillColorSection
-
                 ToolPanelDivider()
                 fillOpacitySection
             }
@@ -208,22 +214,24 @@ struct MoveRotatePanelView: View {
         }
         .toggleStyle(.switch)
 
-        textColorRow(
-            label: "Fill",
-            swatch: currentTextFillColor,
-            accessibility: "Fill color"
-        ) { showTextFillPicker = true }
-        .sheet(isPresented: $showTextFillPicker) {
-            TextStyleColorPickerSheet(color: textFillColorBinding)
-        }
+        HStack(alignment: .top, spacing: 12) {
+            colorColumn(
+                label: "Fill",
+                swatch: currentTextFillColor,
+                accessibility: "Fill color"
+            ) { showTextFillPicker = true }
+            .sheet(isPresented: $showTextFillPicker) {
+                TextStyleColorPickerSheet(color: textFillColorBinding)
+            }
 
-        textColorRow(
-            label: "Stroke",
-            swatch: currentTextStrokeColor,
-            accessibility: "Stroke color"
-        ) { showTextStrokePicker = true }
-        .sheet(isPresented: $showTextStrokePicker) {
-            TextStyleColorPickerSheet(color: textStrokeColorBinding)
+            colorColumn(
+                label: "Stroke",
+                swatch: currentTextStrokeColor,
+                accessibility: "Stroke color"
+            ) { showTextStrokePicker = true }
+            .sheet(isPresented: $showTextStrokePicker) {
+                TextStyleColorPickerSheet(color: textStrokeColorBinding)
+            }
         }
 
         textStepperRow(
@@ -241,30 +249,43 @@ struct MoveRotatePanelView: View {
         )
     }
 
-    private func textColorRow(
+    /// Label over a swatch and eyedropper button. Sized to sit two per row.
+    private func colorColumn(
         label: String,
         swatch: Color,
+        isMixed: Bool = false,
         accessibility: String,
         action: @escaping () -> Void
     ) -> some View {
-        HStack(spacing: 8) {
-            ToolPanelSectionLabel(label)
-                .frame(width: 44, alignment: .leading)
-
-            Rectangle()
-                .fill(swatch)
-                .frame(width: 24, height: 24)
-                .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
-
-            Button(action: action) {
-                textColorWheel
-                    .frame(width: 26, height: 26)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                ToolPanelSectionLabel(label)
+                if isMixed {
+                    Text("Mixed")
+                        .font(.caption2)
+                        .foregroundStyle(Color.toolPanelSecondaryLabel)
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(accessibility)
+            .lineLimit(1)
 
-            Spacer()
+            HStack(spacing: 2) {
+                Rectangle()
+                    .fill(swatch)
+                    .frame(width: 26, height: 26)
+                    .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
+
+                Button(action: action) {
+                    Image(systemName: "eyedropper")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(Color(hex: "BBD159"))
+                        .frame(width: 24, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(accessibility)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func textStepperRow(
@@ -289,26 +310,6 @@ struct MoveRotatePanelView: View {
                 ToolPanelIconButton(systemImage: "plus", action: onPlus)
             }
         }
-    }
-
-    private var textColorWheel: some View {
-        Circle()
-            .fill(
-                AngularGradient(
-                    colors: (0...12).map { Color(hue: Double($0) / 12.0, saturation: 0.85, brightness: 0.95) },
-                    center: .center
-                )
-            )
-            .overlay(
-                Circle().fill(
-                    RadialGradient(
-                        colors: [Color.white.opacity(0.85), Color.white.opacity(0)],
-                        center: .center,
-                        startRadius: 0,
-                        endRadius: 13
-                    )
-                )
-            )
     }
 
     /// Representative text element whose values populate the style controls.
@@ -402,41 +403,18 @@ struct MoveRotatePanelView: View {
         }
     }
 
-    @ViewBuilder
     private var colorSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ToolPanelSectionLabel("Color")
-
-            HStack(spacing: 2) {
-                Rectangle()
-                    .fill(currentStrokeColor)
-                    .frame(width: 26, height: 26)
-                    .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
-
-                Button {
-                    showColorPicker = true
-                } label: {
-                    Image(systemName: "eyedropper")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(Color(hex: "BBD159"))
-                        .frame(width: 24, height: 32)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Line and border color")
-                .sheet(isPresented: $showColorPicker) {
-                    SystemColorPickerSheet(
-                        color: strokeColorBinding,
-                        onBeginEditing: { document.beginInteractiveEdit() }
-                    )
-                }
-
-                if isStrokeColorMixed {
-                    Text("Mixed")
-                        .font(.caption2)
-                        .foregroundStyle(Color.toolPanelSecondaryLabel)
-                }
-            }
+        colorColumn(
+            label: "Color",
+            swatch: currentStrokeColor,
+            isMixed: isStrokeColorMixed,
+            accessibility: "Line and border color"
+        ) { showColorPicker = true }
+        .sheet(isPresented: $showColorPicker) {
+            SystemColorPickerSheet(
+                color: strokeColorBinding,
+                onBeginEditing: { document.beginInteractiveEdit() }
+            )
         }
     }
 
@@ -460,41 +438,18 @@ struct MoveRotatePanelView: View {
         )
     }
 
-    @ViewBuilder
     private var fillColorSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ToolPanelSectionLabel("Fill")
-
-            HStack(spacing: 2) {
-                Rectangle()
-                    .fill(currentFillColor)
-                    .frame(width: 26, height: 26)
-                    .overlay(Rectangle().stroke(Color.primary.opacity(0.15), lineWidth: 1))
-
-                Button {
-                    showFillColorPicker = true
-                } label: {
-                    Image(systemName: "eyedropper")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(Color(hex: "BBD159"))
-                        .frame(width: 24, height: 32)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Fill color")
-                .sheet(isPresented: $showFillColorPicker) {
-                    SystemColorPickerSheet(
-                        color: fillColorBinding,
-                        onBeginEditing: { document.beginInteractiveEdit() }
-                    )
-                }
-
-                if isFillColorMixed {
-                    Text("Mixed")
-                        .font(.caption2)
-                        .foregroundStyle(Color.toolPanelSecondaryLabel)
-                }
-            }
+        colorColumn(
+            label: "Fill",
+            swatch: currentFillColor,
+            isMixed: isFillColorMixed,
+            accessibility: "Fill color"
+        ) { showFillColorPicker = true }
+        .sheet(isPresented: $showFillColorPicker) {
+            SystemColorPickerSheet(
+                color: fillColorBinding,
+                onBeginEditing: { document.beginInteractiveEdit() }
+            )
         }
     }
 
