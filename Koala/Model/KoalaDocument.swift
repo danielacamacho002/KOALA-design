@@ -996,33 +996,58 @@ final class KoalaDocument {
         geometryRevision += 1
     }
 
-    /// Merges imported artwork into the active layer. Vector items get new IDs;
-    /// rasters are appended on the active layer. `offset` is added in document space.
+    /// Merges imported artwork. Source layers (and folders) are added on top of the
+    /// stack with fresh IDs; anything else lands on the active layer. Vector items
+    /// get new IDs. `offset` is added in document space.
     @discardableResult
     func importContent(_ content: ImportRouter.ImportedContent, offset: CGPoint = .zero) throws -> Int {
         let hasVectors = content.hasVectorContent
-        if (hasVectors || content.hasReferenceImage) && activeLayer?.isLocked == true {
-            throw ImportRouter.ImportError.layerLocked
-        }
         guard hasVectors || content.hasReferenceImage else {
             throw ImportRouter.ImportError.noVectorContent
         }
+        let importedLayerIDs = Set(content.layers.map(\.id))
+        let targetsActiveLayer = content.strokes.contains { !importedLayerIDs.contains($0.layerID) }
+            || content.textElements.contains { !importedLayerIDs.contains($0.layerID) }
+            || content.referenceImages.contains { !importedLayerIDs.contains($0.layerID) }
+        if targetsActiveLayer && activeLayer?.isLocked == true {
+            throw ImportRouter.ImportError.layerLocked
+        }
 
         pushUndo()
+
+        var folderIDMap: [UUID: UUID] = [:]
+        for folder in content.layerGroups {
+            var copy = folder
+            copy.id = UUID()
+            folderIDMap[folder.id] = copy.id
+            layerGroups.append(copy)
+        }
+        var layerIDMap: [UUID: UUID] = [:]
+        for layer in content.layers {
+            var copy = layer
+            copy.id = UUID()
+            copy.groupID = layer.groupID.flatMap { folderIDMap[$0] }
+            layerIDMap[layer.id] = copy.id
+            layers.append(copy)
+        }
+        let activeBeforeImport = activeLayerID
+        func targetLayer(for sourceID: UUID) -> UUID {
+            layerIDMap[sourceID] ?? activeBeforeImport
+        }
 
         var newStrokeIDs: Set<UUID> = []
         var newTextIDs: Set<UUID> = []
 
         for stroke in content.strokes {
             var copy = stroke.duplicated(offset: offset)
-            copy.layerID = activeLayerID
+            copy.layerID = targetLayer(for: stroke.layerID)
             strokes.append(ShapeGeometry.captureRotationBaseIfNeeded(copy))
             newStrokeIDs.insert(copy.id)
         }
         for text in content.textElements {
             var copy = text
             copy.id = UUID()
-            copy.layerID = activeLayerID
+            copy.layerID = targetLayer(for: text.layerID)
             copy.position = CGPoint(x: copy.position.x + offset.x, y: copy.position.y + offset.y)
             textElements.append(copy)
             newTextIDs.insert(copy.id)
@@ -1031,13 +1056,20 @@ final class KoalaDocument {
             let stagger = CGFloat(referenceImages.count) * Self.additionalImageStagger
             var copy = image
             copy.id = UUID()
-            copy.layerID = activeLayerID
+            copy.layerID = targetLayer(for: image.layerID)
             copy.frame = copy.frame.offsetBy(dx: offset.x + stagger, dy: offset.y + stagger)
             referenceImages.append(copy)
         }
 
+        if !layerIDMap.isEmpty {
+            normalizeLayerGrouping()
+        }
         geometryRevision += 1
-        if !newStrokeIDs.isEmpty || !newTextIDs.isEmpty {
+        if let topLayerID = content.layers.last.flatMap({ layerIDMap[$0.id] }) {
+            // Selection is confined to one layer, so a multi-layer import selects nothing.
+            activeLayerID = topLayerID
+            setElementSelection(strokeIDs: [], textIDs: [])
+        } else if !newStrokeIDs.isEmpty || !newTextIDs.isEmpty {
             setElementSelection(strokeIDs: newStrokeIDs, textIDs: newTextIDs, compactAnchors: false)
         } else if let lastImage = referenceImages.last, content.hasReferenceImage {
             selectReferenceImage(id: lastImage.id)
