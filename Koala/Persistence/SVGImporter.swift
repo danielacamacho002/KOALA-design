@@ -11,6 +11,10 @@ enum SVGImporter {
     struct ParsedSVG: Equatable {
         var strokes: [VectorStroke] = []
         var textElements: [TextElement] = []
+        /// Layers rebuilt from `inkscape:groupmode="layer"` groups (index 0 = backmost).
+        /// Items outside any such group keep the fallback `layerID` passed to `parse`.
+        var layers: [Layer] = []
+        var layerGroups: [LayerGroup] = []
 
         var hasVectorContent: Bool { !strokes.isEmpty || !textElements.isEmpty }
     }
@@ -33,7 +37,7 @@ enum SVGImporter {
         parser.delegate = walker
         parser.shouldProcessNamespaces = true
         parser.parse()
-        return ParsedSVG(strokes: walker.strokes, textElements: walker.textElements)
+        return walker.result()
     }
 
     /// Shifts imported artwork so its bounds are centered on the document origin.
@@ -45,14 +49,14 @@ enum SVGImporter {
         guard !bounds.isNull else { return parsed }
         let offset = CGPoint(x: -bounds.midX, y: -bounds.midY)
         guard offset != .zero else { return parsed }
-        return ParsedSVG(
-            strokes: parsed.strokes.map { $0.offsettingGeometry(by: offset) },
-            textElements: parsed.textElements.map { text in
-                var copy = text
-                copy.position = CGPoint(x: text.position.x + offset.x, y: text.position.y + offset.y)
-                return copy
-            }
-        )
+        var shifted = parsed
+        shifted.strokes = parsed.strokes.map { $0.offsettingGeometry(by: offset) }
+        shifted.textElements = parsed.textElements.map { text in
+            var copy = text
+            copy.position = CGPoint(x: text.position.x + offset.x, y: text.position.y + offset.y)
+            return copy
+        }
+        return shifted
     }
 
     /// Shifts imported artwork so its bounds are centered on the document origin.
@@ -609,9 +613,19 @@ private final class TreeParser: NSObject, XMLParserDelegate {
         var presentation: SVGImporter.Presentation
         var buffer = ""
         var collectsText = false
+        var opensLayer = false
     }
 
-    let layerID: UUID
+    private struct LayerNode {
+        let id: UUID
+        let name: String
+        let opacity: CGFloat
+        let parent: Int?
+    }
+
+    let fallbackLayerID: UUID
+    private var layerNodes: [LayerNode] = []
+    private var openLayers: [Int] = []
     var strokes: [VectorStroke] = []
     var textElements: [TextElement] = []
     private var stack: [Frame] = [
@@ -628,7 +642,100 @@ private final class TreeParser: NSObject, XMLParserDelegate {
     private static let groupTags: Set<String> = ["svg", "g", "a", "text", "tspan"]
 
     init(layerID: UUID) {
-        self.layerID = layerID
+        self.fallbackLayerID = layerID
+    }
+
+    private var layerID: UUID {
+        openLayers.last.map { layerNodes[$0].id } ?? fallbackLayerID
+    }
+
+    /// Koala folders are one level deep: a top-level layer group that contains
+    /// other layer groups becomes a folder, and anything nested deeper merges
+    /// into its second-level ancestor.
+    func result() -> SVGImporter.ParsedSVG {
+        guard !layerNodes.isEmpty else {
+            return SVGImporter.ParsedSVG(strokes: strokes, textElements: textElements)
+        }
+
+        func depth(_ index: Int) -> Int {
+            var depth = 0
+            var cursor = layerNodes[index].parent
+            while let parent = cursor {
+                depth += 1
+                cursor = layerNodes[parent].parent
+            }
+            return depth
+        }
+
+        func ancestor(_ index: Int, atDepth target: Int) -> Int {
+            var cursor = index
+            while depth(cursor) > target, let parent = layerNodes[cursor].parent {
+                cursor = parent
+            }
+            return cursor
+        }
+
+        var remap: [UUID: UUID] = [:]
+        for index in layerNodes.indices where depth(index) > 1 {
+            remap[layerNodes[index].id] = layerNodes[ancestor(index, atDepth: 1)].id
+        }
+        let resolvedStrokes = strokes.map { stroke -> VectorStroke in
+            var copy = stroke
+            copy.layerID = remap[stroke.layerID] ?? stroke.layerID
+            return copy
+        }
+        let resolvedText = textElements.map { text -> TextElement in
+            var copy = text
+            copy.layerID = remap[text.layerID] ?? text.layerID
+            return copy
+        }
+        let usedLayerIDs = Set(resolvedStrokes.map(\.layerID)).union(resolvedText.map(\.layerID))
+
+        var layers: [Layer] = []
+        var folders: [LayerGroup] = []
+        for (index, node) in layerNodes.enumerated() where node.parent == nil {
+            let children = layerNodes.enumerated().filter { $0.element.parent == index }
+            guard !children.isEmpty else {
+                layers.append(Layer(id: node.id, name: node.name, opacity: node.opacity))
+                continue
+            }
+            let folder = LayerGroup(name: node.name)
+            folders.append(folder)
+            if usedLayerIDs.contains(node.id) {
+                layers.append(Layer(id: node.id, name: node.name, groupID: folder.id, opacity: node.opacity))
+            }
+            for child in children.map(\.element) {
+                layers.append(Layer(
+                    id: child.id,
+                    name: child.name,
+                    groupID: folder.id,
+                    opacity: child.opacity * node.opacity
+                ))
+            }
+        }
+
+        return SVGImporter.ParsedSVG(
+            strokes: resolvedStrokes,
+            textElements: resolvedText,
+            layers: layers,
+            layerGroups: folders
+        )
+    }
+
+    private func openLayerIfNeeded(_ attrs: [String: String]) -> Bool {
+        guard attrs["groupmode"]?.lowercased() == "layer" else { return false }
+        let label = [attrs["label"], attrs["data-name"], attrs["id"]]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        let opacity = SVGImporter.parseNumber(attrs["opacity"]).map { min(1, max(0, $0)) } ?? 1
+        layerNodes.append(LayerNode(
+            id: UUID(),
+            name: label ?? "Layer \(layerNodes.count + 1)",
+            opacity: opacity,
+            parent: openLayers.last
+        ))
+        openLayers.append(layerNodes.count - 1)
+        return true
     }
 
     private var current: Frame {
@@ -669,7 +776,8 @@ private final class TreeParser: NSObject, XMLParserDelegate {
             stack.append(Frame(
                 transform: transform,
                 presentation: presentation,
-                collectsText: name == "text" || name == "tspan"
+                collectsText: name == "text" || name == "tspan",
+                opensLayer: name == "g" && openLayerIfNeeded(attrs)
             ))
             return
         }
@@ -720,7 +828,9 @@ private final class TreeParser: NSObject, XMLParserDelegate {
             svgDepth = max(0, svgDepth - 1)
         }
         if Self.groupTags.contains(name), stack.count > 1 {
-            stack.removeLast()
+            if stack.removeLast().opensLayer {
+                openLayers.removeLast()
+            }
         }
     }
 
