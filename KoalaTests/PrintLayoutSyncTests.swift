@@ -99,6 +99,62 @@ struct PrintLayoutSyncTests {
         #expect(document.printSelectedStrokeIDs.count == 2)
     }
 
+    @Test func cutOnASelectedGroupSlicesEverySelectedStroke() {
+        let document = KoalaDocument()
+        let near = makePolyline(
+            layerID: document.activeLayerID,
+            points: [CGPoint(x: 0, y: 100), CGPoint(x: 80, y: 100)]
+        )
+        let far = makePolyline(
+            layerID: document.activeLayerID,
+            points: [CGPoint(x: 0, y: 400), CGPoint(x: 80, y: 400)]
+        )
+        let unselected = makePolyline(
+            layerID: document.activeLayerID,
+            points: [CGPoint(x: 0, y: 600), CGPoint(x: 80, y: 600)]
+        )
+        document.addStroke(near)
+        document.addStroke(far)
+        document.addStroke(unselected)
+        document.setPrintSelection(strokeIDs: [near.id, far.id], textIDs: [])
+
+        #expect(document.cutAlongNearestPrintBorder(near: CGPoint(x: 18, y: 100), threshold: 40))
+
+        #expect(document.printHiddenStrokeIDs == [near.id, far.id])
+        #expect(document.printPieces.count == 4)
+        #expect(document.printPieces.filter { document.printPieceSourceIDs[$0.id] == far.id }.count == 2)
+        #expect(document.printSelectedStrokeIDs == Set(document.printPieces.map(\.id)))
+
+        document.undo()
+        #expect(document.printPieces.isEmpty)
+        #expect(document.printHiddenStrokeIDs.isEmpty)
+    }
+
+    @Test func cutOutsideTheSelectedGroupOnlySlicesTheTappedStroke() {
+        let document = KoalaDocument()
+        let tapped = makePolyline(
+            layerID: document.activeLayerID,
+            points: [CGPoint(x: 0, y: 100), CGPoint(x: 80, y: 100)]
+        )
+        let groupA = makePolyline(
+            layerID: document.activeLayerID,
+            points: [CGPoint(x: 0, y: 400), CGPoint(x: 80, y: 400)]
+        )
+        let groupB = makePolyline(
+            layerID: document.activeLayerID,
+            points: [CGPoint(x: 0, y: 600), CGPoint(x: 80, y: 600)]
+        )
+        document.addStroke(tapped)
+        document.addStroke(groupA)
+        document.addStroke(groupB)
+        document.setPrintSelection(strokeIDs: [groupA.id, groupB.id], textIDs: [])
+
+        #expect(document.cutAlongNearestPrintBorder(near: CGPoint(x: 18, y: 100), threshold: 40))
+
+        #expect(document.printHiddenStrokeIDs == [tapped.id])
+        #expect(document.printPieces.count == 2)
+    }
+
     private func makePolyline(layerID: UUID, points: [CGPoint]) -> VectorStroke {
         VectorStroke(
             layerID: layerID,
@@ -143,6 +199,28 @@ struct PrintSliceEngineTests {
             return minX < 18 && maxX > 18 && piece.points.contains { abs($0.y - 50) < 0.01 }
         }
         #expect(spansSecondCrossing == true)
+    }
+
+    @Test func slicedPiecesKeepTheSourceFill() {
+        let fill = CodableColor(red: 0.2, green: 0.6, blue: 0.9, alpha: 1)
+        let square = VectorStroke(
+            layerID: UUID(),
+            points: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 100, y: 0),
+                CGPoint(x: 100, y: 100),
+                CGPoint(x: 0, y: 100)
+            ],
+            strokeWidth: 1.5,
+            isClosed: true,
+            shapeType: .polyline,
+            fillOpacity: 0.8,
+            fillColor: fill
+        )
+
+        let pieces = PrintSliceEngine.slice(square, axis: .vertical, coordinate: 50)
+        #expect(pieces?.count == 2)
+        #expect(pieces?.allSatisfy { $0.fillColor == fill && $0.fillOpacity == 0.8 } == true)
     }
 
     @Test func sliceReturnsNilWhenStrokeDoesNotCross() {
