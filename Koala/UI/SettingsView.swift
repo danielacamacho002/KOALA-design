@@ -206,10 +206,10 @@ struct SettingsView: View {
 
     private var gridRange: ClosedRange<Double> {
         switch document.settings.units {
-        case .points: return 5...100
         case .millimeters: return 1...50
-        case .centimeters: return 0.5...20
+        case .meters: return 0.001...0.05
         case .inches: return 0.1...2
+        case .feet: return 0.01...0.2
         }
     }
 

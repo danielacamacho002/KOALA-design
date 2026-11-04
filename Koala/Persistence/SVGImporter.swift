@@ -481,18 +481,19 @@ enum SVGImporter {
         guard !trimmed.isEmpty, trimmed != "auto" else { return nil }
         if trimmed.hasSuffix("%") { return nil }
 
-        let suffixes: [(String, MeasurementUnit)] = [
-            ("in", .inches),
-            ("mm", .millimeters),
-            ("cm", .centimeters),
-            ("pt", .points),
-            ("px", .points)
+        let pointsPerInch = UnitConversion.pointsPerInch
+        let suffixes: [(String, CGFloat)] = [
+            ("in", pointsPerInch),
+            ("mm", pointsPerInch / 25.4),
+            ("cm", pointsPerInch / 2.54),
+            ("pt", 1),
+            ("px", 1)
         ]
-        for (suffix, unit) in suffixes {
+        for (suffix, pointsPerUnit) in suffixes {
             if trimmed.hasSuffix(suffix) {
                 let number = String(trimmed.dropLast(suffix.count))
                 guard let value = SVGNumberScanner.firstNumber(in: number) else { return nil }
-                return UnitConversion.documentPoints(from: value, unit: unit)
+                return value * pointsPerUnit
             }
         }
         return SVGNumberScanner.firstNumber(in: trimmed)

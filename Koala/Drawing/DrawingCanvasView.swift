@@ -22,7 +22,7 @@ struct DrawingCanvasView: UIViewRepresentable {
     var referenceImageRotations: [CGFloat] = []
     var referenceImageOpacities: [CGFloat] = []
     var visualGridSpacing: CGFloat = 20
-    var measurementUnit: MeasurementUnit = .points
+    var measurementUnit: MeasurementUnit = .inches
     var gridVisible: Bool = true
     var documentCanvasSize: CGSize = CGSize(
         width: DocumentSettings.defaultCanvasWidth,

@@ -6,8 +6,8 @@
 import SwiftUI
 
 private enum DimensionFormat {
-    static func display(_ value: Double) -> String { String(format: "%.2f", value) }
-    static func edit(_ value: Double) -> String { String(format: "%.3f", value) }
+    static func display(_ value: Double, units: MeasurementUnit) -> String { units.formatted(value) }
+    static func edit(_ value: Double, units: MeasurementUnit) -> String { units.formatted(value, extraDigits: 1) }
 }
 
 struct DimensionOverlayView: View {
@@ -169,7 +169,8 @@ struct DimensionOverlayView: View {
     private func measurementLabel(_ documentValue: CGFloat) -> String {
         let pointsPerUnit = UnitConversion.pointsPerUnit(for: document.settings.units)
         let realWorldValue = documentValue / max(pointsPerUnit, 0.0001)
-        return "\(DimensionFormat.display(Double(realWorldValue))) \(document.settings.units.shortLabel)"
+        let units = document.settings.units
+        return "\(DimensionFormat.display(Double(realWorldValue), units: units)) \(units.shortLabel)"
     }
 
     private func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
@@ -500,7 +501,7 @@ private struct DraggableDimensionLabel: View {
 
     private var editTextValue: String {
         let display = document.settings.units.fromDocumentUnits(dimension.value)
-        return DimensionFormat.edit(Double(display))
+        return DimensionFormat.edit(Double(display), units: document.settings.units)
     }
 
     private var measuresArc: Bool {
@@ -626,7 +627,7 @@ private struct DraggableDimensionLabel: View {
     private var labelText: String {
         let pointsPerUnit = UnitConversion.pointsPerUnit(for: document.settings.units)
         let realWorldValue = dimension.value / max(pointsPerUnit, 0.0001)
-        let formattedValue = DimensionFormat.display(Double(realWorldValue))
+        let formattedValue = DimensionFormat.display(Double(realWorldValue), units: document.settings.units)
         let prefix: String
         switch dimension.kind {
         case .circleDiameter, .arcLength, .filletArc:
