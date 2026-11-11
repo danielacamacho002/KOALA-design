@@ -33,20 +33,21 @@ enum StrokeRenderer {
         if renderStroke.isConstruction, renderStroke.points.count >= 2 {
             return constructionPath(for: renderStroke, viewport: viewport)
         }
+        let path: UIBezierPath
         if renderStroke.hasAnyCornerFillets {
-            return transformDocumentPath(
+            path = transformDocumentPath(
                 FilletPathBuilder.path(for: renderStroke),
                 viewport: viewport
             )
+        } else {
+            path = UIBezierPath()
+            appendContour(
+                to: path,
+                points: ShapeGeometry.renderPoints(for: renderStroke),
+                closed: renderStroke.isClosed && renderStroke.shapeType != .arc,
+                viewport: viewport
+            )
         }
-
-        let path = UIBezierPath()
-        appendContour(
-            to: path,
-            points: ShapeGeometry.renderPoints(for: renderStroke),
-            closed: renderStroke.isClosed && renderStroke.shapeType != .arc,
-            viewport: viewport
-        )
 
         for cutout in renderStroke.cutoutPoints {
             let holeStroke = VectorStroke(

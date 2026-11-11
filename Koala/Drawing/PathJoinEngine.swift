@@ -1426,6 +1426,7 @@ nonisolated enum PathJoinEngine {
             host.handles = Array(repeating: CurveHandle(), count: host.points.count)
         }
         host.contour = host.points
+        host.cutouts = paths.flatMap(\.cutouts)
         return host
     }
 

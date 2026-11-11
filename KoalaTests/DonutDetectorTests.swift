@@ -94,6 +94,69 @@ struct DonutDetectorTests {
         #expect(holeAfter == holeBefore.map { CGPoint(x: $0.x + 50, y: $0.y - 30) })
     }
 
+    @Test func filletingAShapeKeepsItsHole() {
+        let document = KoalaDocument()
+        let center = CGPoint(x: 200, y: 200)
+        let outer = rectangle(layerID: document.activeLayerID, center: center, half: 100)
+        document.addStroke(outer)
+        document.addStroke(rectangle(layerID: document.activeLayerID, center: center, half: 40))
+        document.selectedStrokeID = outer.id
+
+        document.applyFilletToSelected(radius: 20)
+
+        let host = try! #require(document.stroke(with: outer.id))
+        #expect(host.hasAnyCornerFillets)
+        #expect(host.cutoutPoints.count == 1)
+        let rendered = StrokeRenderer.path(for: host, viewport: ViewportTransform()).cgPath
+        #expect(!rendered.contains(center, using: host.resolvedCGFillRule))
+        #expect(rendered.contains(CGPoint(x: 120, y: 200), using: host.resolvedCGFillRule))
+        #expect(!rendered.contains(CGPoint(x: 101, y: 101), using: host.resolvedCGFillRule))
+    }
+
+    @Test func joiningAShapeOntoADonutKeepsTheHole() {
+        let document = KoalaDocument()
+        let center = CGPoint(x: 200, y: 200)
+        let donut = circle(layerID: document.activeLayerID, center: center, radius: 100)
+        document.addStroke(donut)
+        document.addStroke(circle(layerID: document.activeLayerID, center: center, radius: 40))
+        let tab = rectangle(layerID: document.activeLayerID, center: CGPoint(x: 300, y: 200), half: 30)
+        document.addStroke(tab)
+        #expect(document.strokes.count == 2)
+
+        document.setElementSelection(strokeIDs: [donut.id, tab.id], textIDs: [])
+        #expect(document.joinSelectedShapes())
+
+        #expect(document.strokes.count == 1)
+        let joined = try! #require(document.strokes.first)
+        #expect(joined.cutoutPoints.count == 1)
+        let rendered = StrokeRenderer.path(for: joined, viewport: ViewportTransform()).cgPath
+        #expect(!rendered.contains(center, using: joined.resolvedCGFillRule))
+        #expect(rendered.contains(CGPoint(x: 320, y: 200), using: joined.resolvedCGFillRule))
+    }
+
+    @Test func joiningAShapeOntoACornerOfAHoledQuadKeepsTheHole() {
+        let document = KoalaDocument()
+        let center = CGPoint(x: 200, y: 200)
+        let outer = rectangle(layerID: document.activeLayerID, center: center, half: 100)
+        document.addStroke(outer)
+        document.addStroke(rectangle(layerID: document.activeLayerID, center: center, half: 40))
+        let corner = try! #require(outer.points.max { $0.x + $0.y < $1.x + $1.y })
+        let tab = rectangle(
+            layerID: document.activeLayerID,
+            center: CGPoint(x: corner.x + 30, y: corner.y + 30),
+            half: 30
+        )
+        document.addStroke(tab)
+
+        document.setElementSelection(strokeIDs: [outer.id, tab.id], textIDs: [])
+        #expect(document.joinSelectedShapes())
+
+        #expect(document.strokes.count == 1)
+        let joined = try! #require(document.strokes.first)
+        #expect(joined.cutoutPoints.count == 1)
+        #expect(!joined.contains(center))
+    }
+
     private func rectangle(layerID: UUID, center: CGPoint, half: CGFloat) -> VectorStroke {
         VectorStroke(
             layerID: layerID,
