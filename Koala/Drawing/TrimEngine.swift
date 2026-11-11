@@ -178,11 +178,46 @@ enum TrimEngine {
             smoothCornerIndices: collapsed.smooth
         )
         return TrimResult(
-            stroke: compactedLeftover(draft),
+            stroke: compactedLeftover(reclosedIfLooped(draft, from: target)),
             strokeID: target.id,
             additionalStroke: nil,
             removedSegment: removed
         )
+    }
+
+    /// Trimming a divider that Join drew out and back leaves a span that starts and
+    /// ends on the same point. That is still the closed outline, so it keeps its fill
+    /// and every hole that sits inside it.
+    private static func reclosedIfLooped(_ stroke: VectorStroke, from target: VectorStroke) -> VectorStroke {
+        guard stroke.points.count >= 4,
+              let first = stroke.points.first,
+              let last = stroke.points.last,
+              segmentLength(first, last) <= 0.5 else { return stroke }
+        var closed = stroke
+        closed.points.removeLast()
+        closed.isClosed = true
+        if let smooth = closed.smoothCornerIndices {
+            let kept = smooth.filter { $0 > 0 && $0 < closed.points.count }
+            closed.smoothCornerIndices = kept.isEmpty ? nil : kept
+        }
+
+        let outline = ShapeGeometry.renderPoints(for: closed)
+        var holes: [[CGPoint]] = []
+        var openHoles = Set<Int>()
+        for (index, hole) in target.cutoutPoints.enumerated() where !hole.isEmpty {
+            let center = CGPoint(
+                x: hole.map(\.x).reduce(0, +) / CGFloat(hole.count),
+                y: hole.map(\.y).reduce(0, +) / CGFloat(hole.count)
+            )
+            guard PolygonBoolean.pointInPolygon(center, outline) else { continue }
+            if target.openCutoutIndices?.contains(index) == true {
+                openHoles.insert(holes.count)
+            }
+            holes.append(hole)
+        }
+        closed.cutoutPoints = holes
+        closed.openCutoutIndices = openHoles.isEmpty ? nil : openHoles
+        return closed
     }
 
     /// The span between two bounding cuts, flattened for the pre-cut highlight.
@@ -962,7 +997,11 @@ enum TrimEngine {
             rotationBasePoints: nil,
             rotationBaseCenter: nil,
             cutoutPoints: [],
-            curveHandles: nil
+            curveHandles: nil,
+            fillOpacity: target.fillOpacity,
+            fillColor: target.fillColor,
+            fillRule: target.fillRule,
+            isHidden: target.isHidden
         )
     }
 
