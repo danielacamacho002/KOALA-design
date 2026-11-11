@@ -66,7 +66,7 @@ nonisolated enum PathJoinEngine {
     /// touching anchor or (for closed shapes) overlap. Open vs closed doesn't
     /// matter for the anchor case — Join appears whenever a weld/fuse is possible.
     static func canJoin(_ strokes: [VectorStroke], tolerance: CGFloat) -> Bool {
-        let usable = strokes.filter { ShapeGeometry.handlePoints(for: $0).count >= 2 }
+        let usable = strokes.map(withoutFillets).filter { ShapeGeometry.handlePoints(for: $0).count >= 2 }
         guard usable.count >= 2 else { return false }
         let groups = containedGroups(usable)
         if groups.count > 1 {
@@ -109,6 +109,69 @@ nonisolated enum PathJoinEngine {
     /// anchor or by overlapping closed contours) into one path. Returns `nil`
     /// when nothing can be fused.
     static func join(_ strokes: [VectorStroke], tolerance: CGFloat) -> [VectorStroke]? {
+        // Fillets are a modifier over sharp corners. Join the sharp outlines, then put
+        // each radius back on the corner that is still there, so Join does not round
+        // or un-round anything the user did not touch.
+        let fillets = strokes.flatMap(filletedCorners)
+        let sharp = strokes.map(withoutFillets)
+        guard let joined = fuse(sharp, tolerance: tolerance) else { return nil }
+        return joined.map { output in
+            if let index = sharp.firstIndex(where: { $0.id == output.id }),
+               sharp[index].points == output.points,
+               sharp[index].cutoutPoints == output.cutoutPoints {
+                return strokes[index]
+            }
+            return restoringFillets(fillets, on: output)
+        }
+    }
+
+    private struct FilletedCorner {
+        var point: CGPoint
+        var radius: CGFloat
+    }
+
+    private static func filletedCorners(of stroke: VectorStroke) -> [FilletedCorner] {
+        stroke.resolvedFilletCornerRadii().compactMap { index, radius in
+            guard stroke.points.indices.contains(index) else { return nil }
+            return FilletedCorner(point: stroke.points[index], radius: radius)
+        }
+    }
+
+    /// Sharp-cornered copy. A rectangle is four corner points, so it joins as a
+    /// plain polygon instead of falling through to the dense-contour fuse.
+    private static func withoutFillets(_ stroke: VectorStroke) -> VectorStroke {
+        var sharp = stroke
+        sharp.cornerRadius = 0
+        sharp.cornerRadiiByIndex = nil
+        if sharp.shapeType == .rectangle, sharp.points.count == 4 {
+            sharp.shapeType = .polyline
+        }
+        return sharp
+    }
+
+    private static func restoringFillets(_ fillets: [FilletedCorner], on stroke: VectorStroke) -> VectorStroke {
+        guard !fillets.isEmpty, stroke.shapeType == .polyline else { return stroke }
+        let corners = stroke.filletCornerIndices()
+        let smooth = stroke.smoothCornerIndices ?? []
+        var restored = stroke
+        var radii: [Int: CGFloat] = [:]
+        for fillet in fillets {
+            guard let index = corners.first(where: {
+                !smooth.contains($0) && radii[$0] == nil && distance(stroke.points[$0], fillet.point) <= 0.5
+            }) else { continue }
+            let radius = FilletPathBuilder.clampedFilletRadius(
+                for: restored,
+                cornerIndex: index,
+                requested: fillet.radius
+            )
+            guard radius > 0 else { continue }
+            radii[index] = radius
+            restored.cornerRadiiByIndex = radii
+        }
+        return restored
+    }
+
+    private static func fuse(_ strokes: [VectorStroke], tolerance: CGFloat) -> [VectorStroke]? {
         let usable = strokes.filter { ShapeGeometry.handlePoints(for: $0).count >= 2 }
         guard usable.count >= 2, let base = usable.first else { return nil }
 
@@ -127,7 +190,7 @@ nonisolated enum PathJoinEngine {
                         output.append(contentsOf: group)
                         continue
                     }
-                    if let joined = join(group, tolerance: tolerance) {
+                    if let joined = fuse(group, tolerance: tolerance) {
                         output.append(contentsOf: joined)
                         didJoin = true
                     } else {
