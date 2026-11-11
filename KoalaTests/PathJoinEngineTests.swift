@@ -1118,6 +1118,49 @@ struct PathJoinEngineTests {
         #expect(hypot(moved.points[pair.1].x - target.x, moved.points[pair.1].y - target.y) < 0.01)
     }
 
+    private func holedSquare() -> VectorStroke {
+        var square = polygon([
+            CGPoint(x: 0, y: 0), CGPoint(x: 100, y: 0),
+            CGPoint(x: 100, y: 100), CGPoint(x: 0, y: 100)
+        ])
+        square.cutoutPoints = [[
+            CGPoint(x: 30, y: 30), CGPoint(x: 70, y: 30),
+            CGPoint(x: 70, y: 70), CGPoint(x: 30, y: 70)
+        ]]
+        return square
+    }
+
+    @Test(arguments: [false, true])
+    func joiningAnOverlappingShapeKeepsTheHole(holedFirst: Bool) {
+        let other = polygon([
+            CGPoint(x: 80, y: 20), CGPoint(x: 160, y: 20),
+            CGPoint(x: 160, y: 80), CGPoint(x: 80, y: 80)
+        ])
+        let input = holedFirst ? [holedSquare(), other] : [other, holedSquare()]
+        let joined = PathJoinEngine.join(input, tolerance: joinTolerance) ?? []
+        #expect(joined.count == 1)
+        #expect(joined.first?.cutoutPoints.count == 1)
+        #expect(joined.first?.contains(CGPoint(x: 50, y: 50)) == false)
+        #expect(joined.first?.contains(CGPoint(x: 140, y: 50)) == true)
+    }
+
+    @Test func joiningALineAtACornerKeepsTheHole() {
+        let spur = line(CGPoint(x: 100, y: 100), CGPoint(x: 150, y: 150))
+        let joined = PathJoinEngine.join([holedSquare(), spur], tolerance: joinTolerance) ?? []
+        #expect(joined.count == 1)
+        #expect(joined.first?.cutoutPoints.count == 1)
+    }
+
+    @Test func joiningAShapeThatOnlyTouchesACornerKeepsTheHole() {
+        let diamond = polygon([
+            CGPoint(x: 100, y: 100), CGPoint(x: 130, y: 130),
+            CGPoint(x: 100, y: 160), CGPoint(x: 70, y: 130)
+        ])
+        let joined = PathJoinEngine.join([diamond, holedSquare()], tolerance: joinTolerance) ?? []
+        #expect(joined.count == 1)
+        #expect(joined.first?.cutoutPoints.count == 1)
+    }
+
     private func distanceFromChord(_ point: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
         let dx = b.x - a.x
         let dy = b.y - a.y
