@@ -12,105 +12,101 @@ enum PatternEngine {
         var rotation: CGFloat
     }
 
+    /// The elements patterned as one unit: a single shape, or every member of a group.
+    struct Source: Equatable {
+        var strokes: [VectorStroke]
+        var textElements: [TextElement] = []
+
+        var isEmpty: Bool { strokes.isEmpty && textElements.isEmpty }
+    }
+
     struct Application {
-        /// When set, the source stroke is updated in place to the first pattern slot.
-        var repositionedSource: VectorStroke?
-        /// When true, the source stroke is removed after new strokes are added.
+        /// When set, the source elements are updated in place (same IDs) to the first pattern slot.
+        var repositionedSource: Source?
+        /// When true, the source elements are removed after the copies are added.
         var removeSource: Bool
-        var newStrokes: [VectorStroke]
+        /// One entry per placed copy; every element has a fresh ID.
+        var copies: [Source]
     }
 
     private static let minimumRadius: CGFloat = 1
 
-    static func boundingSize(for stroke: VectorStroke) -> CGSize {
-        let points = ShapeGeometry.renderPoints(for: stroke)
-        let rect = PrintLayoutCoordinateSpace.boundingRect(for: points)
+    static func boundingRect(for source: Source) -> CGRect {
+        var rect = CGRect.null
+        for stroke in source.strokes {
+            rect = rect.union(PrintLayoutCoordinateSpace.boundingRect(for: ShapeGeometry.renderPoints(for: stroke)))
+        }
+        for text in source.textElements {
+            rect = rect.union(text.boundingBox())
+        }
+        return rect
+    }
+
+    static func boundingSize(for source: Source) -> CGSize {
+        let rect = boundingRect(for: source)
         guard !rect.isNull else { return .zero }
         return rect.size
     }
 
-    static func generatedCopies(from stroke: VectorStroke, settings: PatternSettings) -> [VectorStroke] {
-        let pivot = ShapeGeometry.shapeCenter(for: stroke)
-            ?? strokeCenter(from: stroke)
-        return computePlacements(from: stroke, settings: settings).map { placement in
-            transformedCopy(
-                stroke,
-                pivot: pivot,
-                translation: placement.translation,
-                rotation: placement.rotation
-            )
+    /// Preview outlines for the copies. Text is shown as its rotated frame.
+    static func previewStrokes(from source: Source, settings: PatternSettings) -> [VectorStroke] {
+        let pivot = pivot(for: source)
+        return computePlacements(from: source, settings: settings).flatMap { placement in
+            let copy = transformedCopy(source, pivot: pivot, placement: placement, keepIDs: false)
+            let textOutlines = copy.textElements.map { text in
+                VectorStroke(
+                    layerID: text.layerID,
+                    points: text.corners(),
+                    strokeWidth: 1,
+                    isClosed: true
+                )
+            }
+            return copy.strokes + textOutlines
         }
     }
 
-    static func application(
-        from stroke: VectorStroke,
-        sourceID: UUID,
-        settings: PatternSettings
-    ) -> Application {
-        let pivot = ShapeGeometry.shapeCenter(for: stroke)
-            ?? strokeCenter(from: stroke)
-        let placements = computePlacements(from: stroke, settings: settings)
+    static func application(from source: Source, settings: PatternSettings) -> Application {
+        let pivot = pivot(for: source)
+        let placements = computePlacements(from: source, settings: settings)
 
-        guard !placements.isEmpty else {
-            return Application(repositionedSource: nil, removeSource: false, newStrokes: [])
+        guard !source.isEmpty, !placements.isEmpty else {
+            return Application(repositionedSource: nil, removeSource: false, copies: [])
+        }
+
+        func copies(_ slots: ArraySlice<Placement>) -> [Source] {
+            slots.map { transformedCopy(source, pivot: pivot, placement: $0, keepIDs: false) }
         }
 
         switch settings.mode {
         case .grid, .linear:
-            let newStrokes = placements.map { placement in
-                transformedCopy(
-                    stroke,
-                    pivot: pivot,
-                    translation: placement.translation,
-                    rotation: placement.rotation
-                )
-            }
-            return Application(repositionedSource: nil, removeSource: true, newStrokes: newStrokes)
+            return Application(repositionedSource: nil, removeSource: true, copies: copies(placements[...]))
 
         case .radial, .spiral:
             if settings.keepOriginal {
-                let newStrokes = placements.map { placement in
-                    transformedCopy(
-                        stroke,
-                        pivot: pivot,
-                        translation: placement.translation,
-                        rotation: placement.rotation
-                    )
-                }
-                return Application(repositionedSource: nil, removeSource: false, newStrokes: newStrokes)
-            }
-
-            var repositioned = transformedCopy(
-                stroke,
-                pivot: pivot,
-                translation: placements[0].translation,
-                rotation: placements[0].rotation
-            )
-            repositioned.id = sourceID
-
-            let newStrokes = placements.dropFirst().map { placement in
-                transformedCopy(
-                    stroke,
-                    pivot: pivot,
-                    translation: placement.translation,
-                    rotation: placement.rotation
-                )
+                return Application(repositionedSource: nil, removeSource: false, copies: copies(placements[...]))
             }
             return Application(
-                repositionedSource: repositioned,
+                repositionedSource: transformedCopy(source, pivot: pivot, placement: placements[0], keepIDs: true),
                 removeSource: false,
-                newStrokes: newStrokes
+                copies: copies(placements.dropFirst())
             )
         }
     }
 
-    private static func strokeCenter(from stroke: VectorStroke) -> CGPoint {
-        let points = ShapeGeometry.renderPoints(for: stroke)
-        return PrintLayoutCoordinateSpace.center(of: points)
+    /// A lone shape keeps its own center so circles/arcs rotate about their true center;
+    /// a group rotates about its combined bounding-box center.
+    private static func pivot(for source: Source) -> CGPoint {
+        if source.strokes.count == 1, source.textElements.isEmpty,
+           let center = ShapeGeometry.shapeCenter(for: source.strokes[0]) {
+            return center
+        }
+        let rect = boundingRect(for: source)
+        guard !rect.isNull else { return .zero }
+        return CGPoint(x: rect.midX, y: rect.midY)
     }
 
-    private static func computePlacements(from stroke: VectorStroke, settings: PatternSettings) -> [Placement] {
-        let shapeSize = boundingSize(for: stroke)
+    private static func computePlacements(from source: Source, settings: PatternSettings) -> [Placement] {
+        let shapeSize = boundingSize(for: source)
         switch settings.mode {
         case .grid:
             return gridPlacements(settings: settings, shapeSize: shapeSize)
@@ -224,20 +220,42 @@ enum PatternEngine {
     }
 
     private static func transformedCopy(
-        _ stroke: VectorStroke,
+        _ source: Source,
         pivot: CGPoint,
-        translation: CGPoint,
-        rotation: CGFloat
-    ) -> VectorStroke {
-        var copy = stroke
-        copy.id = UUID()
+        placement: Placement,
+        keepIDs: Bool
+    ) -> Source {
+        let rotation = placement.rotation
+        let translation = placement.translation
+        let rotates = abs(rotation) > 0.000001
 
-        if abs(rotation) > 0.000001 {
-            copy = ShapeGeometry.rotatedStroke(copy, around: pivot, by: rotation)
+        let strokes = source.strokes.map { stroke -> VectorStroke in
+            var copy = stroke
+            if !keepIDs { copy.id = UUID() }
+            if rotates {
+                copy = ShapeGeometry.rotatedStroke(copy, around: pivot, by: rotation)
+            }
+            copy = copy.offsettingGeometry(by: translation)
+            return ShapeGeometry.captureRotationBaseIfNeeded(copy)
         }
 
-        copy = copy.offsettingGeometry(by: translation)
-        return ShapeGeometry.captureRotationBaseIfNeeded(copy)
+        let texts = source.textElements.map { text -> TextElement in
+            var copy = text
+            if !keepIDs { copy.id = UUID() }
+            var center = copy.center
+            if rotates {
+                center = ShapeGeometry.rotatePoint(center, around: pivot, by: rotation)
+                copy.rotation += rotation
+            }
+            let size = copy.textSize()
+            copy.position = CGPoint(
+                x: center.x - size.width / 2 + translation.x,
+                y: center.y - size.height / 2 + translation.y
+            )
+            return copy
+        }
+
+        return Source(strokes: strokes, textElements: texts)
     }
 
     private static func clamp(_ value: Int, min: Int, max: Int) -> Int {

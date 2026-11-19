@@ -116,6 +116,50 @@ struct KoalaDocumentTests {
         #expect(document.selectedStrokeID == frontStroke.id)
     }
 
+    /// A layer folder moves as one: its layers share a selection scope, so a drag
+    /// carries every member layer's shapes, including ones behind the active layer.
+    @Test func layersInAFolderShareTheSelection() {
+        let document = KoalaDocument()
+        let back = document.activeLayerID
+        let front = document.addLayer()
+        let outside = document.addLayer()
+        let backStroke = line(on: back)
+        let frontStroke = line(on: front.id, x: 40)
+        let outsideStroke = line(on: outside.id, x: 80)
+        document.addStroke(backStroke)
+        document.addStroke(frontStroke)
+        document.addStroke(outsideStroke)
+        document.groupLayers(ids: [back, front.id])
+        document.setActiveLayer(id: front.id)
+
+        document.setElementSelection(
+            strokeIDs: [backStroke.id, frontStroke.id, outsideStroke.id],
+            textIDs: []
+        )
+        #expect(document.selectedStrokeIDs == [backStroke.id, frontStroke.id])
+
+        document.setElementSelection(strokeIDs: [], textIDs: [])
+        document.selectElement(near: CGPoint(x: 10, y: 10), threshold: 2)
+        #expect(document.selectedStrokeIDs == [backStroke.id])
+
+        document.setActiveLayer(id: outside.id)
+        #expect(document.selectionIsEmpty)
+    }
+
+    @Test func lockedLayerInAFolderStaysUnselectable() {
+        let document = KoalaDocument()
+        let back = document.activeLayerID
+        let front = document.addLayer()
+        let backStroke = line(on: back)
+        document.addStroke(backStroke)
+        document.groupLayers(ids: [back, front.id])
+        document.toggleLayerLock(id: back)
+        document.setActiveLayer(id: front.id)
+
+        document.setElementSelection(strokeIDs: [backStroke.id], textIDs: [])
+        #expect(document.selectionIsEmpty)
+    }
+
     @Test func lockedAndHiddenLayersAreNotSelectable() {
         let document = KoalaDocument()
         let layerID = document.activeLayerID

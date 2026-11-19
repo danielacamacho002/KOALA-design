@@ -1968,7 +1968,8 @@ struct CanvasOverlayView: View {
                     )
             }
 
-            if let strokeID = document.selectedStrokeID,
+            if !document.usesGroupTransform,
+               let strokeID = document.selectedStrokeID,
                let stroke = document.stroke(with: strokeID) {
                 centerHandle(strokeID: strokeID, stroke: stroke)
             }

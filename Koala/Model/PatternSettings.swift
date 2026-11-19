@@ -62,9 +62,9 @@ struct PatternSettings: Equatable {
     /// When true, radial copies are evenly distributed around 360°. When false, angle step comes from tightness.
     var radialSpreadEven: Bool = true
 
-    static func defaults(for stroke: VectorStroke) -> PatternSettings {
+    static func defaults(for source: PatternEngine.Source) -> PatternSettings {
         var settings = PatternSettings()
-        let size = PatternEngine.boundingSize(for: stroke)
+        let size = PatternEngine.boundingSize(for: source)
         settings.spacingX = 0
         settings.spacingY = 0
         settings.startRadius = max(size.width, 1)
