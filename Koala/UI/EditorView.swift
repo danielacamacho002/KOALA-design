@@ -1208,9 +1208,8 @@ struct EditorView: View {
             commandSession.cancel()
             store.document.clearToolSelections()
             patternPreviewStrokes = []
-            if let id = store.document.selectedStrokeID,
-               let stroke = store.document.stroke(with: id) {
-                patternSettings = PatternSettings.defaults(for: stroke)
+            if let source = store.document.patternSource() {
+                patternSettings = PatternSettings.defaults(for: source)
                 updatePatternPreview()
                 statusMessage = "Adjust pattern settings, then tap Apply"
             } else {
@@ -1221,7 +1220,7 @@ struct EditorView: View {
             store.document.clearToolSelections()
             if store.document.selectionIsEmpty,
                let lastID = store.document.lastSelectedStrokeID,
-               store.document.stroke(with: lastID)?.layerID == store.document.activeLayerID {
+               store.document.stroke(with: lastID).map(store.document.isSelectableStroke) == true {
                 store.document.selectStrokeConsideringGroups(lastID)
             } else {
                 store.document.expandSelectionToGroupsIfNeeded()
@@ -1256,7 +1255,7 @@ struct EditorView: View {
                 if store.document.selectionIsEmpty,
                    !store.document.isReferenceImageSelected,
                    let lastID = store.document.lastSelectedStrokeID,
-                   store.document.stroke(with: lastID)?.layerID == store.document.activeLayerID {
+                   store.document.stroke(with: lastID).map(store.document.isSelectableStroke) == true {
                     store.document.selectStrokeConsideringGroups(lastID)
                 } else {
                     store.document.expandSelectionToGroupsIfNeeded()
@@ -1619,9 +1618,8 @@ struct EditorView: View {
             }
             let threshold = store.document.viewport.viewToDocument(distance: 16)
             store.document.selectElement(near: documentPoint, threshold: threshold)
-            if let id = store.document.selectedStrokeID,
-               let stroke = store.document.stroke(with: id) {
-                patternSettings = PatternSettings.defaults(for: stroke)
+            if let source = store.document.patternSource() {
+                patternSettings = PatternSettings.defaults(for: source)
             } else {
                 patternPreviewStrokes = []
             }
@@ -1982,12 +1980,11 @@ struct EditorView: View {
 
     private func updatePatternPreview() {
         guard store.document.activeCategory == .pattern,
-              let strokeID = store.document.selectedStrokeID,
-              let stroke = store.document.stroke(with: strokeID) else {
+              let source = store.document.patternSource() else {
             patternPreviewStrokes = []
             return
         }
-        patternPreviewStrokes = PatternEngine.generatedCopies(from: stroke, settings: patternSettings)
+        patternPreviewStrokes = PatternEngine.previewStrokes(from: source, settings: patternSettings)
     }
 
     private func performUndo() {

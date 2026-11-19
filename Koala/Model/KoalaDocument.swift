@@ -255,8 +255,8 @@ final class KoalaDocument {
         DocumentQueries.visibleStrokes(layers: layers, strokes: strokes)
     }
 
-    /// Visible strokes on the active layer that isn't locked, for hit-testing/selection.
-    /// Shapes on other layers are visible but not editable until their layer is active.
+    /// Visible, unlocked strokes in the selection scope, for hit-testing/selection.
+    /// Shapes outside it are visible but not editable until their layer is active.
     func selectableStrokes() -> [VectorStroke] {
         visibleStrokes().filter(isSelectableStroke)
     }
@@ -275,26 +275,39 @@ final class KoalaDocument {
         isSelectableLayer(image.layerID)
     }
 
-    /// Active layer that is visible and unlocked.
+    /// Layers whose content can be selected together: the active layer, plus every
+    /// layer in its folder when it sits in one.
+    var selectionScopeLayerIDs: Set<UUID> {
+        guard let folderID = activeLayer?.groupID else { return [activeLayerID] }
+        return Set(layers.filter { $0.groupID == folderID }.map(\.id)).union([activeLayerID])
+    }
+
+    /// Visible, unlocked layer inside the selection scope.
     func isSelectableLayer(_ layerID: UUID) -> Bool {
-        guard layerID == activeLayerID,
+        guard selectionScopeLayerIDs.contains(layerID),
               let layer = layers.first(where: { $0.id == layerID }) else { return false }
         return layer.isVisible && !layer.isLocked
     }
 
-    /// Visible strokes on the active layer and any layers stacked in front of it.
+    /// Stack index of the back-most layer in the selection scope. Folder members are
+    /// contiguous, so everything from here up is the scope or in front of it.
+    private func selectionScopeBackIndex(_ order: [UUID: Int]) -> Int {
+        selectionScopeLayerIDs.compactMap { order[$0] }.min() ?? 0
+    }
+
+    /// Visible strokes in the selection scope and any layers stacked in front of it.
     /// Back-layer geometry stays drawn but does not steal taps or block empty canvas.
     func occupyingStrokes() -> [VectorStroke] {
         let order = layerIndexByID()
-        let activeIndex = order[activeLayerID] ?? 0
-        return visibleStrokes().filter { (order[$0.layerID] ?? 0) >= activeIndex }
+        let backIndex = selectionScopeBackIndex(order)
+        return visibleStrokes().filter { (order[$0.layerID] ?? 0) >= backIndex }
     }
 
-    /// Visible text on the active layer and any layers stacked in front of it.
+    /// Visible text in the selection scope and any layers stacked in front of it.
     func occupyingTextElements() -> [TextElement] {
         let order = layerIndexByID()
-        let activeIndex = order[activeLayerID] ?? 0
-        return visibleTextElements().filter { (order[$0.layerID] ?? 0) >= activeIndex }
+        let backIndex = selectionScopeBackIndex(order)
+        return visibleTextElements().filter { (order[$0.layerID] ?? 0) >= backIndex }
     }
 
     /// Rasters rebound onto a known layer so hide/opacity/hit-testing match strokes.
@@ -310,16 +323,16 @@ final class KoalaDocument {
         resolvedReferenceImages().filter { $0.layerID == layerID }
     }
 
-    /// Visible images on the active layer and any layers stacked in front of it.
+    /// Visible images in the selection scope and any layers stacked in front of it.
     func occupyingReferenceImages() -> [ReferenceImage] {
         let order = layerIndexByID()
-        let activeIndex = order[activeLayerID] ?? 0
-        return visibleReferenceImages().filter { (order[$0.layerID] ?? 0) >= activeIndex }
+        let backIndex = selectionScopeBackIndex(order)
+        return visibleReferenceImages().filter { (order[$0.layerID] ?? 0) >= backIndex }
     }
 
     /// Geometry that editing tools, snaps, and constraints may interact with.
-    /// Restricted to the active, visible, unlocked layer so other layers stay fully
-    /// independent until they are grouped and merged into this one.
+    /// Restricted to visible, unlocked layers in the selection scope so other layers
+    /// stay fully independent until they share a folder with the active one.
     func interactiveStrokes() -> [VectorStroke] {
         selectableStrokes()
     }
@@ -449,14 +462,15 @@ final class KoalaDocument {
     func setActiveLayer(id: UUID) {
         guard activeLayerID != id, layers.contains(where: { $0.id == id }) else { return }
         activeLayerID = id
-        // Selection is confined to the active layer, so drop anything selected on the
-        // previous layer to prevent stale edit handles/drags on non-active shapes.
-        let selectedOnActive = selectedStrokeIDs.filter { stroke(with: $0)?.layerID == id }
-        let selectedTextOnActive = selectedTextIDs.filter { textElement(with: $0)?.layerID == id }
+        // Selection is confined to the selection scope, so drop anything outside it to
+        // prevent stale edit handles/drags on non-active shapes.
+        let scope = selectionScopeLayerIDs
+        let selectedOnActive = selectedStrokeIDs.filter { stroke(with: $0).map { scope.contains($0.layerID) } ?? false }
+        let selectedTextOnActive = selectedTextIDs.filter { textElement(with: $0).map { scope.contains($0.layerID) } ?? false }
         if selectedOnActive.count != selectedStrokeIDs.count || selectedTextOnActive.count != selectedTextIDs.count {
             setElementSelection(strokeIDs: selectedOnActive, textIDs: selectedTextOnActive)
         } else if let imageID = selectedReferenceImageID,
-                  referenceImage(with: imageID)?.layerID != id {
+                  !(referenceImage(with: imageID).map { scope.contains($0.layerID) } ?? false) {
             selectedReferenceImageID = nil
         }
     }
@@ -1767,62 +1781,97 @@ final class KoalaDocument {
         return .success
     }
 
+    /// What Pattern acts on: the selection expanded to whole groups, in document order.
+    /// Does not change the selection.
+    func patternSource() -> PatternEngine.Source? {
+        let expanded = expandedSelectionForGroups(strokeIDs: selectedStrokeIDs, textIDs: selectedTextIDs)
+        let source = PatternEngine.Source(
+            strokes: strokes.filter { expanded.strokeIDs.contains($0.id) },
+            textElements: textElements.filter { expanded.textIDs.contains($0.id) }
+        )
+        return source.isEmpty ? nil : source
+    }
+
+    /// Patterns the selection. A group is patterned as one unit and every copy
+    /// becomes its own group with the same membership.
     @discardableResult
-    func applyPattern(to strokeID: UUID, settings: PatternSettings) -> PatternApplyResult {
-        guard let source = stroke(with: strokeID) else {
+    func applyPattern(settings: PatternSettings) -> PatternApplyResult {
+        guard let source = patternSource() else {
             return .noSelection
         }
-        if let layer = layers.first(where: { $0.id == source.layerID }), layer.isLocked {
+        let sourceLayerIDs = Set(source.strokes.map(\.layerID) + source.textElements.map(\.layerID))
+        if layers.contains(where: { sourceLayerIDs.contains($0.id) && $0.isLocked }) {
             return .layerLocked
         }
 
-        let application = PatternEngine.application(
-            from: source,
-            sourceID: strokeID,
-            settings: settings
-        )
-        guard application.repositionedSource != nil || !application.newStrokes.isEmpty else {
+        let application = PatternEngine.application(from: source, settings: settings)
+        guard application.repositionedSource != nil || !application.copies.isEmpty else {
             return .nothingToCreate
         }
 
         pushUndo()
 
-        if let repositioned = application.repositionedSource,
-           let index = strokes.firstIndex(where: { $0.id == strokeID }) {
-            strokes[index] = repositioned
+        let sourceStrokeIDs = Set(source.strokes.map(\.id))
+        let sourceTextIDs = Set(source.textElements.map(\.id))
+        let sourceGroups = groups.filter { group in
+            group.strokeIDs.contains(where: sourceStrokeIDs.contains)
+                || group.textIDs.contains(where: sourceTextIDs.contains)
+        }
+
+        if let repositioned = application.repositionedSource {
+            for stroke in repositioned.strokes {
+                if let index = strokes.firstIndex(where: { $0.id == stroke.id }) {
+                    strokes[index] = stroke
+                }
+            }
+            for text in repositioned.textElements {
+                if let index = textElements.firstIndex(where: { $0.id == text.id }) {
+                    textElements[index] = text
+                }
+            }
         }
 
         if application.removeSource {
-            strokes.removeAll { $0.id == strokeID }
+            strokes.removeAll { sourceStrokeIDs.contains($0.id) }
+            textElements.removeAll { sourceTextIDs.contains($0.id) }
         }
 
-        strokes.append(contentsOf: application.newStrokes)
+        for copy in application.copies {
+            strokes.append(contentsOf: copy.strokes)
+            textElements.append(contentsOf: copy.textElements)
+            // Copies are built in source order, so positions map member IDs.
+            var strokeIDMap: [UUID: UUID] = [:]
+            var textIDMap: [UUID: UUID] = [:]
+            for (original, new) in zip(source.strokes, copy.strokes) { strokeIDMap[original.id] = new.id }
+            for (original, new) in zip(source.textElements, copy.textElements) { textIDMap[original.id] = new.id }
+            for group in sourceGroups {
+                let mappedStrokes = group.strokeIDs.compactMap { strokeIDMap[$0] }
+                let mappedTexts = group.textIDs.compactMap { textIDMap[$0] }
+                guard mappedStrokes.count + mappedTexts.count >= 2 else { continue }
+                groups.append(ObjectGroup(strokeIDs: mappedStrokes, textIDs: mappedTexts))
+            }
+        }
 
-        if application.removeSource {
-            selectedStrokeID = application.newStrokes.last?.id
+        if application.removeSource, let last = application.copies.last {
+            setElementSelection(
+                strokeIDs: Set(last.strokes.map(\.id)),
+                textIDs: Set(last.textElements.map(\.id))
+            )
         } else {
-            selectedStrokeID = strokeID
+            setElementSelection(strokeIDs: sourceStrokeIDs, textIDs: sourceTextIDs)
         }
 
-        var affectedIDs = Set(application.newStrokes.map(\.id))
-        if application.repositionedSource != nil || !application.removeSource {
-            affectedIDs.insert(strokeID)
+        var affectedIDs = Set(application.copies.flatMap { $0.strokes.map(\.id) })
+        if !application.removeSource {
+            affectedIDs.formUnion(sourceStrokeIDs)
         }
         reconcileIntersectionAnchors(around: affectedIDs)
         ClosedShapeDetector.reconcile(document: self)
         DonutDetector.reconcile(document: self)
+        pruneGroups()
         geometryRevision += 1
 
-        let createdCount: Int
-        switch settings.mode {
-        case .radial, .spiral where settings.keepOriginal:
-            createdCount = application.newStrokes.count
-        case .radial, .spiral:
-            createdCount = application.newStrokes.count + (application.repositionedSource != nil ? 1 : 0)
-        default:
-            createdCount = application.newStrokes.count
-        }
-        return .success(created: createdCount)
+        return .success(created: application.copies.count + (application.repositionedSource != nil ? 1 : 0))
     }
 
     /// Single tap: reset the selection to only this anchor and adopt it as the rotation pivot.
