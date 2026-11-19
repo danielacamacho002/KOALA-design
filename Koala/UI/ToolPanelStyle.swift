@@ -59,7 +59,7 @@ private struct ToolPanelChrome: ViewModifier {
             .frame(width: width)
             .foregroundStyle(.white)
             .background(Rectangle().fill(fillOverride ?? Color(hex: AppearanceSettings.toolbarHex)))
-            .overlay(Rectangle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+            .overlay(Rectangle().strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
     }
 }
 
