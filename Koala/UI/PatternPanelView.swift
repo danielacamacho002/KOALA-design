@@ -15,17 +15,13 @@ struct PatternPanelView: View {
     var onStatus: (String) -> Void
 
     private var canApply: Bool {
-        guard document.selectedStrokeID != nil,
-              let stroke = document.selectedStrokeID.flatMap({ document.stroke(with: $0) }),
-              let layer = document.layers.first(where: { $0.id == stroke.layerID }),
-              !layer.isLocked,
-              let strokeID = document.selectedStrokeID else { return false }
-        let application = PatternEngine.application(
-            from: stroke,
-            sourceID: strokeID,
-            settings: settings
-        )
-        return application.repositionedSource != nil || !application.newStrokes.isEmpty
+        guard let source = document.patternSource() else { return false }
+        let layerIDs = Set(source.strokes.map(\.layerID) + source.textElements.map(\.layerID))
+        guard !document.layers.contains(where: { layerIDs.contains($0.id) && $0.isLocked }) else {
+            return false
+        }
+        let application = PatternEngine.application(from: source, settings: settings)
+        return application.repositionedSource != nil || !application.copies.isEmpty
     }
 
     var body: some View {
@@ -67,13 +63,15 @@ struct PatternPanelView: View {
         .onAppear {
             onPreviewChange()
         }
-        .onChange(of: document.selectedStrokeID) { _, _ in
-            if let id = document.selectedStrokeID,
-               let stroke = document.stroke(with: id) {
-                settings = PatternSettings.defaults(for: stroke)
-            }
-            onPreviewChange()
+        .onChange(of: document.selectedStrokeIDs) { _, _ in selectionChanged() }
+        .onChange(of: document.selectedTextIDs) { _, _ in selectionChanged() }
+    }
+
+    private func selectionChanged() {
+        if let source = document.patternSource() {
+            settings = PatternSettings.defaults(for: source)
         }
+        onPreviewChange()
     }
 
     private func modeButton(_ mode: PatternMode) -> ToolPanelJoinedActions.Item {
@@ -196,11 +194,7 @@ struct PatternPanelView: View {
     }
 
     private func apply() {
-        guard let strokeID = document.selectedStrokeID else {
-            onStatus("Select a shape first")
-            return
-        }
-        switch document.applyPattern(to: strokeID, settings: settings) {
+        switch document.applyPattern(settings: settings) {
         case .success(let created):
             onStatus("Created \(created) cop\(created == 1 ? "y" : "ies")")
             onApply()

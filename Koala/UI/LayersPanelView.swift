@@ -347,9 +347,16 @@ struct LayersPanelView: View {
     private func folderRow(_ group: LayerGroup) -> some View {
         let members = document.layers(inGroup: group.id)
         HStack(spacing: 6) {
-            selectionToggle(isOn: membersAllSelected(members), isMixed: membersSomeSelected(members)) {
-                toggleFolderSelection(members)
-            }
+            selectionDot(isOn: membersAllSelected(members), isMixed: membersSomeSelected(members))
+                .gesture(
+                    TapGesture(count: 2)
+                        .onEnded { addFolderToSelection(group, members: members) }
+                        .exclusively(
+                            before: TapGesture().onEnded { selectOnlyFolder(members) }
+                        )
+                )
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHint("Double-tap quickly to add to the selection")
 
             Button {
                 document.toggleLayerGroupCollapsed(id: group.id)
@@ -600,14 +607,18 @@ struct LayersPanelView: View {
 
     private func selectionToggle(isOn: Bool, isMixed: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: isOn ? "circle.fill" : (isMixed ? "circle.lefthalf.filled" : "circle"))
-                .font(.caption)
-                .foregroundStyle(isOn || isMixed ? SelectionHighlight.icon : Color.white.opacity(0.35))
-                .frame(width: 22, height: 22)
-                .contentShape(Rectangle())
+            selectionDot(isOn: isOn, isMixed: isMixed)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(isOn ? "Deselect" : "Select")
+    }
+
+    private func selectionDot(isOn: Bool, isMixed: Bool) -> some View {
+        Image(systemName: isOn ? "circle.fill" : (isMixed ? "circle.lefthalf.filled" : "circle"))
+            .font(.caption)
+            .foregroundStyle(isOn || isMixed ? SelectionHighlight.icon : Color.white.opacity(0.35))
+            .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
+            .accessibilityLabel(isOn ? "Deselect" : "Select")
     }
 
     // MARK: - Selection helpers
@@ -669,6 +680,32 @@ struct LayersPanelView: View {
 
     private func membersSomeSelected(_ members: [Layer]) -> Bool {
         members.contains { layerDotIsOn($0) } && !membersAllSelected(members)
+    }
+
+    /// Single tap: the folder replaces the selection and becomes the active scope,
+    /// so a previously selected folder lets go. Tapping the sole selection clears it.
+    private func selectOnlyFolder(_ members: [Layer]) {
+        let ids = Set(members.map(\.id))
+        guard !ids.isEmpty else { return }
+        if validSelection == ids {
+            selectedLayerIDs = []
+            return
+        }
+        selectedLayerIDs = ids
+        if !ids.contains(document.activeLayerID), let front = members.last {
+            activate(front)
+        }
+    }
+
+    /// Double tap: adds the folder to (or removes it from) the current selection.
+    /// With nothing picked yet, the active layer's folder counts as already selected.
+    private func addFolderToSelection(_ group: LayerGroup, members: [Layer]) {
+        if selectedLayerIDs.isEmpty,
+           let activeFolderID = document.activeLayer?.groupID,
+           activeFolderID != group.id {
+            selectedLayerIDs = Set(document.layers(inGroup: activeFolderID).map(\.id))
+        }
+        toggleFolderSelection(members)
     }
 
     private func toggleFolderSelection(_ members: [Layer]) {
