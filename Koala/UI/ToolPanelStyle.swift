@@ -15,10 +15,6 @@ enum ToolPanelMetrics {
     static let commandWidth: CGFloat = 172
     /// Compact point/value field, matching the shape panel's start-point box.
     static let pointFieldWidth: CGFloat = 100
-    /// Gap between a top-leading panel and the screen edge. These panels are
-    /// overlaid on a canvas that ignores the safe area, so a flush leading
-    /// edge is clipped on iPad Pro.
-    static let screenMargin: CGFloat = 16
 }
 
 extension Color {
@@ -36,11 +32,6 @@ extension Color {
 }
 
 extension View {
-    /// Insets a top-leading command panel so its chrome stays on screen.
-    func commandPanelScreenMargin() -> some View {
-        padding(.leading, ToolPanelMetrics.screenMargin)
-    }
-
     /// Toolbar-colored control fill with a hairline edge.
     func toolPanelControlFill() -> some View {
         background(Color.toolPanelButtonFill)
@@ -68,7 +59,7 @@ private struct ToolPanelChrome: ViewModifier {
             .frame(width: width)
             .foregroundStyle(.white)
             .background(Rectangle().fill(fillOverride ?? Color(hex: AppearanceSettings.toolbarHex)))
-            .overlay(Rectangle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+            .overlay(Rectangle().strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
     }
 }
 

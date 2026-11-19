@@ -400,7 +400,6 @@ struct EditorView: View {
                             store.document.clearToolSelections()
                         }
                     )
-                    .commandPanelScreenMargin()
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if showsEditCommandPanel {
                     MoveRotatePanelView(
@@ -409,7 +408,6 @@ struct EditorView: View {
                     ) {
                         store.markDirty()
                     }
-                    .commandPanelScreenMargin()
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .addAnchor {
                     AddAnchorPanelView(
@@ -420,7 +418,6 @@ struct EditorView: View {
                         },
                         onStatus: { statusMessage = $0 }
                     )
-                    .commandPanelScreenMargin()
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .pattern {
                     PatternPanelView(
@@ -438,7 +435,6 @@ struct EditorView: View {
                         },
                         onStatus: { statusMessage = $0 }
                     )
-                    .commandPanelScreenMargin()
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 } else if store.document.activeCategory == .copy {
                     CopyPastePanelView(
@@ -446,7 +442,6 @@ struct EditorView: View {
                         onChanged: { store.markDirty() },
                         onStatus: { statusMessage = $0 }
                     )
-                    .commandPanelScreenMargin()
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
@@ -458,7 +453,6 @@ struct EditorView: View {
                         onChanged: { store.markDirty() },
                         onDone: { endTextEditingIfNeeded() }
                     )
-                    .commandPanelScreenMargin()
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
@@ -479,7 +473,6 @@ struct EditorView: View {
                         onVariantChanged: { startDrawingSessionIfNeeded() },
                         isTourHighlighted: designOnboarding.currentTarget == .commandPanel
                     )
-                    .commandPanelScreenMargin()
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
@@ -494,7 +487,6 @@ struct EditorView: View {
                             updateChromeInsets()
                         }
                     )
-                    .commandPanelScreenMargin()
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
@@ -503,7 +495,6 @@ struct EditorView: View {
                     ScaleToolPanelView(document: store.document) {
                         store.markDirty()
                     }
-                    .commandPanelScreenMargin()
                     .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
