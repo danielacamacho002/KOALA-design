@@ -19,14 +19,24 @@ struct DimensionOverlayView: View {
     /// Document-space nudge used only to establish outward direction.
     private static let textLabelStandoff: CGFloat = 28
 
+    @State private var labelHalfSizes: [String: CGSize] = [:]
+    /// The one label showing its lock and eye; every other label is just its number.
+    @State private var activeLabelKey: String?
+
     var body: some View {
+        let strokeDimensions = visibleStrokeDimensions
+        let placements = resolvedPlacements(for: strokeDimensions)
         ZStack {
-            ForEach(visibleStrokeDimensions) { item in
+            ForEach(strokeDimensions) { item in
+                let placement = placements[item.id]
                 DraggableDimensionLabel(
                     document: document,
                     dimension: item.dimension,
                     strokeID: item.strokeID,
                     interactive: document.activeCategory == .dimensions,
+                    autoPlacement: placement?.point,
+                    isCrowdedOut: placement == .hidden,
+                    activeLabelKey: $activeLabelKey,
                     onEditFromCanvas: onEditFromCanvas,
                     onChanged: onChanged
                 )
@@ -35,6 +45,44 @@ struct DimensionOverlayView: View {
                 textDimensionLabel(item.dimension)
             }
         }
+        .onPreferenceChange(DimensionLabelHalfSizesKey.self) { sizes in
+            guard labelHalfSizes != sizes else { return }
+            labelHalfSizes = sizes
+        }
+        .onChange(of: document.activeCategory) { _, category in
+            if category != .dimensions { activeLabelKey = nil }
+        }
+    }
+
+    /// Nudges labels the user has not dragged off each other and off neighboring dimension
+    /// lines, and hides the ones that still don't fit or whose edge is too small to dimension.
+    private func resolvedPlacements(
+        for items: [RevealedStrokeDimension]
+    ) -> [String: DimensionLabelCollision.Placement] {
+        let selected = document.selectedStrokeIDs
+        let collisionItems = items.map { item in
+            let isActive = item.id == activeLabelKey
+            let halfSize = labelHalfSizes[item.id] ?? DimensionLabelStyle.textOnlyHalfSize
+            let geometry = item.dimension.viewGeometry(in: document.viewport)
+            var priority = min(geometry.drawnLength, 10_000)
+            if selected.contains(item.strokeID) { priority += 100_000 }
+            if isActive { priority += 1_000_000 }
+            return DimensionLabelCollision.Item(
+                id: item.id,
+                geometry: geometry,
+                placement: DraggableDimensionLabel.restPosition(
+                    document: document,
+                    dimension: item.dimension,
+                    key: item.id,
+                    halfSize: halfSize
+                ),
+                halfSize: halfSize,
+                isFixed: document.dimensionOffsets[item.id] != nil,
+                canHide: !isActive,
+                priority: priority
+            )
+        }
+        return DimensionLabelCollision.resolve(collisionItems)
     }
 
     private struct RevealedStrokeDimension: Identifiable {
@@ -158,8 +206,7 @@ struct DimensionOverlayView: View {
             start: start,
             end: end,
             placement: placement,
-            textGap: DimensionLabelStyle.textOnlyHalfSize.width + 4,
-            minimumOffset: DimensionLabelStyle.edgeClearance + DimensionLabelStyle.textOnlyHalfSize.height
+            textHalfHeight: DimensionLabelStyle.textOnlyHalfSize.height
         ) {
             Text(dimension.text)
                 .dimensionLabelAppearance()
@@ -188,6 +235,11 @@ private struct DraggableDimensionLabel: View {
     let strokeID: UUID
     /// False outside the Dimensions tool: the number stays up, and a tap opens it for editing.
     var interactive: Bool
+    /// Collision-resolved spot for a label the user has not dragged.
+    var autoPlacement: CGPoint?
+    /// No room on screen; the label stays laid out (so it keeps measuring) but invisible.
+    var isCrowdedOut: Bool
+    @Binding var activeLabelKey: String?
     var onEditFromCanvas: (UUID) -> Void
     var onChanged: () -> Void
 
@@ -206,10 +258,31 @@ private struct DraggableDimensionLabel: View {
     private var halfSize: CGSize {
         clusterSize.map {
             CGSize(width: max($0.width / 2, 1), height: max($0.height / 2, 1))
-        } ?? DimensionLabelStyle.labeledHalfSize
+        } ?? (showsControls ? DimensionLabelStyle.labeledHalfSize : DimensionLabelStyle.textOnlyHalfSize)
+    }
+
+    private var showsControls: Bool {
+        interactive && activeLabelKey == key
+    }
+
+    private var isHidden: Bool {
+        isCrowdedOut && !isDragging
     }
 
     private var restPosition: CGPoint {
+        if document.dimensionOffsets[key] == nil, let autoPlacement {
+            return autoPlacement
+        }
+        return Self.restPosition(document: document, dimension: dimension, key: key, halfSize: halfSize)
+    }
+
+    /// Where the label sits before collision avoidance: its dragged spot, or the default.
+    static func restPosition(
+        document: KoalaDocument,
+        dimension: ShapeGeometry.SemanticDimension,
+        key: String,
+        halfSize: CGSize
+    ) -> CGPoint {
         let anchorView = document.viewport.documentToView(dimension.anchor)
         if let offset = document.dimensionOffsets[key] {
             let docPoint = CGPoint(x: dimension.anchor.x + offset.x, y: dimension.anchor.y + offset.y)
@@ -253,8 +326,7 @@ private struct DraggableDimensionLabel: View {
                     startAngle: arc.startAngle,
                     sweep: arc.sweep,
                     placement: labelPoint,
-                    textGap: halfSize.width + 4,
-                    minimumOffset: halfSize.height + DimensionLabelStyle.edgeClearance
+                    textHalfHeight: halfSize.height
                 ) {
                     measuredLabel
                 }
@@ -263,8 +335,7 @@ private struct DraggableDimensionLabel: View {
                     start: document.viewport.documentToView(start),
                     end: document.viewport.documentToView(end),
                     placement: labelPoint,
-                    textGap: halfSize.width + 4,
-                    minimumOffset: halfSize.height + DimensionLabelStyle.edgeClearance
+                    textHalfHeight: halfSize.height
                 ) {
                     measuredLabel
                 }
@@ -272,6 +343,10 @@ private struct DraggableDimensionLabel: View {
                 radialBody
             }
         }
+        .opacity(isHidden ? 0 : 1)
+        .allowsHitTesting(!isHidden)
+        .accessibilityHidden(isHidden)
+        .preference(key: DimensionLabelHalfSizesKey.self, value: [key: halfSize])
         .transaction { $0.disablesAnimations = true }
     }
 
@@ -308,10 +383,9 @@ private struct DraggableDimensionLabel: View {
         }
     }
 
-    /// Keep the value closest to the shape. The lock sits outside it, and the eye
-    /// is outermost, so the cluster's outward half isn't wasted on empty space.
-    /// Outside the Dimensions tool only the number is shown. Tapping it switches
-    /// to that tool and opens the value.
+    /// At rest a label is only its number. The tapped label adds its lock and eye,
+    /// value closest to the shape and eye outermost. Outside the Dimensions tool,
+    /// tapping the number switches to that tool and opens the value.
     @ViewBuilder
     private var labelCluster: some View {
         if !interactive {
@@ -321,6 +395,8 @@ private struct DraggableDimensionLabel: View {
                 .onTapGesture { beginEditFromCanvas() }
                 .accessibilityAddTraits(.isButton)
                 .accessibilityLabel("Edit \(lockTargetName)")
+        } else if !showsControls && !isEditing {
+            valueLabel
         } else {
             let value = Group {
                 if isEditing {
@@ -423,6 +499,7 @@ private struct DraggableDimensionLabel: View {
     /// Opens this value after the canvas switches into the Dimensions tool.
     /// A locked edge still switches tools, matching tap-to-edit inside the tool.
     private func beginEditFromCanvas() {
+        activeLabelKey = key
         if !isEdgePinned {
             isEditing = true
             editText = editTextValue
@@ -431,7 +508,8 @@ private struct DraggableDimensionLabel: View {
     }
 
     /// Global-space drag so translation is finger motion, not the moving label.
-    /// A short press with almost no travel becomes tap-to-edit.
+    /// A short press with almost no travel shows the lock and eye and opens the value.
+    /// A locked edge has no value to edit, so the tap toggles its controls instead.
     private func dragOrTapGesture(locked: Bool) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .global)
             .onChanged { value in
@@ -446,7 +524,11 @@ private struct DraggableDimensionLabel: View {
                 if travel < 4 {
                     isDragging = false
                     dragTranslation = .zero
-                    guard !locked else { return }
+                    if locked {
+                        activeLabelKey = activeLabelKey == key ? nil : key
+                        return
+                    }
+                    activeLabelKey = key
                     isEditing = true
                     editText = editTextValue
                     return
@@ -504,29 +586,14 @@ private struct DraggableDimensionLabel: View {
         return DimensionFormat.edit(Double(display), units: document.settings.units)
     }
 
-    private var measuresArc: Bool {
-        switch dimension.kind {
-        case .arcLength, .filletArc:
-            return true
-        default:
-            return false
-        }
-    }
+    private var measuresArc: Bool { dimension.measuresArc }
 
     /// Arc length, in view space, when this label measures an arc or a filleted corner.
     private var arcDimension: (center: CGPoint, radius: CGFloat, startAngle: CGFloat, sweep: CGFloat)? {
-        guard measuresArc,
-              let center = dimension.arcCenter,
-              let sweep = dimension.arcSweep,
-              let start = dimension.start else { return nil }
-        let radius = hypot(start.x - center.x, start.y - center.y)
-        guard radius > 0.5 else { return nil }
-        return (
-            document.viewport.documentToView(center),
-            document.viewport.documentToView(distance: radius),
-            atan2(start.y - center.y, start.x - center.x),
-            sweep
-        )
+        guard case let .arc(center, radius, startAngle, sweep) = dimension.viewGeometry(in: document.viewport) else {
+            return nil
+        }
+        return (center, radius, startAngle, sweep)
     }
 
     /// Drops the along-edge part of a drag so the value stays centered on the dimension line.
@@ -538,8 +605,7 @@ private struct DraggableDimensionLabel: View {
             startAngle: arc.startAngle,
             sweep: arc.sweep,
             placement: point,
-            textGap: halfSize.width + 4,
-            minimumOffset: halfSize.height + DimensionLabelStyle.edgeClearance
+            textHalfHeight: halfSize.height
            ) {
             return layout.textCenter
         }
@@ -548,8 +614,7 @@ private struct DraggableDimensionLabel: View {
                 start: document.viewport.documentToView(start),
                 end: document.viewport.documentToView(end),
                 placement: point,
-                textGap: halfSize.width + 4,
-                minimumOffset: halfSize.height + DimensionLabelStyle.edgeClearance
+                textHalfHeight: halfSize.height
               ) else { return point }
         return layout.textCenter
     }
@@ -573,6 +638,7 @@ private struct DraggableDimensionLabel: View {
     private func commitEdit() {
         guard isEditing else { return }
         isEditing = false
+        if activeLabelKey == key { activeLabelKey = nil }
         guard let value = Double(editText.trimmingCharacters(in: .whitespaces)),
               value.isFinite,
               value > 0,
@@ -643,12 +709,68 @@ private struct DraggableDimensionLabel: View {
     }
 }
 
-private struct DimensionTextGapKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
+private struct DimensionLabelSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
         let next = nextValue()
-        if next > 0 { value = next }
+        if next.width > 0, next.height > 0 { value = next }
+    }
+}
+
+private extension View {
+    /// Reports the label's unrotated size so the layout can lift it clear of the dimension line.
+    func measuringDimensionLabel(into size: Binding<CGSize?>) -> some View {
+        fixedSize()
+            .background {
+                GeometryReader { geo in
+                    Color.clear.preference(key: DimensionLabelSizeKey.self, value: geo.size)
+                }
+            }
+            .onPreferenceChange(DimensionLabelSizeKey.self) { measured in
+                guard measured.width > 1, measured.height > 1, size.wrappedValue != measured else { return }
+                size.wrappedValue = measured
+            }
+    }
+}
+
+private extension ShapeGeometry.SemanticDimension {
+    var measuresArc: Bool {
+        switch kind {
+        case .arcLength, .filletArc:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Matches how `DraggableDimensionLabel` draws it: arc, then straight edge, then leader.
+    func viewGeometry(in viewport: ViewportTransform) -> DimensionGeometry {
+        if measuresArc {
+            if let center = arcCenter, let sweep = arcSweep, let start {
+                let radius = hypot(start.x - center.x, start.y - center.y)
+                if radius > 0.5 {
+                    return .arc(
+                        center: viewport.documentToView(center),
+                        radius: viewport.documentToView(distance: radius),
+                        startAngle: atan2(start.y - center.y, start.x - center.x),
+                        sweep: sweep
+                    )
+                }
+            }
+        } else if let start, let end {
+            return .linear(start: viewport.documentToView(start), end: viewport.documentToView(end))
+        }
+        return .radial(anchor: viewport.documentToView(anchor))
+    }
+}
+
+/// Each stroke label's current half-size, keyed like `dimensionOffsets`.
+private struct DimensionLabelHalfSizesKey: PreferenceKey {
+    static var defaultValue: [String: CGSize] = [:]
+
+    static func reduce(value: inout [String: CGSize], nextValue: () -> [String: CGSize]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
 
@@ -665,37 +787,23 @@ struct PlacedLinearDimension<Label: View>: View {
     var start: CGPoint
     var end: CGPoint
     var placement: CGPoint
-    var textGap: CGFloat
-    var minimumOffset: CGFloat
+    var textHalfHeight: CGFloat
     @ViewBuilder var label: () -> Label
 
-    @State private var measuredGap: CGFloat?
+    @State private var measuredSize: CGSize?
 
     var body: some View {
         let layout = LinearDimensionLayout.layout(
             start: start,
             end: end,
             placement: placement,
-            textGap: measuredGap ?? textGap,
-            minimumOffset: minimumOffset
+            textHalfHeight: measuredSize.map { $0.height / 2 } ?? textHalfHeight
         )
         ZStack {
             if let layout {
                 dimensionStroke(layout)
                 label()
-                    .fixedSize()
-                    .background {
-                        GeometryReader { geo in
-                            Color.clear.preference(
-                                key: DimensionTextGapKey.self,
-                                value: geo.size.width / 2 + 4
-                            )
-                        }
-                    }
-                    .onPreferenceChange(DimensionTextGapKey.self) { gap in
-                        guard gap > 1, measuredGap != gap else { return }
-                        measuredGap = gap
-                    }
+                    .measuringDimensionLabel(into: $measuredSize)
                     .rotationEffect(.radians(layout.textAngle))
                     .position(layout.textCenter)
             } else {
@@ -732,11 +840,10 @@ struct PlacedArcDimension<Label: View>: View {
     var startAngle: CGFloat
     var sweep: CGFloat
     var placement: CGPoint
-    var textGap: CGFloat
-    var minimumOffset: CGFloat
+    var textHalfHeight: CGFloat
     @ViewBuilder var label: () -> Label
 
-    @State private var measuredGap: CGFloat?
+    @State private var measuredSize: CGSize?
 
     var body: some View {
         let layout = ArcDimensionLayout.layout(
@@ -745,26 +852,13 @@ struct PlacedArcDimension<Label: View>: View {
             startAngle: startAngle,
             sweep: sweep,
             placement: placement,
-            textGap: measuredGap ?? textGap,
-            minimumOffset: minimumOffset
+            textHalfHeight: measuredSize.map { $0.height / 2 } ?? textHalfHeight
         )
         ZStack {
             if let layout {
                 dimensionStroke(layout)
                 label()
-                    .fixedSize()
-                    .background {
-                        GeometryReader { geo in
-                            Color.clear.preference(
-                                key: DimensionTextGapKey.self,
-                                value: geo.size.width / 2 + 4
-                            )
-                        }
-                    }
-                    .onPreferenceChange(DimensionTextGapKey.self) { gap in
-                        guard gap > 1, measuredGap != gap else { return }
-                        measuredGap = gap
-                    }
+                    .measuringDimensionLabel(into: $measuredSize)
                     .rotationEffect(.radians(layout.textAngle))
                     .position(layout.textCenter)
             } else {

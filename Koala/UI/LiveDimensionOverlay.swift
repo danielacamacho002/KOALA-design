@@ -46,8 +46,7 @@ struct LiveDimensionOverlay: View {
             start: startView,
             end: endView,
             placement: placement,
-            textGap: DimensionLabelStyle.textOnlyHalfSize.width + 4,
-            minimumOffset: DimensionLabelStyle.edgeClearance + DimensionLabelStyle.textOnlyHalfSize.height
+            textHalfHeight: DimensionLabelStyle.textOnlyHalfSize.height
         ) {
             Text(label.text)
                 .dimensionLabelAppearance()
