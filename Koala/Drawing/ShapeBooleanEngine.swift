@@ -24,6 +24,69 @@ enum ShapeBooleanEngine {
         var cutEdgeStarts: [Int]
     }
 
+    /// A circular span of a shape's outline (a live or baked fillet), so a Boolean
+    /// result can rebuild that span as an arc instead of flattening its samples.
+    struct OutlineArc: Equatable {
+        var center: CGPoint
+        var radius: CGFloat
+        var startAngle: CGFloat
+        var sweep: CGFloat
+
+        func contains(_ point: CGPoint) -> Bool {
+            let tolerance = max(0.05, radius * 0.01)
+            guard abs(hypot(point.x - center.x, point.y - center.y) - radius) <= tolerance else { return false }
+            var offset = atan2(point.y - center.y, point.x - center.x) - startAngle
+            if sweep < 0 { offset = -offset }
+            offset = offset.truncatingRemainder(dividingBy: 2 * .pi)
+            if offset < 0 { offset += 2 * .pi }
+            let slack = tolerance / radius
+            return offset <= abs(sweep) + slack || offset >= 2 * .pi - slack
+        }
+    }
+
+    /// The outline a Boolean should see for `stroke`: live fillets are baked and
+    /// expanded so the cut follows the drawn rounded corners, plus the circular
+    /// spans of those corners.
+    static func booleanOutline(for stroke: VectorStroke) -> (contour: [CGPoint], arcs: [OutlineArc]) {
+        switch stroke.shapeType {
+        case .circle, .ellipse, .arc, .curve:
+            return (ShapeGeometry.renderPoints(for: stroke), [])
+        default:
+            break
+        }
+        var outline = stroke
+        if stroke.isClosed, let baked = FilletPathBuilder.bakedGeometry(for: stroke) {
+            outline.points = baked.points
+            outline.smoothCornerIndices = baked.smoothMiddles.isEmpty ? nil : baked.smoothMiddles
+            outline.cornerRadius = 0
+            outline.cornerRadiiByIndex = nil
+            outline.shapeType = .polyline
+        }
+        return (ShapeGeometry.renderPoints(for: outline), smoothArcs(of: outline))
+    }
+
+    private static func smoothArcs(of stroke: VectorStroke) -> [OutlineArc] {
+        guard stroke.isClosed, let smooth = stroke.smoothCornerIndices, !smooth.isEmpty else { return [] }
+        let points = stroke.points
+        let count = points.count
+        let runs = ShapeGeometry.consecutiveSmoothRuns(count: count, smooth: smooth, closed: true)
+        return runs.compactMap { run in
+            guard run.count < count, let first = run.first, let last = run.last else { return nil }
+            var chain = [points[(first - 1 + count) % count]]
+            chain.append(contentsOf: run.map { points[$0] })
+            chain.append(points[(last + 1) % count])
+            guard let circle = circumcircle(chain[0], chain[chain.count / 2], chain[chain.count - 1]),
+                  let sweep = ShapeGeometry.signedCircularSweep(of: chain, around: circle.center, closed: false),
+                  abs(sweep) > 0.0001 else { return nil }
+            return OutlineArc(
+                center: circle.center,
+                radius: circle.radius,
+                startAngle: atan2(chain[0].y - circle.center.y, chain[0].x - circle.center.x),
+                sweep: sweep
+            )
+        }
+    }
+
     /// Outcome of subtracting a target shape from a base shape.
     enum Subtraction: Equatable {
         /// Target sits entirely inside the base: punch an even-odd hole by appending
@@ -269,10 +332,12 @@ enum ShapeBooleanEngine {
     /// one circle. The arc's endpoints stay ordinary corners — they are not smoothed
     /// into the curve, and neither are the base shape's other corners. A curved run
     /// that is not circular (an ellipse or a free curve) returns nil so the caller can
-    /// keep its own curve fit.
+    /// keep its own curve fit. Base edges lying on one of `baseArcs` (the base's fillets)
+    /// are rebuilt as arcs too, so a rounded corner the cut did not touch stays rounded.
     static func cornerPreservingContour(
         points: [CGPoint],
-        cutEdgeStarts: [Int]
+        cutEdgeStarts: [Int],
+        baseArcs: [OutlineArc] = []
     ) -> (points: [CGPoint], smoothCornerIndices: Set<Int>)? {
         let count = points.count
         guard count >= 3, !cutEdgeStarts.isEmpty else { return nil }
@@ -280,9 +345,22 @@ enum ShapeBooleanEngine {
         let cut = Set(cutEdgeStarts)
         guard cut.count < count else { return nil }
 
-        // Start on a vertex whose incoming edge is not a cut, so each cut run is
-        // walked as one contiguous sequence.
-        guard let origin = (0..<count).first(where: { !cut.contains(($0 - 1 + count) % count) }) else {
+        // edgeArc[i] is the base arc the edge points[i] → points[i + 1] lies on.
+        let edgeArc: [Int?] = (0..<count).map { index in
+            guard !cut.contains(index) else { return nil }
+            let start = points[index]
+            let end = points[(index + 1) % count]
+            return baseArcs.firstIndex { $0.contains(start) && $0.contains(end) }
+        }
+
+        // Start on a vertex whose incoming edge is neither a cut nor part of an arc,
+        // so each run is walked as one contiguous sequence.
+        func startsRun(_ index: Int) -> Bool {
+            let incoming = (index - 1 + count) % count
+            return !cut.contains(incoming) && edgeArc[incoming] == nil
+        }
+        guard let origin = (0..<count).first(where: startsRun)
+            ?? (0..<count).first(where: { !cut.contains(($0 - 1 + count) % count) }) else {
             return nil
         }
 
@@ -326,6 +404,36 @@ enum ShapeBooleanEngine {
                     for point in run {
                         append(point, smoothPoint: false)
                     }
+                }
+                index = cursor
+            } else if let arcIndex = edgeArc[index] {
+                let arc = baseArcs[arcIndex]
+                var run = [points[index]]
+                var cursor = index
+                while edgeArc[cursor] == arcIndex {
+                    cursor = (cursor + 1) % count
+                    run.append(points[cursor])
+                    if cursor == origin || run.count > count + 1 { break }
+                }
+                let anchors: [CGPoint]
+                if let first = run.first,
+                   let last = run.last,
+                   let sweep = ShapeGeometry.signedCircularSweep(of: run, around: arc.center, closed: false),
+                   abs(sweep) > 0.01 {
+                    anchors = ShapeGeometry.defaultCircularAnchors(
+                        center: arc.center,
+                        radius: arc.radius,
+                        start: first,
+                        end: last,
+                        sweep: sweep,
+                        closed: false
+                    )
+                } else {
+                    anchors = [run[0], run[run.count - 1]]
+                }
+                for (offset, point) in anchors.enumerated() {
+                    let isEnd = offset == 0 || offset == anchors.count - 1
+                    append(point, smoothPoint: !isEnd)
                 }
                 index = cursor
             } else {

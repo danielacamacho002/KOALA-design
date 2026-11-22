@@ -3310,11 +3310,11 @@ final class KoalaDocument {
               let cutter = stroke(with: cutterID),
               base.isClosed, cutter.isClosed,
               !base.isConstruction, !cutter.isConstruction else { return false }
-        let baseContour = ShapeGeometry.renderPoints(for: base)
-        let cutterContour = ShapeGeometry.renderPoints(for: cutter)
-        guard baseContour.count >= 3, cutterContour.count >= 3 else { return false }
+        let baseOutline = ShapeBooleanEngine.booleanOutline(for: base)
+        let cutterContour = ShapeBooleanEngine.booleanOutline(for: cutter).contour
+        guard baseOutline.contour.count >= 3, cutterContour.count >= 3 else { return false }
         guard let outcome = ShapeBooleanEngine.subtract(
-            baseContour: baseContour,
+            baseContour: baseOutline.contour,
             targetContour: cutterContour
         ) else { return false }
         guard let baseArrayIndex = strokes.firstIndex(where: { $0.id == base.id }) else { return false }
@@ -3323,7 +3323,8 @@ final class KoalaDocument {
         applySubtraction(
             outcome,
             toBaseAt: baseArrayIndex,
-            curvedAlong: cutterUsesCurve(cutter) ? cutterContour : nil
+            curvedAlong: cutterUsesCurve(cutter) ? cutterContour : nil,
+            baseArcs: baseOutline.arcs
         )
         strokes.removeAll { $0.id == cutter.id }
         pruneGroups()
@@ -3348,8 +3349,8 @@ final class KoalaDocument {
         guard baseID != cutterID,
               let base = stroke(with: baseID),
               let cutter = stroke(with: cutterID) else { return nil }
-        let baseContour = ShapeGeometry.renderPoints(for: base)
-        let cutterContour = ShapeGeometry.renderPoints(for: cutter)
+        let baseContour = ShapeBooleanEngine.booleanOutline(for: base).contour
+        let cutterContour = ShapeBooleanEngine.booleanOutline(for: cutter).contour
         guard baseContour.count >= 3, cutterContour.count >= 3 else { return nil }
         guard let outcome = ShapeBooleanEngine.subtract(
             baseContour: baseContour,
@@ -3449,13 +3450,13 @@ final class KoalaDocument {
         }
 
         let cutter = candidates[targetIndex]
-        let cutterContour = ShapeGeometry.renderPoints(for: cutter)
+        let cutterContour = ShapeBooleanEngine.booleanOutline(for: cutter).contour
         guard cutterContour.count >= 3 else { return nil }
 
         for index in orderedBeneath {
             let base = candidates[index]
             guard base.id != cutter.id, base.isClosed, !base.isConstruction else { continue }
-            let baseContour = ShapeGeometry.renderPoints(for: base)
+            let baseContour = ShapeBooleanEngine.booleanOutline(for: base).contour
             guard baseContour.count >= 3 else { continue }
             guard ShapeBooleanEngine.subtract(
                 baseContour: baseContour,
@@ -3608,7 +3609,8 @@ final class KoalaDocument {
     private func applySubtraction(
         _ outcome: ShapeBooleanEngine.Subtraction,
         toBaseAt baseArrayIndex: Int,
-        curvedAlong cutter: [CGPoint]?
+        curvedAlong cutter: [CGPoint]?,
+        baseArcs: [ShapeBooleanEngine.OutlineArc] = []
     ) {
         switch outcome {
         case let .interiorHole(cutouts):
@@ -3623,7 +3625,8 @@ final class KoalaDocument {
                 strokes[baseArrayIndex],
                 toPoints: primary.points,
                 curvedAlong: cutter,
-                cutEdgeStarts: primary.cutEdgeStarts
+                cutEdgeStarts: primary.cutEdgeStarts,
+                baseArcs: baseArcs
             )
             // Keep existing holes only where they still fall inside the reshaped outline.
             updatedBase.cutoutPoints = updatedBase.cutoutPoints.filter { hole in
@@ -3641,7 +3644,8 @@ final class KoalaDocument {
                     updatedBase,
                     toPoints: contour.points,
                     curvedAlong: cutter,
-                    cutEdgeStarts: contour.cutEdgeStarts
+                    cutEdgeStarts: contour.cutEdgeStarts,
+                    baseArcs: baseArcs
                 )
                 piece.id = UUID()
                 piece.cutoutPoints = []
@@ -3672,7 +3676,8 @@ final class KoalaDocument {
         _ stroke: VectorStroke,
         toPoints points: [CGPoint],
         curvedAlong cutter: [CGPoint]? = nil,
-        cutEdgeStarts: [Int] = []
+        cutEdgeStarts: [Int] = [],
+        baseArcs: [ShapeBooleanEngine.OutlineArc] = []
     ) -> VectorStroke {
         var copy = stroke
         copy.points = points
@@ -3688,7 +3693,8 @@ final class KoalaDocument {
 
         if let kept = ShapeBooleanEngine.cornerPreservingContour(
             points: points,
-            cutEdgeStarts: cutEdgeStarts
+            cutEdgeStarts: cutEdgeStarts,
+            baseArcs: baseArcs
         ) {
             copy.points = kept.points
             copy.shapeType = .polyline
