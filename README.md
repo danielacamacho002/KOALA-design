@@ -1,6 +1,6 @@
-# KOALA
+# KOALA design
 
-KOALA is an iPad vector drawing app focused on precise shape creation and editing.
+KOALA design is an iPad vector drawing app focused on precise shape creation and editing.
 
 ## Features
 
@@ -11,16 +11,16 @@ KOALA is an iPad vector drawing app focused on precise shape creation and editin
 
 ## Project Structure
 
-- `Koala/` - app source code
-- `KoalaTests/` - Swift Testing unit tests
-- `Koala.xcodeproj` - Xcode project
+- `KOALADesign/` - app source code
+- `KOALADesignTests/` - Swift Testing unit tests
+- `KOALADesign.xcodeproj` - Xcode project
 - `ExportedTypes.plist` - document type configuration
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - code map (folders, hot files, update rules)
 
 ## Getting Started
 
-1. Open `Koala.xcodeproj` in Xcode.
-2. Select the `Koala` scheme.
+1. Open `KOALADesign.xcodeproj` in Xcode.
+2. Select the `KOALADesign` scheme.
 3. Build and run on an iPad simulator or device.
 
 ## Tests
@@ -28,7 +28,7 @@ KOALA is an iPad vector drawing app focused on precise shape creation and editin
 Product → Test, or:
 
 ```bash
-xcodebuild test -scheme Koala -destination 'platform=iOS Simulator,name=iPad (A16)'
+xcodebuild test -scheme KOALADesign -destination 'platform=iOS Simulator,name=iPad (A16)'
 ```
 
 Use an iPad simulator available on your machine if that name is missing.
