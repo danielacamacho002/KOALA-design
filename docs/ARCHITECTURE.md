@@ -1,6 +1,6 @@
-# Koala architecture
+# KOALA design architecture
 
-iPad-only vector editor: design on a canvas, then arrange artwork for tiled print. Source lives in `Koala/` (~120 Swift files).
+iPad-only vector editor: design on a canvas, then arrange artwork for tiled print. Source lives in `KOALADesign/` (~120 Swift files).
 
 ## Folders
 
@@ -17,7 +17,7 @@ iPad-only vector editor: design on a canvas, then arrange artwork for tiled prin
 
 ## Main flow
 
-`KoalaApp` → `ContentView` → iPad `ProjectGalleryView` → `EditorView` (`DocumentStore` + `KoalaDocument`).
+`KOALADesignApp` → `ContentView` → iPad `ProjectGalleryView` → `EditorView` (`DocumentStore` + `KoalaDocument`).
 
 iPad Display Zoom **More Space** is neutralized in `UI/DisplayZoomCompensation.swift` (window lays out at the Default point size, then scales up). Default and Larger Text are not scaled.
 
@@ -27,12 +27,12 @@ iPad Display Zoom **More Space** is neutralized in `UI/DisplayZoomCompensation.s
 
 ## Open these first
 
-- `Koala/Model/KoalaDocument.swift` — source of truth
-- `Koala/Persistence/DocumentStore.swift` — file, dirty, `contentRevision`
-- `Koala/UI/EditorView.swift` — editor orchestration
-- `Koala/Drawing/DrawingCanvasView.swift` + `DrawingCanvasUIView.swift` + `ViewportNavigationInstaller.swift`
-- `Koala/UI/PrintLayout/PrintLayoutCanvasView.swift` + `Rendering/PrintLayout/PrintLayoutCanvasUIView.swift`
-- `Koala/Persistence/DocumentCodec.swift`
+- `KOALADesign/Model/KoalaDocument.swift` — source of truth
+- `KOALADesign/Persistence/DocumentStore.swift` — file, dirty, `contentRevision`
+- `KOALADesign/UI/EditorView.swift` — editor orchestration
+- `KOALADesign/Drawing/DrawingCanvasView.swift` + `DrawingCanvasUIView.swift` + `ViewportNavigationInstaller.swift`
+- `KOALADesign/UI/PrintLayout/PrintLayoutCanvasView.swift` + `Rendering/PrintLayout/PrintLayoutCanvasUIView.swift`
+- `KOALADesign/Persistence/DocumentCodec.swift`
 
 Do not start in `ShapeGeometry`, `PathJoinEngine`, `TrimEngine`, or `PolygonBoolean` unless the task is that geometry.
 

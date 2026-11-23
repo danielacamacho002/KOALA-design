@@ -1,6 +1,6 @@
 ---
 description: Performance invariants for canvas, save, and export paths
-globs: Koala/Drawing/**,Koala/Rendering/**,Koala/Persistence/**,Koala/UI/EditorView.swift,Koala/UI/PrintLayout/**
+globs: KOALADesign/Drawing/**,KOALADesign/Rendering/**,KOALADesign/Persistence/**,KOALADesign/UI/EditorView.swift,KOALADesign/UI/PrintLayout/**
 alwaysApply: false
 ---
 
