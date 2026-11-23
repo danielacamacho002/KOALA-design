@@ -200,6 +200,7 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+/* Supported destinations are iPad-only: TARGETED_DEVICE_FAMILY = 2; no iPhone, Mac, or visionOS. */
 		249864502FC9318600C5E982 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
